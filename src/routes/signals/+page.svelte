@@ -4,6 +4,7 @@
     import Panel from "$components/ui/Panel.svelte";
     import Badge from "$components/ui/Badge.svelte";
     import Skeleton from "$components/ui/Skeleton.svelte";
+    import EmptyState from "$components/ui/EmptyState.svelte";
     import FilterChips from "$components/ui/FilterChips.svelte";
     import { fmtDateTime } from "$lib/utils/format";
 
@@ -38,9 +39,9 @@
     // ─── Filter state ────────────────────────────────────────────────────
 
     const STATUS_FILTERS = [
-        { id: "staging", label: "Staging" },
-        { id: "approved", label: "Approved" },
-        { id: "", label: "All" },
+        { value: "staging", label: "Staging" },
+        { value: "approved", label: "Approved" },
+        { value: "", label: "All" },
     ];
 
     let statusFilter = $state("staging");
@@ -65,7 +66,7 @@
             const url = statusFilter
                 ? `/api/signals?status=${statusFilter}`
                 : "/api/signals";
-            const data = await api<SignalsResponse>(url);
+            const data = await api.get<SignalsResponse>(url);
             signals = data.signals ?? [];
         } catch (e: any) {
             signalsError = e.message ?? "Failed to load signals";
@@ -77,7 +78,7 @@
     async function fetchAlerts() {
         alertsError = "";
         try {
-            const data = await api<AlertsResponse>("/api/alerts");
+            const data = await api.get<AlertsResponse>("/api/alerts");
             alerts = data.alerts ?? [];
         } catch (e: any) {
             alertsError = e.message ?? "Failed to load alerts";
@@ -95,7 +96,7 @@
     async function approveSignal(id: string) {
         actionBusy = { ...actionBusy, [id]: true };
         try {
-            await api(`/api/signals/${id}/approve`, { method: "POST" });
+            await api.post(`/api/signals/${id}/approve`);
             await fetchSignals();
         } catch (e: unknown) {
             const err = e instanceof Error ? e : new Error(String(e));
@@ -111,10 +112,12 @@
         if (!confirm("Reject this signal?")) return;
         actionBusy = { ...actionBusy, [id]: true };
         try {
-            await api(`/api/signals/${id}/reject`, { method: "POST" });
+            await api.post(`/api/signals/${id}/reject`);
             await fetchSignals();
         } catch (e: unknown) {
-            const err;
+            const err = e instanceof Error ? e : new Error(String(e));
+            alert(`Reject failed: ${err.message}`);
+        } finally {
             const next = { ...actionBusy };
             delete next[id];
             actionBusy = next;
@@ -163,10 +166,10 @@
     <Panel title="Signal Staging Area" fill>
         {#snippet header()}
             <FilterChips
-                chips={STATUS_FILTERS}
+                options={STATUS_FILTERS}
                 active={statusFilter}
-                onselect={(id) => {
-                    statusFilter = id;
+                onchange={(v) => {
+                    statusFilter = v;
                 }}
             />
             <span class="poll-badge">{signals.length} signals · 5s</span>
@@ -179,9 +182,9 @@
                 {/each}
             </div>
         {:else if signalsError}
-            <p class="err-text">{signalsError}</p>
+            <EmptyState icon="⚠️" title="Couldn't load signals" variant="error" hint={signalsError} />
         {:else if signals.length === 0}
-            <p class="empty">No {statusFilter || ""} signals.</p>
+            <EmptyState icon="∅" title="No signals" hint={statusFilter ? `No ${statusFilter} signals yet.` : "No signals generated yet."} />
         {:else}
             <div class="table-wrap">
                 <table>
@@ -264,9 +267,9 @@
                 {/each}
             </div>
         {:else if alertsError}
-            <p class="err-text">{alertsError}</p>
+            <EmptyState icon="⚠️" title="Couldn't load alerts" variant="error" hint={alertsError} />
         {:else if alerts.length === 0}
-            <p class="empty">No alerts.</p>
+            <EmptyState icon="🔕" title="No alerts" hint="No active alerts right now." />
         {:else}
             <div class="alerts-list">
                 {#each alerts as alert}
@@ -431,15 +434,5 @@
         flex-direction: column;
         gap: 6px;
         padding: 8px;
-    }
-    .empty {
-        padding: 20px;
-        font-size: 11px;
-        color: var(--t3);
-    }
-    .err-text {
-        font-size: 11px;
-        color: var(--red);
-        padding: 12px;
     }
 </style>

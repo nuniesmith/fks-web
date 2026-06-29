@@ -5,6 +5,8 @@
   import { focusSymbol } from '$stores/focusSymbol';
   import Panel from '$components/ui/Panel.svelte';
   import DrawingTools from '$components/ui/DrawingTools.svelte';
+  import IndicatorPane from '$components/ui/IndicatorPane.svelte';
+  import EmptyState from '$components/ui/EmptyState.svelte';
   import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 
   // ─── Types ─────────────────────────────────────────────────────────────────
@@ -136,6 +138,17 @@
   // ATR price overlay
   let atrSeries: any = null;
 
+  // Extra server-computed overlays
+  let sma20Series: any = null;
+  let vwapSeries: any = null;
+  let wmaSeries: any = null;
+  let dcUpperSeries: any = null;
+  let dcMidSeries: any = null;
+  let dcLowSeries: any = null;
+  let kcUpperSeries: any = null;
+  let kcMidSeries: any = null;
+  let kcLowSeries: any = null;
+
   // Candle cache for client-side indicators
   let candles = $state<CandleData[]>([]);
 
@@ -150,11 +163,57 @@
   let showRSI = $state(false);
   let showMACD = $state(false);
   let showATR  = $state(false);
+  let showSMA20 = $state(false);
+  let showVWAP = $state(false);
+  let showWMA = $state(false);
+  let showDonchian = $state(false);
+  let showKeltner = $state(false);
   let drawingActive = $state(false);
+
+  // Oscillator sub-pane picker (generic, catalog-driven)
+  interface OscMeta { id: string; label: string; keys: string[]; }
+  let oscillatorCatalog = $state<OscMeta[]>([]);
+  let activeOscillators = $state<OscMeta[]>([]);
+  let indPickerOpen = $state(false);
+
+  // Indicator presets + layout persistence (C3)
+  let presetMenuOpen = $state(false);
+  let persistReady = $state(false); // gate persistence until the initial restore runs
+
+  interface IndicatorState {
+    ema9: boolean; ema21: boolean; volume: boolean; bb: boolean;
+    atr: boolean; sma20: boolean; vwap: boolean; wma: boolean;
+    donchian: boolean; keltner: boolean; rsi: boolean; macd: boolean;
+    oscillators: string[];
+  }
+  const BLANK_INDICATORS: IndicatorState = {
+    ema9: false, ema21: false, volume: false, bb: false, atr: false,
+    sma20: false, vwap: false, wma: false, donchian: false, keltner: false,
+    rsi: false, macd: false, oscillators: [],
+  };
+  const INDICATOR_PRESETS: { id: string; label: string; state: Partial<IndicatorState> }[] = [
+    { id: 'clean',    label: 'Clean',    state: {} },
+    { id: 'trend',    label: 'Trend',    state: { ema9: true, ema21: true, sma20: true } },
+    { id: 'bands',    label: 'Bands',    state: { bb: true, keltner: true } },
+    { id: 'momentum', label: 'Momentum', state: { rsi: true, macd: true } },
+    { id: 'volume',   label: 'Volume',   state: { volume: true, vwap: true } },
+    { id: 'full',     label: 'Full',     state: { ema9: true, ema21: true, bb: true, volume: true, rsi: true, macd: true } },
+  ];
+
+  // Crosshair OHLC readout (updated on hover)
+  let hoverBar = $state<{ o: number; h: number; l: number; c: number; chg: number } | null>(null);
+  const fmtP = (n: number): string =>
+    n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    : n >= 1 ? n.toFixed(2)
+    : n.toFixed(5);
+
+  // Logarithmic vs linear price scale
+  let logScale = $state(false);
 
   // Loading state
   let loading = $state(true);
   let indicatorLoading = $state(false);
+  let barsError = $state(false); // true when the historical-bars fetch fails (vs. just empty)
 
   // Auto-focus symbol from strip SSE
   let ignoreNextFocusChange = false;
@@ -193,6 +252,17 @@
       macdLineSeries = null;
       macdSignalSeries = null;
     }
+  });
+
+  // Persist the active indicator layout whenever it changes — but only after the
+  // initial restore has run, so we never overwrite the saved set with defaults.
+  $effect(() => {
+    const _track = [
+      showEma9, showEma21, showVolume, showBB, showATR, showSMA20,
+      showVWAP, showWMA, showDonchian, showKeltner, showRSI, showMACD,
+      activeOscillators,
+    ];
+    if (persistReady && _track.length) saveIndicatorState();
   });
 
   // ─── Timeframes ────────────────────────────────────────────────────────────
@@ -434,6 +504,132 @@
       console.warn('[charts] ATR load failed:', e);
     } finally {
       indicatorLoading = false;
+    }
+  }
+
+  // ─── SMA / VWAP overlays (server-side) ─────────────────────────────────────
+  async function loadSMA20() {
+    if (!chart) return;
+    if (sma20Series) { chart.removeSeries(sma20Series); sma20Series = null; }
+    if (!showSMA20) return;
+    indicatorLoading = true;
+    try {
+      const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=sma20`
+      );
+      const data = res.indicators?.sma20 ?? [];
+      if (data.length && chart) {
+        sma20Series = chart.addLineSeries({
+          color: '#eab308', lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false, title: 'SMA 20',
+        });
+        sma20Series.setData(data);
+      }
+    } catch (e) {
+      console.warn('[charts] SMA load failed:', e);
+    } finally {
+      indicatorLoading = false;
+    }
+  }
+
+  async function loadVWAP() {
+    if (!chart) return;
+    if (vwapSeries) { chart.removeSeries(vwapSeries); vwapSeries = null; }
+    if (!showVWAP) return;
+    indicatorLoading = true;
+    try {
+      const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=vwap`
+      );
+      const data = res.indicators?.vwap ?? [];
+      if (data.length && chart) {
+        vwapSeries = chart.addLineSeries({
+          color: '#e879f9', lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false, title: 'VWAP',
+        });
+        vwapSeries.setData(data);
+      }
+    } catch (e) {
+      console.warn('[charts] VWAP load failed:', e);
+    } finally {
+      indicatorLoading = false;
+    }
+  }
+
+  async function loadWMA() {
+    if (!chart) return;
+    if (wmaSeries) { chart.removeSeries(wmaSeries); wmaSeries = null; }
+    if (!showWMA) return;
+    indicatorLoading = true;
+    try {
+      const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=wma20`
+      );
+      const data = res.indicators?.wma20 ?? [];
+      if (data.length && chart) {
+        wmaSeries = chart.addLineSeries({
+          color: '#34d399', lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false, title: 'WMA 20',
+        });
+        wmaSeries.setData(data);
+      }
+    } catch (e) {
+      console.warn('[charts] WMA load failed:', e);
+    } finally {
+      indicatorLoading = false;
+    }
+  }
+
+  async function loadDonchian() {
+    if (!chart) return;
+    if (dcUpperSeries) { chart.removeSeries(dcUpperSeries); dcUpperSeries = null; }
+    if (dcMidSeries)   { chart.removeSeries(dcMidSeries);   dcMidSeries = null; }
+    if (dcLowSeries)   { chart.removeSeries(dcLowSeries);   dcLowSeries = null; }
+    if (!showDonchian) return;
+    try {
+      const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=donchian`
+      );
+      const ind = res.indicators ?? {};
+      if (ind.dc_upper?.length && chart) {
+        const lineOpts = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+        dcUpperSeries = chart.addLineSeries({ ...lineOpts, color: '#38bdf880', lineWidth: 1, title: 'DC+' });
+        dcUpperSeries.setData(ind.dc_upper);
+        dcMidSeries = chart.addLineSeries({ ...lineOpts, color: '#38bdf840', lineWidth: 1, lineStyle: 2 });
+        dcMidSeries.setData(ind.dc_middle ?? []);
+        dcLowSeries = chart.addLineSeries({ ...lineOpts, color: '#38bdf880', lineWidth: 1, title: 'DC-' });
+        dcLowSeries.setData(ind.dc_lower ?? []);
+      }
+    } catch (e) {
+      console.warn('[charts] Donchian load failed:', e);
+    }
+  }
+
+  async function loadKeltner() {
+    if (!chart) return;
+    if (kcUpperSeries) { chart.removeSeries(kcUpperSeries); kcUpperSeries = null; }
+    if (kcMidSeries)   { chart.removeSeries(kcMidSeries);   kcMidSeries = null; }
+    if (kcLowSeries)   { chart.removeSeries(kcLowSeries);   kcLowSeries = null; }
+    if (!showKeltner) return;
+    try {
+      const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=keltner`
+      );
+      const ind = res.indicators ?? {};
+      if (ind.kc_upper?.length && chart) {
+        const lineOpts = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+        kcUpperSeries = chart.addLineSeries({ ...lineOpts, color: '#c084fc80', lineWidth: 1, title: 'KC+' });
+        kcUpperSeries.setData(ind.kc_upper);
+        kcMidSeries = chart.addLineSeries({ ...lineOpts, color: '#c084fc40', lineWidth: 1, lineStyle: 2 });
+        kcMidSeries.setData(ind.kc_middle ?? []);
+        kcLowSeries = chart.addLineSeries({ ...lineOpts, color: '#c084fc80', lineWidth: 1, title: 'KC-' });
+        kcLowSeries.setData(ind.kc_lower ?? []);
+      }
+    } catch (e) {
+      console.warn('[charts] Keltner load failed:', e);
     }
   }
 
@@ -741,6 +937,7 @@
   async function loadChart() {
     if (!chartContainer) return;
     loading = true;
+    barsError = false;
 
     const { createChart } = await import('lightweight-charts');
 
@@ -748,7 +945,10 @@
     disconnectLiveData();
     ema9Series = null; ema21Series = null; volumeSeries = null;
     bbUpperSeries = null; bbMidSeries = null; bbLowSeries = null;
-    atrSeries = null;
+    atrSeries = null; sma20Series = null; vwapSeries = null;
+    wmaSeries = null;
+    dcUpperSeries = null; dcMidSeries = null; dcLowSeries = null;
+    kcUpperSeries = null; kcMidSeries = null; kcLowSeries = null;
     if (chart) chart.remove();
 
     chart = createChart(chartContainer, {
@@ -769,6 +969,21 @@
       borderUpColor: '#16c784', borderDownColor: '#ea3943',
       wickUpColor: '#16c784', wickDownColor: '#ea3943',
     });
+
+    // Crosshair OHLC readout — reflect the hovered bar (cleared on leave).
+    const cs: any = candleSeries;
+    chart.subscribeCrosshairMove((param: any) => {
+      const d = cs ? param?.seriesData?.get(cs) : null;
+      if (d && typeof d.close === 'number') {
+        const chg = d.open ? ((d.close - d.open) / d.open) * 100 : 0;
+        hoverBar = { o: d.open, h: d.high, l: d.low, c: d.close, chg };
+      } else {
+        hoverBar = null;
+      }
+    });
+
+    // Keep the chosen price-scale mode across reloads.
+    if (logScale) chart.applyOptions({ rightPriceScale: { mode: 1 as any } });
 
     // Resolve asset data source
     await lookupAsset(symbol);
@@ -795,6 +1010,7 @@
     } catch (e) {
       console.warn('[charts] Failed to load bars:', e);
       candles = [];
+      barsError = true;
     } finally {
       loading = false;
     }
@@ -805,6 +1021,11 @@
     if (showVolume) addVolume();
     if (showBB) await loadBBands();
     if (showATR) await loadATR();
+    if (showSMA20) await loadSMA20();
+    if (showVWAP) await loadVWAP();
+    if (showWMA) await loadWMA();
+    if (showDonchian) await loadDonchian();
+    if (showKeltner) await loadKeltner();
 
     // Reconnect RSI if open
     if (showRSI) {
@@ -879,6 +1100,109 @@
     showATR = !showATR;
     await loadATR();
   }
+  async function toggleSMA20() {
+    showSMA20 = !showSMA20;
+    await loadSMA20();
+  }
+  async function toggleVWAP() {
+    showVWAP = !showVWAP;
+    await loadVWAP();
+  }
+  async function toggleWMA() {
+    showWMA = !showWMA;
+    await loadWMA();
+  }
+  async function toggleDonchian() {
+    showDonchian = !showDonchian;
+    await loadDonchian();
+  }
+  async function toggleKeltner() {
+    showKeltner = !showKeltner;
+    await loadKeltner();
+  }
+
+  // ─── Oscillator sub-pane picker (catalog-driven) ───────────────────────────
+  async function loadOscillatorCatalog() {
+    try {
+      const cat = await api.get<{ id: string; label: string; pane: string; keys: string[] }[]>(
+        '/api/indicators/catalog'
+      );
+      const buttoned = new Set(['rsi', 'macd', 'atr']);
+      oscillatorCatalog = (cat ?? [])
+        .filter((c) => c.pane === 'separate' && !buttoned.has(c.id))
+        .map((c) => ({ id: c.id, label: c.label, keys: c.keys }));
+    } catch {
+      oscillatorCatalog = [];
+    }
+  }
+  function addOscillator(m: OscMeta) {
+    if (!activeOscillators.some((x) => x.id === m.id)) {
+      activeOscillators = [...activeOscillators, m];
+    }
+    indPickerOpen = false;
+  }
+  function removeOscillator(id: string) {
+    activeOscillators = activeOscillators.filter((x) => x.id !== id);
+  }
+
+  // ─── Indicator presets + layout persistence (C3) ───────────────────────────
+  function currentIndicatorState(): IndicatorState {
+    return {
+      ema9: showEma9, ema21: showEma21, volume: showVolume, bb: showBB,
+      atr: showATR, sma20: showSMA20, vwap: showVWAP, wma: showWMA,
+      donchian: showDonchian, keltner: showKeltner, rsi: showRSI, macd: showMACD,
+      oscillators: activeOscillators.map((m) => m.id),
+    };
+  }
+
+  function saveIndicatorState() {
+    try {
+      localStorage.setItem('fks_chart_indicators', JSON.stringify(currentIndicatorState()));
+    } catch { /* unavailable */ }
+  }
+
+  function readSavedIndicatorState(): IndicatorState | null {
+    try {
+      const raw = localStorage.getItem('fks_chart_indicators');
+      if (!raw) return null;
+      const p = JSON.parse(raw) as Partial<IndicatorState>;
+      return {
+        ...BLANK_INDICATORS,
+        ...p,
+        oscillators: Array.isArray(p.oscillators) ? p.oscillators.map(String) : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // Reconcile the chart to a desired indicator set (used by presets + restore).
+  async function applyIndicatorState(s: IndicatorState) {
+    // Client overlays (synchronous add/remove).
+    showEma9 = s.ema9;     if (s.ema9) addEma9(); else removeEma9();
+    showEma21 = s.ema21;   if (s.ema21) addEma21(); else removeEma21();
+    showVolume = s.volume; if (s.volume) addVolume(); else removeVolume();
+    // Server overlays — each loader checks its own show* flag and (re)loads.
+    showBB = s.bb;             await loadBBands();
+    showATR = s.atr;           await loadATR();
+    showSMA20 = s.sma20;       await loadSMA20();
+    showVWAP = s.vwap;         await loadVWAP();
+    showWMA = s.wma;           await loadWMA();
+    showDonchian = s.donchian; await loadDonchian();
+    showKeltner = s.keltner;   await loadKeltner();
+    // Sub-panes: the $effects on showRSI/showMACD init/tear-down the panes.
+    showRSI = s.rsi;
+    showMACD = s.macd;
+    if (s.rsi || s.macd) await tick();
+    // Oscillator panes (only those present in the loaded catalog).
+    activeOscillators = oscillatorCatalog.filter((m) => s.oscillators.includes(m.id));
+    saveIndicatorState();
+  }
+
+  function applyPreset(p: { state: Partial<IndicatorState> }) {
+    presetMenuOpen = false;
+    void applyIndicatorState({ ...BLANK_INDICATORS, ...p.state });
+  }
 
   // ─── Chart export / screenshot ─────────────────────────────────────────────
   function exportChart() {
@@ -919,21 +1243,53 @@
     if (e.key === 'Escape') showDropdown = false;
   }
 
+  // Persist symbol+timeframe to localStorage and reflect them in the URL (shareable).
+  function persistChartState() {
+    try {
+      localStorage.setItem('fks_chart_symbol', symbol);
+      localStorage.setItem('fks_chart_tf', interval);
+      history.replaceState(null, '', `?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(interval)}`);
+    } catch { /* unavailable */ }
+  }
+
   function setSymbol(s: string) {
     ignoreNextFocusChange = true;
     symbol = s;
+    persistChartState();
     focusSymbol.set(s);
     loadChart();
   }
 
   function switchTimeframe(tf: string) {
     interval = tf;
+    persistChartState();
     loadChart();
+  }
+
+  function toggleLogScale() {
+    logScale = !logScale;
+    chart?.applyOptions({ rightPriceScale: { mode: (logScale ? 1 : 0) as any } });
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
   onMount(() => {
-    loadChart();
+    // URL params (?symbol=&tf=) win for shareable links; else the last-viewed
+    // values (localStorage). Persist whatever we resolve.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const ss = params.get('symbol') || localStorage.getItem('fks_chart_symbol');
+      const st = params.get('tf') || params.get('interval') || localStorage.getItem('fks_chart_tf');
+      if (ss) { symbol = ss; focusSymbol.set(ss); localStorage.setItem('fks_chart_symbol', ss); }
+      if (st) { interval = st; localStorage.setItem('fks_chart_tf', st); }
+    } catch { /* unavailable */ }
+    // Load the chart + oscillator catalog, then restore the saved indicator
+    // layout (the catalog is needed to rebuild oscillator panes). persistReady
+    // gates the persistence effect until this restore has completed.
+    Promise.all([loadChart(), loadOscillatorCatalog()]).then(() => {
+      const saved = readSavedIndicatorState();
+      if (saved) applyIndicatorState(saved).finally(() => { persistReady = true; });
+      else persistReady = true;
+    });
 
     const ro = new ResizeObserver(() => {
       if (chart && chartContainer) {
@@ -1060,6 +1416,31 @@
           <span class="ind-dot" style="background:#f59e0b"></span>ATR
           {#if indicatorLoading && showATR}<span class="ind-spin"></span>{/if}
         </button>
+        <button class="ind-btn" class:active={showSMA20} onclick={toggleSMA20} aria-pressed={showSMA20 ? 'true' : 'false'}
+          title="Simple Moving Average 20 (server-computed)">
+          <span class="ind-dot" style="background:#eab308"></span>SMA
+          {#if indicatorLoading && showSMA20}<span class="ind-spin"></span>{/if}
+        </button>
+        <button class="ind-btn" class:active={showVWAP} onclick={toggleVWAP} aria-pressed={showVWAP ? 'true' : 'false'}
+          title="Volume-Weighted Average Price (server-computed)">
+          <span class="ind-dot" style="background:#e879f9"></span>VWAP
+          {#if indicatorLoading && showVWAP}<span class="ind-spin"></span>{/if}
+        </button>
+        <button class="ind-btn" class:active={showWMA} onclick={toggleWMA} aria-pressed={showWMA ? 'true' : 'false'}
+          title="Weighted Moving Average 20 (server-computed)">
+          <span class="ind-dot" style="background:#34d399"></span>WMA
+          {#if indicatorLoading && showWMA}<span class="ind-spin"></span>{/if}
+        </button>
+        <button class="ind-btn" class:active={showDonchian} onclick={toggleDonchian} aria-pressed={showDonchian ? 'true' : 'false'}
+          title="Donchian Channel 20 (server-computed)">
+          <span class="ind-dot" style="background:#38bdf8"></span>DC
+          {#if indicatorLoading && showDonchian}<span class="ind-spin"></span>{/if}
+        </button>
+        <button class="ind-btn" class:active={showKeltner} onclick={toggleKeltner} aria-pressed={showKeltner ? 'true' : 'false'}
+          title="Keltner Channel 20/2 (server-computed)">
+          <span class="ind-dot" style="background:#c084fc"></span>KC
+          {#if indicatorLoading && showKeltner}<span class="ind-spin"></span>{/if}
+        </button>
       </div>
 
       <!-- Indicators: sub-pane -->
@@ -1073,6 +1454,38 @@
           <span class="ind-dot" style="background:#2196f3"></span>MACD
           {#if indicatorLoading && showMACD}<span class="ind-spin"></span>{/if}
         </button>
+      </div>
+
+      <!-- More indicators: oscillator sub-pane picker -->
+      <div class="ind-group ind-picker" aria-label="Add oscillator sub-pane">
+        <button class="ind-btn" onclick={() => (indPickerOpen = !indPickerOpen)}
+          aria-expanded={indPickerOpen ? 'true' : 'false'} aria-haspopup="menu"
+          title="Add an oscillator sub-pane (Stoch, Williams %R, CCI, OBV, ADX)">+ IND</button>
+        {#if indPickerOpen}
+          <div class="ind-menu" role="menu">
+            {#each oscillatorCatalog as m (m.id)}
+              <button class="ind-menu-item" role="menuitem"
+                onclick={() => addOscillator(m)}
+                disabled={activeOscillators.some((x) => x.id === m.id)}>{m.label}</button>
+            {:else}
+              <span class="ind-menu-empty">loading…</span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Indicator presets -->
+      <div class="ind-group ind-picker" aria-label="Indicator presets">
+        <button class="ind-btn" onclick={() => (presetMenuOpen = !presetMenuOpen)}
+          aria-expanded={presetMenuOpen ? 'true' : 'false'} aria-haspopup="menu"
+          title="Apply an indicator preset layout">☰ Presets</button>
+        {#if presetMenuOpen}
+          <div class="ind-menu" role="menu">
+            {#each INDICATOR_PRESETS as p (p.id)}
+              <button class="ind-menu-item" role="menuitem" onclick={() => applyPreset(p)}>{p.label}</button>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <!-- Quick picks -->
@@ -1096,6 +1509,11 @@
         aria-label="Toggle drawing tools"
         aria-pressed={drawingActive ? 'true' : 'false'}
       >✏️ Draw</button>
+
+      <!-- Log/linear price scale -->
+      <button class="ind-btn" class:active={logScale} onclick={toggleLogScale}
+        title="Toggle logarithmic price scale" aria-pressed={logScale ? 'true' : 'false'}
+      >{logScale ? 'Log' : 'Lin'}</button>
 
       <!-- Screenshot / export -->
       <button
@@ -1141,6 +1559,28 @@
             <span>Loading {symbol} · {interval}…</span>
           </div>
         {/if}
+        {#if !loading && candles.length === 0}
+          <div class="chart-overlay">
+            <EmptyState
+              icon={barsError ? '⚠️' : '∅'}
+              title={barsError ? 'Failed to load data' : 'No data'}
+              variant={barsError ? 'error' : 'default'}
+              hint={barsError
+                ? `Couldn't reach the bars service for ${apiSymbol} · ${interval}.`
+                : `No stored candles for ${apiSymbol} · ${interval}. Live ticks will populate as they arrive.`}
+            />
+          </div>
+        {/if}
+        {#if hoverBar}
+          <div class="ohlc-readout" aria-hidden="true">
+            <span class="k">O</span><span class="v">{fmtP(hoverBar.o)}</span>
+            <span class="k">H</span><span class="v">{fmtP(hoverBar.h)}</span>
+            <span class="k">L</span><span class="v">{fmtP(hoverBar.l)}</span>
+            <span class="k">C</span><span class="v">{fmtP(hoverBar.c)}</span>
+            <span class="chg" class:up={hoverBar.chg >= 0} class:down={hoverBar.chg < 0}
+              >{hoverBar.chg >= 0 ? '+' : ''}{hoverBar.chg.toFixed(2)}%</span>
+          </div>
+        {/if}
       </div>
 
       <!-- RSI sub-pane -->
@@ -1163,6 +1603,19 @@
           <div class="pane-chart" bind:this={macdChartEl}></div>
         </div>
       {/if}
+
+      <!-- Generic oscillator sub-panes (picker-driven) -->
+      {#each activeOscillators as osc (osc.id)}
+        <IndicatorPane
+          {symbol}
+          {interval}
+          id={osc.id}
+          label={osc.label}
+          keys={osc.keys}
+          mainChart={chart}
+          onremove={() => removeOscillator(osc.id)}
+        />
+      {/each}
     </div>
   </div>
 </div>
@@ -1268,6 +1721,66 @@
     padding-left: 8px;
     border-left: 1px solid var(--b1);
   }
+  .ind-picker {
+    position: relative;
+  }
+  .ind-menu {
+    position: absolute;
+    top: 100%;
+    left: 8px;
+    z-index: 20;
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    min-width: 150px;
+    padding: 4px;
+    background: var(--bg2, #0c0f14);
+    border: 1px solid var(--b2, #1a1a2e);
+    border-radius: var(--r, 4px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  }
+  .ind-menu-item {
+    all: unset;
+    cursor: pointer;
+    padding: 5px 8px;
+    font-size: 11px;
+    color: var(--t2, #b8c0e0);
+    border-radius: var(--r, 4px);
+    white-space: nowrap;
+  }
+  .ind-menu-item:hover:not(:disabled) {
+    background: var(--bg3, #161b24);
+    color: var(--t1, #e6e9f5);
+  }
+  .ind-menu-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .ind-menu-empty {
+    padding: 5px 8px;
+    font-size: 10px;
+    color: var(--t3, #8890b8);
+  }
+  .ohlc-readout {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    font-size: 10px;
+    background: rgba(7, 7, 13, 0.72);
+    border: 1px solid var(--b1, #1a1a2e);
+    border-radius: var(--r, 4px);
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .ohlc-readout .k { color: var(--t3, #8890b8); }
+  .ohlc-readout .v { color: var(--t1, #e6e9f5); margin-right: 3px; }
+  .ohlc-readout .chg.up { color: var(--green, #16c784); }
+  .ohlc-readout .chg.down { color: var(--red, #ea3943); }
   .ind-btn {
     all: unset;
     display: flex;

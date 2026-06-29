@@ -5,6 +5,7 @@
   import StatCard from '$components/ui/StatCard.svelte';
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
+  import EmptyState from '$components/ui/EmptyState.svelte';
   import { fmtDollar, fmtPct, fmtFixed, fmtDateTime } from '$lib/utils/format';
 
   // ─── Types ──────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@
   async function fetchPerformance() {
     perfError = '';
     try {
-      perf = await api<Performance>('/api/performance');
+      perf = await api.get<Performance>('/api/performance');
     } catch (e: any) {
       perfError = e.message ?? 'Failed';
     } finally {
@@ -64,7 +65,7 @@
   async function fetchTrades() {
     tradesError = '';
     try {
-      const data = await api<TradesResponse>('/api/trades');
+      const data = await api.get<TradesResponse>('/api/trades');
       trades = data.trades ?? [];
     } catch (e: any) {
       tradesError = e.message ?? 'Failed';
@@ -81,7 +82,7 @@
 
   interface MetricCard { label: string; value: string; sub?: string; color?: string }
 
-  let metricCards = $derived<MetricCard[]>(() => {
+  let metricCards = $derived.by<MetricCard[]>(() => {
     if (!perf) return [];
     const p = perf;
     const pnl = p.total_pnl ?? 0;
@@ -132,7 +133,7 @@
         {/each}
       </div>
     {:else if perfError}
-      <p class="err-text">{perfError}</p>
+      <EmptyState icon="⚠️" title="Couldn't load performance" variant="error" hint={perfError} />
     {:else}
       <div class="metrics-grid">
         {#each metricCards as card}
@@ -155,9 +156,9 @@
         {/each}
       </div>
     {:else if tradesError}
-      <p class="err-text">{tradesError}</p>
+      <EmptyState icon="⚠️" title="Couldn't load trades" variant="error" hint={tradesError} />
     {:else if trades.length === 0}
-      <p class="empty">No trades yet.</p>
+      <EmptyState icon="∅" title="No trades yet" hint="Closed trades will appear here once the brain executes." />
     {:else}
       <div class="table-wrap">
         <table>
@@ -289,6 +290,4 @@
     gap: 6px;
     padding: 8px;
   }
-  .empty    { padding: 20px; font-size: 11px; color: var(--t3); }
-  .err-text { font-size: 11px; color: var(--red); padding: 12px; }
 </style>
