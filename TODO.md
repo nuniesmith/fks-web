@@ -1,7 +1,21 @@
 # fks-web — TODO
 
-> **Repo:** `github.com/nuniesmith/fks-web`
-> **Last synced from master todo:** 2026-04-03
+> **Repo (future):** `github.com/nuniesmith/fks-web`
+> **Today's path:** `fks-full/src/web/`
+> **Last synced:** 2026-05-14
+
+---
+
+## P0 — Codebase health
+
+- [x] **29 pre-existing `npm run check` type errors** were closed by the
+      "ci: add web + python CI workflows; fix all web type errors"
+      commit. The two warnings that remained — a layout `setContext`
+      "state_referenced_locally" gripe and a `<button>`-inside-`<button>`
+      hydration warning on the tasks page — were closed by wrapping the
+      context value in `untrack(() => …)` and refactoring the task row
+      to a `role="button"` div with keyboard handlers. `npm run check`
+      now reports 0 errors, 0 warnings across 270 files.
 
 ---
 

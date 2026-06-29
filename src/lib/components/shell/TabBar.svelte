@@ -20,78 +20,114 @@
 
     // ── Static nav groups ─────────────────────────────────────────────────
 
+    // Only janus/Prometheus/QuestDB-backed pages are listed. The Ruby-only tabs
+    // (news, crypto, dom, paper, sims, positions, analysis, chains, data, backup)
+    // were pruned from the nav in the WebUI→janus repoint (Phase 4) and their
+    // route dirs have since been removed. `journal` + `db` are the exception —
+    // kept as URL-routable shells (decision A1) but deliberately off the nav.
     const staticGroups: Group[] = [
         {
             label: "Markets",
             color: "var(--cyan, #00e5ff)",
             tabs: [
-                { id: "overview", label: "Overview", dot: "var(--cyan)",  key: "1", href: "/" },
-                { id: "charts",   label: "Charts",                        key: "2", href: "/charts" },
-                { id: "news",     label: "News",                          key: "3", href: "/news" },
-                { id: "crypto",   label: "Crypto",   dot: "var(--amber)", key: "4", href: "/crypto" },
+                {
+                    id: "overview",
+                    label: "Overview",
+                    dot: "var(--cyan)",
+                    key: "1",
+                    href: "/",
+                },
+                { id: "charts", label: "Charts", key: "2", href: "/charts" },
             ],
         },
         {
             label: "Trading",
             color: "var(--green, #16c784)",
             tabs: [
-                { id: "trading",     label: "Trading",  dot: "var(--green)", key: "5", href: "/trading" },
-                { id: "dom",         label: "DOM",       dot: "var(--amber)", key: "6", href: "/dom" },
-                { id: "paper",       label: "Paper",     dot: "var(--cyan)",  key: "7", href: "/paper" },
-                { id: "simulations", label: "Sims",      dot: "var(--teal)",  key: "8", href: "/simulations" },
-                { id: "positions",   label: "Positions", dot: "var(--green)", key: "9", href: "/positions" },
-                { id: "journal",     label: "Journal",                        key: "0", href: "/journal" },
-                { id: "signals",     label: "Signals",   dot: "var(--amber)",            href: "/signals" },
-                { id: "performance", label: "Perf",                                      href: "/performance" },
+                {
+                    id: "trading",
+                    label: "Trading",
+                    dot: "var(--green)",
+                    key: "3",
+                    href: "/trading",
+                },
+                {
+                    id: "signals",
+                    label: "Signals",
+                    dot: "var(--amber)",
+                    key: "4",
+                    href: "/signals",
+                },
+                { id: "performance", label: "Perf", key: "5", href: "/performance" },
             ],
         },
         {
             label: "Analysis",
             color: "var(--purple, #b388ff)",
             tabs: [
-                { id: "analysis", label: "Analysis", dot: "var(--purple)", shiftKey: "1", href: "/analysis" },
-                { id: "chains",   label: "Chains",   dot: "var(--purple)", shiftKey: "2", href: "/chains" },
-                { id: "janus-ai", label: "Janus AI", dot: "var(--green)",  shiftKey: "3", href: "/janus-ai" },
-                { id: "trainer",  label: "Trainer",  dot: "var(--purple)", shiftKey: "4", href: "/trainer" },
-                { id: "docs",     label: "Docs",                           shiftKey: "5", href: "/docs" },
+                {
+                    id: "janus-ai",
+                    label: "Janus AI",
+                    dot: "var(--green)",
+                    key: "6",
+                    href: "/janus-ai",
+                },
+                { id: "docs", label: "Docs", shiftKey: "1", href: "/docs" },
             ],
         },
     ];
 
     /**
-     * Build one tab list per registered workspace.
-     * CNN and Tasks tabs are always included; the page itself shows a
-     * "not configured" message when the workspace doesn't support them.
+     * Build the tab list for a registered workspace.
+     *
+     * Seed scaffold only — Dashboard + Signals. The PnL / Trades / CNN / Logs /
+     * Tasks / Assets / Reports sub-tabs were dropped when the Ruby
+     * `/[workspace]/*` routes were removed in the janus migration; re-add each
+     * here as the matching janus-backed `/[workspace]/<view>` route lands.
+     * (Dead today — `WORKSPACES` is empty, so this never runs.)
      */
     function workspaceTabs(id: string): Tab[] {
         return [
-            { id: `${id}-dash`,      label: "Dashboard", dot: "var(--amber)", href: `/${id}` },
-            { id: `${id}-signals`,   label: "Signals",   dot: "var(--green)", href: `/${id}/signals` },
-            { id: `${id}-pnl`,       label: "PnL",                            href: `/${id}/pnl` },
-            { id: `${id}-trades`,    label: "Trades",                          href: `/${id}/trades` },
-            { id: `${id}-cnn`,       label: "CNN",        dot: "var(--purple)", href: `/${id}/cnn` },
-            { id: `${id}-logging`,   label: "Logs",                            href: `/${id}/logging` },
-            { id: `${id}-tasks`,     label: "Tasks",                           href: `/${id}/tasks` },
-            { id: `${id}-assets`,    label: "Assets",                          href: `/${id}/assets` },
-            { id: `${id}-reporting`, label: "Reports",                         href: `/${id}/reporting` },
+            {
+                id: `${id}-dash`,
+                label: "Dashboard",
+                dot: "var(--amber)",
+                href: `/${id}`,
+            },
+            {
+                id: `${id}-signals`,
+                label: "Signals",
+                dot: "var(--green)",
+                href: `/${id}/signals`,
+            },
         ];
     }
 
     const workspaceGroups: Group[] = workspaceList.map((ws) => ({
         label: ws.label,
         color: ws.color,
-        tabs:  workspaceTabs(ws.id),
+        tabs: workspaceTabs(ws.id),
     }));
 
     const systemGroup: Group = {
         label: "System",
         color: "var(--t3, #555)",
         tabs: [
-            { id: "settings",   label: "Settings",  href: "/settings" },
-            { id: "data",       label: "Data",       href: "/data" },
-            { id: "db",         label: "DB",         dot: "var(--purple)", href: "/db" },
-            { id: "monitoring", label: "Monitoring", dot: "var(--purple)", href: "/monitoring" },
-            { id: "backup",     label: "Backup",     href: "/backup" },
+            { id: "settings", label: "Settings", key: "7", href: "/settings" },
+            {
+                id: "monitoring",
+                label: "Monitoring",
+                dot: "var(--purple)",
+                key: "8",
+                href: "/monitoring",
+            },
+            {
+                id: "bots",
+                label: "Bots",
+                dot: "var(--cyan)",
+                key: "9",
+                href: "/bots",
+            },
         ],
     };
 
@@ -99,8 +135,8 @@
 
     // ── Active-state helpers ──────────────────────────────────────────────
 
-    const allTabs      = groups.flatMap((g) => g.tabs);
-    const wsDashHrefs  = new Set(workspaceList.map((ws) => `/${ws.id}`));
+    const allTabs = groups.flatMap((g) => g.tabs);
+    const wsDashHrefs = new Set(workspaceList.map((ws) => `/${ws.id}`));
 
     let currentPath = $derived($page.url.pathname);
 
@@ -122,19 +158,28 @@
         const digit = e.code.startsWith("Digit") ? e.code.slice(5) : null;
 
         if (e.shiftKey) {
-            const tab = digit ? allTabs.find((t) => t.shiftKey === digit) : undefined;
-            if (tab) { e.preventDefault(); goto(tab.href); }
+            const tab = digit
+                ? allTabs.find((t) => t.shiftKey === digit)
+                : undefined;
+            if (tab) {
+                e.preventDefault();
+                goto(tab.href);
+            }
         } else {
             const tab =
                 allTabs.find((t) => t.key === e.key) ??
                 (digit ? allTabs.find((t) => t.key === digit) : undefined);
-            if (tab) { e.preventDefault(); goto(tab.href); }
+            if (tab) {
+                e.preventDefault();
+                goto(tab.href);
+            }
         }
     }
 
     $effect(() => {
         document.addEventListener("keydown", handleKeydown, true);
-        return () => document.removeEventListener("keydown", handleKeydown, true);
+        return () =>
+            document.removeEventListener("keydown", handleKeydown, true);
     });
 </script>
 
@@ -144,7 +189,11 @@
             <div class="group-sep" aria-hidden="true"></div>
         {/if}
         <div class="group" role="group" aria-label="{group.label} workspaces">
-            <span class="group-lbl" aria-hidden="true" style="color: {group.color}">{group.label}</span>
+            <span
+                class="group-lbl"
+                aria-hidden="true"
+                style="color: {group.color}">{group.label}</span
+            >
             {#each group.tabs as tab}
                 <a
                     class="tab"
@@ -160,7 +209,9 @@
                     {#if tab.key}
                         <kbd class="shortcut" aria-hidden="true">{tab.key}</kbd>
                     {:else if tab.shiftKey}
-                        <kbd class="shortcut" aria-hidden="true">⇧{tab.shiftKey}</kbd>
+                        <kbd class="shortcut" aria-hidden="true"
+                            >⇧{tab.shiftKey}</kbd
+                        >
                     {/if}
                 </a>
             {/each}
@@ -181,7 +232,9 @@
         flex-shrink: 0;
         scrollbar-width: none;
     }
-    .tabbar::-webkit-scrollbar { display: none; }
+    .tabbar::-webkit-scrollbar {
+        display: none;
+    }
 
     .group {
         display: flex;
@@ -221,13 +274,26 @@
         text-decoration: none;
         white-space: nowrap;
         border-bottom: 2px solid transparent;
-        transition: color 0.15s, border-color 0.15s;
+        transition:
+            color 0.15s,
+            border-color 0.15s;
         cursor: pointer;
     }
-    .tab:hover  { color: var(--t1); background: var(--bg3); }
-    .tab.active { color: var(--t1); border-bottom-color: var(--accent); }
+    .tab:hover {
+        color: var(--t1);
+        background: var(--bg3);
+    }
+    .tab.active {
+        color: var(--t1);
+        border-bottom-color: var(--accent);
+    }
 
-    .dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
 
     .shortcut {
         font-size: 8px;
