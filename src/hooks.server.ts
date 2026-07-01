@@ -136,12 +136,22 @@ async function janusJson(event: RequestEvent, base: string, path: string): Promi
 }
 
 // janus recent signals — { symbol, signal_type, confidence, timestamp }[].
-// Sourced from /api/dashboard/signals/summary.recent_signals.
+// Sourced from the live /api/signals/latest feed (populated by janus's
+// SignalBus→Redis persistence). The old /api/dashboard/signals/summary
+// .recent_signals path returned empty on the running stack, so the /signals
+// page and the overview recent-signals panel (both consumers of this helper)
+// showed nothing despite live signals flowing.
 async function janusRecentSignals(
   event: RequestEvent,
 ): Promise<{ symbol?: string; signal_type?: string; confidence?: number; timestamp?: string }[]> {
-  const j = await janusJson(event, JANUS_URL, "/api/dashboard/signals/summary");
-  return Array.isArray(j?.recent_signals) ? j.recent_signals : [];
+  const j = await janusJson(event, JANUS_URL, "/api/signals/latest");
+  const arr = Array.isArray(j) ? j : Array.isArray(j?.signals) ? j.signals : [];
+  return arr.map((s: Record<string, unknown>) => ({
+    symbol: s.symbol as string | undefined,
+    signal_type: s.signal_type as string | undefined,
+    confidence: s.confidence as number | undefined,
+    timestamp: s.timestamp as string | undefined,
+  }));
 }
 
 // /api/health → reshape janus /health into the StatusBar's flat {redis,janus,feed}.
