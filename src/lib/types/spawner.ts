@@ -72,6 +72,13 @@ export interface SpawnRequest {
   memory_limit_mb?: number;
   cmd?: string[];
   entrypoint?: string[];
+  /**
+   * Exchanges whose stored credentials (submitted via /settings) the spawner
+   * injects into the container env as `{EXCHANGE}_API_KEY/_API_SECRET`
+   * (+ `_API_PASSPHRASE` when stored). The spawn fails with 400 if an
+   * exchange has no stored credentials.
+   */
+  secrets?: string[];
 }
 
 /** Response body for `POST /spawn` (HTTP 201). */
