@@ -20,7 +20,7 @@
     import { onMount } from "svelte";
     import { createPoll } from "$stores/poll";
     import { spawner } from "$api/spawner";
-    import { ApiError } from "$api/client";
+    import { ApiError, api } from "$api/client";
     import Panel from "$components/ui/Panel.svelte";
     import Badge from "$components/ui/Badge.svelte";
     import Skeleton from "$components/ui/Skeleton.svelte";
@@ -63,6 +63,35 @@
     let submitting = $state(false);
     let feedback = $state<{ msg: string; ok: boolean } | null>(null);
 
+    // ─── Spawn-time secrets injection ────────────────────────────────────
+    // Checked exchanges are sent as SpawnRequest.secrets; the spawner injects
+    // the stored (encrypted-at-rest) credentials into the container env and
+    // fails the spawn if an exchange has no stored keys. `configured` mirrors
+    // the /settings status endpoints so the labels show which are available.
+    const secretExchanges = ["kraken", "kucoin", "cryptocom"] as const;
+    let spawnSecrets = $state<Record<string, boolean>>({
+        kraken: false,
+        kucoin: false,
+        cryptocom: false,
+    });
+    let secretsConfigured = $state<Record<string, boolean | null>>({
+        kraken: null,
+        kucoin: null,
+        cryptocom: null,
+    });
+    async function loadSecretsConfigured() {
+        for (const ex of secretExchanges) {
+            try {
+                const res = await api.get<{ configured?: boolean }>(
+                    `/api/settings/${ex}-status`,
+                );
+                secretsConfigured[ex] = res?.configured ?? false;
+            } catch {
+                secretsConfigured[ex] = null;
+            }
+        }
+    }
+
     function parseEnv(text: string): Record<string, string> {
         const out: Record<string, string> = {};
         for (const line of text.split("\n")) {
@@ -85,6 +114,7 @@
         try {
             const cpu = spawnCpu.trim() ? Number(spawnCpu) : undefined;
             const mem = spawnMem.trim() ? Number(spawnMem) : undefined;
+            const secrets = secretExchanges.filter((ex) => spawnSecrets[ex]);
             const res = await spawner.spawn({
                 image: spawnImage.trim(),
                 bot_id: spawnBotId.trim() || undefined,
@@ -92,6 +122,7 @@
                 env: parseEnv(spawnEnvText),
                 cpu_limit: Number.isFinite(cpu) ? cpu : undefined,
                 memory_limit_mb: Number.isFinite(mem) ? mem : undefined,
+                secrets: secrets.length > 0 ? secrets : undefined,
             });
             feedback = {
                 msg: `Spawned ${res.container_name} (${res.container_id})`,
@@ -412,6 +443,7 @@
         containersPoll.start();
         runsPoll.start();
         loadConfigs();
+        loadSecretsConfigured();
         return () => {
             containersPoll.stop();
             runsPoll.stop();
@@ -534,6 +566,27 @@
                         placeholder="EXCHANGE=kucoin&#10;ASSET=BTC-USDT"
                     ></textarea>
                 </label>
+
+                <div class="field">
+                    <span class="lbl">Inject exchange API keys</span>
+                    <div class="secrets-row">
+                        {#each secretExchanges as ex (ex)}
+                            <label class="secret-check">
+                                <input type="checkbox" bind:checked={spawnSecrets[ex]} />
+                                <span>{ex}</span>
+                                {#if secretsConfigured[ex] === true}
+                                    <span class="secret-state ok">keys stored</span>
+                                {:else if secretsConfigured[ex] === false}
+                                    <span class="secret-state none">no keys</span>
+                                {/if}
+                            </label>
+                        {/each}
+                    </div>
+                    <span class="help">
+                        Injects stored credentials (from Settings) into the container env
+                        as EXCHANGE_API_KEY/_API_SECRET. Spawn fails if keys aren't stored.
+                    </span>
+                </div>
 
                 <button
                     class="btn run"
@@ -880,6 +933,32 @@
         font-size: 9px;
         color: var(--t3);
         line-height: 1.3;
+    }
+    .secrets-row {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+    }
+    .secret-check {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        color: var(--t2);
+        cursor: pointer;
+    }
+    .secret-state {
+        font-size: 9px;
+        padding: 1px 5px;
+        border-radius: 3px;
+    }
+    .secret-state.ok {
+        color: var(--green, #16c784);
+        background: color-mix(in srgb, var(--green, #16c784) 12%, transparent);
+    }
+    .secret-state.none {
+        color: var(--t3);
+        background: var(--bg2, #161b24);
     }
     .inp,
     .sel {
