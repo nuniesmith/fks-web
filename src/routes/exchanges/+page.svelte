@@ -94,6 +94,7 @@
           <Panel title={v.exchange}>
             <div class="venue-head">
               <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
+              <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
               <span class="venue-total">{usd(v.total_value)}</span>
             </div>
             <div class="venue-meta">
@@ -186,6 +187,13 @@
     font-size: 1.15rem;
     font-weight: 600;
     color: var(--t1);
+  }
+  .detail-link {
+    margin-right: auto;
+    margin-left: 10px;
+    font-size: 0.78rem;
+    color: var(--cyan, #22d3ee);
+    text-decoration: none;
   }
   .venue-meta {
     display: flex;

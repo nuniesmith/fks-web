@@ -62,6 +62,28 @@ export interface BotStatus {
   recent_events: unknown[];
 }
 
+/**
+ * One entry of `recent_events` (loose: spot and futures bots push different
+ * shapes). Spot rebalance fills: `{ event: "rebalance_trade", venue, live,
+ * asset, side, volume, usd, price, ts }`. Futures paper records use
+ * `{ action: "entry"|"exit"|…, sym, … }`. `ts` (epoch secs) is stamped by
+ * the bot's push_event.
+ */
+export interface TradeEvent {
+  event?: string;
+  action?: string;
+  venue?: string;
+  asset?: string;
+  sym?: string;
+  side?: string;
+  volume?: number;
+  usd?: number;
+  price?: number;
+  live?: boolean;
+  ts?: number;
+  [key: string]: unknown;
+}
+
 /** Response of the adapter's GET /api/exchanges/status. */
 export interface ExchangesStatus {
   spot: BotStatus | null;
