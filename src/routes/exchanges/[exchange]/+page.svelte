@@ -1,0 +1,201 @@
+<script lang="ts">
+  /**
+   * /exchanges/[exchange] — one venue in detail: balances, holdings vs
+   * targets, drift, last rebalance, and the recent rebalance-trade events for
+   * this venue. Same 10s poll of /api/exchanges/status as the overview; the
+   * venue and its events are selected client-side.
+   */
+  import { page } from '$app/stores';
+  import Panel from '$lib/components/ui/Panel.svelte';
+  import Badge from '$lib/components/ui/Badge.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import StatCard from '$lib/components/ui/StatCard.svelte';
+  import { createPoll } from '$lib/stores/poll';
+  import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
+  import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
+
+  const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  $effect(() => {
+    status.start();
+    return () => status.stop();
+  });
+
+  let exchange = $derived($page.params.exchange ?? '');
+
+  /** The venue, wherever it lives (spot bot venues first, then futures). */
+  let venue = $derived(
+    [...($status?.spot?.exchanges ?? []), ...($status?.funding?.exchanges ?? [])].find(
+      (v) => v.exchange === exchange,
+    ) ?? null,
+  );
+
+  /** This venue's recent trade events, newest first. */
+  let events = $derived(
+    ([...(($status?.spot?.recent_events as TradeEvent[] | undefined) ?? [])]
+      .filter((e) => e.venue === exchange)
+      .reverse()),
+  );
+
+  function usd(n: number): string {
+    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  function modeVariant(mode: string): 'green' | 'cyan' | 'amber' {
+    if (mode === 'live') return 'green';
+    if (mode === 'paper') return 'amber';
+    return 'cyan';
+  }
+
+  function epochLabel(secs: number | undefined | null): string {
+    if (!secs) return '—';
+    return fmtTime(new Date(secs * 1000).toISOString());
+  }
+</script>
+
+<svelte:head>
+  <title>{exchange} — Exchanges — FKS Terminal</title>
+</svelte:head>
+
+<div class="detail-page">
+  <div class="crumbs">
+    <a href="/exchanges">← Exchanges</a>
+  </div>
+
+  {#if !$status}
+    <EmptyState icon="⏳" title="Loading venue status…" />
+  {:else if !venue}
+    <EmptyState
+      icon="🛰"
+      title={`No status for "${exchange}"`}
+      hint="The bots report venues by exchange id (e.g. kraken, kucoin, cryptocom). Check the /exchanges overview for the venues currently reporting."
+    />
+  {:else}
+    <div class="head-row">
+      <h2 class="venue-name">{venue.exchange}</h2>
+      <Badge variant={modeVariant(venue.mode)}>{venue.mode}</Badge>
+      {#if venue.triggered}
+        <Badge variant="amber">rebalance triggered</Badge>
+      {/if}
+    </div>
+
+    <div class="stat-row">
+      <StatCard label="Total value" value={usd(venue.total_value)} color="cyan" />
+      <StatCard label={`Cash (${venue.cash_asset})`} value={fmtFixed(venue.cash)} />
+      <StatCard
+        label="Max drift"
+        value={fmtPct(venue.max_drift * 100)}
+        color={venue.max_drift >= 0.25 ? 'amber' : 'default'}
+      />
+      <StatCard label="Last rebalance" value={epochLabel(venue.last_rebalance)} />
+    </div>
+
+    <Panel title="Holdings vs targets">
+      {#if venue.holdings.length > 0}
+        <table class="tbl">
+          <thead>
+            <tr><th>Asset</th><th>Qty</th><th>Price</th><th>Value</th><th>Weight</th><th>Target</th><th>Δ</th></tr>
+          </thead>
+          <tbody>
+            {#each venue.holdings as h (h.asset)}
+              <tr>
+                <td>{h.asset}</td>
+                <td>{fmtFixed(h.qty, 6)}</td>
+                <td>{usd(h.price)}</td>
+                <td>{usd(h.value)}</td>
+                <td>{fmtPct(h.weight * 100)}</td>
+                <td>{fmtPct(h.target_weight * 100)}</td>
+                <td class:neg={Math.abs(h.weight - h.target_weight) >= 0.25}>
+                  {fmtPct((h.weight - h.target_weight) * 100)}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="dim">No holdings (cash only).</p>
+      {/if}
+      <p class="dim">Snapshot updated {epochLabel(venue.updated)}.</p>
+    </Panel>
+
+    <Panel title="Recent rebalance trades">
+      {#if events.length > 0}
+        <table class="tbl">
+          <thead>
+            <tr><th>Time</th><th>Side</th><th>Asset</th><th>Volume</th><th>Price</th><th>USD</th><th>Mode</th></tr>
+          </thead>
+          <tbody>
+            {#each events as e, i (e.ts ?? i)}
+              <tr>
+                <td>{epochLabel(e.ts)}</td>
+                <td class:pos={e.side === 'Buy'} class:neg={e.side === 'Sell'}>{e.side ?? '—'}</td>
+                <td>{e.asset ?? '—'}</td>
+                <td>{fmtFixed(e.volume ?? null, 6)}</td>
+                <td>{e.price != null ? usd(e.price) : '—'}</td>
+                <td>{e.usd != null ? usd(e.usd) : '—'}</td>
+                <td>{e.live ? 'live' : 'dry-run'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="dim">No rebalance trades for this venue in the bot's recent-event window.</p>
+      {/if}
+    </Panel>
+  {/if}
+</div>
+
+<style>
+  .detail-page {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+  }
+  .crumbs a {
+    color: var(--cyan, #22d3ee);
+    text-decoration: none;
+    font-size: 0.85rem;
+  }
+  .head-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .venue-name {
+    margin: 0;
+    font-size: 1.2rem;
+    text-transform: capitalize;
+    color: var(--t1);
+  }
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+  }
+  table.tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  table.tbl th {
+    text-align: left;
+    color: var(--t2, #9aa4b2);
+    font-weight: 500;
+    padding: 3px 8px 3px 0;
+    border-bottom: 1px solid var(--bg3, #1f2530);
+  }
+  table.tbl td {
+    padding: 3px 8px 3px 0;
+    border-bottom: 1px solid var(--bg2, #161b24);
+  }
+  .dim {
+    color: var(--t3, #6b7280);
+    font-size: 0.8rem;
+  }
+  .pos {
+    color: var(--green, #16c784);
+  }
+  .neg {
+    color: var(--red, #ea3943);
+  }
+</style>
