@@ -583,13 +583,16 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
     return event.request.method === "POST" ? riskConfigPost(event) : riskConfigGet(event);
   }
 
-  // /settings Kraken API keys → spawner secret store (browser submits only;
-  // GET reports only whether keys are configured, never the secrets).
-  if (pathname === "/api/settings/kraken-keys") {
-    return exchangeKeysPost(event, "kraken");
-  }
-  if (pathname === "/api/settings/kraken-status") {
-    return exchangeKeysStatus(event, "kraken");
+  // /settings exchange API keys → spawner secret store (browser submits only;
+  // -status reports only whether keys are configured, never the secrets).
+  // Generic across the venues the crypto bots trade: Kraken, KuCoin (+
+  // passphrase), Crypto.com.
+  const exchangeKeysMatch = /^\/api\/settings\/(kraken|kucoin|cryptocom)-(keys|status)$/.exec(
+    pathname,
+  );
+  if (exchangeKeysMatch) {
+    const [, exch, kind] = exchangeKeysMatch;
+    return kind === "keys" ? exchangeKeysPost(event, exch) : exchangeKeysStatus(event, exch);
   }
   // /performance trade history — janus has no closed-trade ledger here; the
   // demo bot keeps fills on its MockExchange. Honest empty until that's exposed.

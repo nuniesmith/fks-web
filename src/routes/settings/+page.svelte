@@ -46,16 +46,41 @@
     message: string;
   }
 
-  // ─── Kraken Keys State ─────────────────────────────────────────────
-  let krakenKey = $state('');
-  let krakenSecret = $state('');
-  let krakenSaving = $state(false);
+  // ─── Exchange Keys State (Kraken / KuCoin / Crypto.com) ─────────────
+  // One data-driven block per exchange; all share the generic
+  // /api/settings/{exchange}-keys|-status adapter endpoints (spawner secret
+  // store). The browser only submits keys; it never reads a secret back.
+  type ExchangeId = 'kraken' | 'kucoin' | 'cryptocom';
+  const exchangeDefs: { id: ExchangeId; label: string; passphrase: boolean; testable: boolean }[] = [
+    { id: 'kraken', label: 'Kraken', passphrase: false, testable: true },
+    { id: 'kucoin', label: 'KuCoin', passphrase: true, testable: false },
+    { id: 'cryptocom', label: 'Crypto.com', passphrase: false, testable: false },
+  ];
+  type ExchangeKeysState = {
+    key: string;
+    secret: string;
+    passphrase: string;
+    saving: boolean;
+    feedback: string;
+    feedbackVariant: 'green' | 'red' | 'default';
+    // Whether keys are stored server-side. null = unknown/unreachable.
+    configured: boolean | null;
+  };
+  const emptyKeysState = (): ExchangeKeysState => ({
+    key: '',
+    secret: '',
+    passphrase: '',
+    saving: false,
+    feedback: '',
+    feedbackVariant: 'default',
+    configured: null,
+  });
+  let exKeys = $state<Record<ExchangeId, ExchangeKeysState>>({
+    kraken: emptyKeysState(),
+    kucoin: emptyKeysState(),
+    cryptocom: emptyKeysState(),
+  });
   let krakenTesting = $state(false);
-  let krakenFeedback = $state('');
-  let krakenFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
-  // Whether keys are stored server-side (spawner). null = unknown/unreachable.
-  // The browser only submits keys; it never reads the secret back.
-  let krakenConfigured = $state<boolean | null>(null);
 
   // ─── Risk Controls State (rustrade PortfolioRiskConfig) ─────────────
   let riskDailyLoss = $state(5000);          // max daily loss (USD; shown positive, stored ≤0)
@@ -121,51 +146,57 @@
     return 'default';
   }
 
-  // ─── API: Kraken Keys ─────────────────────────────────────────────
+  // ─── API: Exchange Keys ───────────────────────────────────────────
 
-  async function loadKrakenStatus() {
+  async function loadExchangeStatus(id: ExchangeId) {
     try {
-      const res = await api.get<{ configured?: boolean }>('/api/settings/kraken-status');
-      krakenConfigured = res?.configured ?? false;
+      const res = await api.get<{ configured?: boolean }>(`/api/settings/${id}-status`);
+      exKeys[id].configured = res?.configured ?? false;
     } catch {
-      krakenConfigured = null;
+      exKeys[id].configured = null;
     }
   }
 
-  async function saveKrakenKeys() {
-    krakenSaving = true;
-    krakenFeedback = '';
+  async function saveExchangeKeys(id: ExchangeId) {
+    const s = exKeys[id];
+    s.saving = true;
+    s.feedback = '';
     try {
-      await api.post('/api/settings/kraken-keys', { api_key: krakenKey, api_secret: krakenSecret });
-      krakenFeedback = 'Keys saved ✓';
-      krakenFeedbackVariant = 'green';
+      await api.post(`/api/settings/${id}-keys`, {
+        api_key: s.key,
+        api_secret: s.secret,
+        ...(s.passphrase ? { api_passphrase: s.passphrase } : {}),
+      });
+      s.feedback = 'Keys saved ✓';
+      s.feedbackVariant = 'green';
       // Browser submits then forgets: clear the inputs and refresh the badge.
-      krakenKey = '';
-      krakenSecret = '';
-      loadKrakenStatus();
-      clearFeedbackAfter(v => krakenFeedback = v);
+      s.key = '';
+      s.secret = '';
+      s.passphrase = '';
+      loadExchangeStatus(id);
+      clearFeedbackAfter(v => exKeys[id].feedback = v);
     } catch (err: any) {
-      krakenFeedback = `Error: ${err.message ?? 'Failed to save'}`;
-      krakenFeedbackVariant = 'red';
-      clearFeedbackAfter(v => krakenFeedback = v, 5000);
+      s.feedback = `Error: ${err.message ?? 'Failed to save'}`;
+      s.feedbackVariant = 'red';
+      clearFeedbackAfter(v => exKeys[id].feedback = v, 5000);
     } finally {
-      krakenSaving = false;
+      s.saving = false;
     }
   }
 
   async function testKraken() {
     krakenTesting = true;
-    krakenFeedback = '';
+    exKeys.kraken.feedback = '';
     try {
       const res = await api.get<{ status?: string; message?: string }>('/kraken/health');
-      krakenFeedback = `✓ ${res.status ?? res.message ?? 'Connected'}`;
-      krakenFeedbackVariant = 'green';
+      exKeys.kraken.feedback = `✓ ${res.status ?? res.message ?? 'Connected'}`;
+      exKeys.kraken.feedbackVariant = 'green';
     } catch (err: any) {
-      krakenFeedback = `✗ ${err.message ?? 'Connection failed'}`;
-      krakenFeedbackVariant = 'red';
+      exKeys.kraken.feedback = `✗ ${err.message ?? 'Connection failed'}`;
+      exKeys.kraken.feedbackVariant = 'red';
     } finally {
       krakenTesting = false;
-      clearFeedbackAfter(v => krakenFeedback = v, 5000);
+      clearFeedbackAfter(v => exKeys.kraken.feedback = v, 5000);
     }
   }
 
@@ -288,7 +319,7 @@
     fetchHealth();
     loadJanusConfig();
     loadRisk();
-    loadKrakenStatus();
+    for (const ex of exchangeDefs) loadExchangeStatus(ex.id);
     healthTimer = setInterval(fetchHealth, 15_000);
   });
 
@@ -308,54 +339,77 @@
   <div class="pane pane-left">
 
     <!-- ── Panel: API Connections ─────────────────────────────────── -->
+    <!-- One block per exchange (Kraken / KuCoin / Crypto.com), all backed by
+         the spawner secret store via the generic settings endpoints. KuCoin
+         additionally requires an API passphrase. -->
     <Panel title="API Connections">
-      <!-- Kraken -->
-      <div class="connection-block">
-        <div class="connection-title">Kraken</div>
-        {#if krakenConfigured !== null}
-          <div class="status-display key-status">
-            <span class="status-dot" class:dot-green={krakenConfigured} class:dot-amber={!krakenConfigured}></span>
-            <span class="mono">
-              {krakenConfigured ? 'API keys stored — authenticated path available' : 'No keys — using public/keyless data'}
-            </span>
-          </div>
-        {/if}
-        <div class="form-group">
-          <label class="form-label" for="kraken-api-key">API Key</label>
-          <input
-            id="kraken-api-key"
-            class="form-input"
-            type="password"
-            placeholder="Enter Kraken API key…"
-            bind:value={krakenKey}
-            autocomplete="off"
-          />
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="kraken-api-secret">API Secret</label>
-          <input
-            id="kraken-api-secret"
-            class="form-input"
-            type="password"
-            placeholder="Enter Kraken API secret…"
-            bind:value={krakenSecret}
-            autocomplete="off"
-          />
-        </div>
-        <div class="form-actions">
-          <button class="btn-primary" onclick={saveKrakenKeys} disabled={krakenSaving || (!krakenKey && !krakenSecret)}>
-            {krakenSaving ? 'Saving…' : 'Save Keys'}
-          </button>
-          <button class="btn-ghost" onclick={testKraken} disabled={krakenTesting}>
-            {krakenTesting ? '⏳ Testing…' : '🔌 Test'}
-          </button>
-          {#if krakenFeedback}
-            <span class="feedback" class:feedback-ok={krakenFeedbackVariant === 'green'} class:feedback-err={krakenFeedbackVariant === 'red'}>
-              {krakenFeedback}
-            </span>
+      {#each exchangeDefs as ex (ex.id)}
+        <div class="connection-block">
+          <div class="connection-title">{ex.label}</div>
+          {#if exKeys[ex.id].configured !== null}
+            <div class="status-display key-status">
+              <span class="status-dot" class:dot-green={exKeys[ex.id].configured} class:dot-amber={!exKeys[ex.id].configured}></span>
+              <span class="mono">
+                {exKeys[ex.id].configured ? 'API keys stored — authenticated path available' : 'No keys — using public/keyless data'}
+              </span>
+            </div>
           {/if}
+          <div class="form-group">
+            <label class="form-label" for="{ex.id}-api-key">API Key</label>
+            <input
+              id="{ex.id}-api-key"
+              class="form-input"
+              type="password"
+              placeholder="Enter {ex.label} API key…"
+              bind:value={exKeys[ex.id].key}
+              autocomplete="off"
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="{ex.id}-api-secret">API Secret</label>
+            <input
+              id="{ex.id}-api-secret"
+              class="form-input"
+              type="password"
+              placeholder="Enter {ex.label} API secret…"
+              bind:value={exKeys[ex.id].secret}
+              autocomplete="off"
+            />
+          </div>
+          {#if ex.passphrase}
+            <div class="form-group">
+              <label class="form-label" for="{ex.id}-api-passphrase">API Passphrase</label>
+              <input
+                id="{ex.id}-api-passphrase"
+                class="form-input"
+                type="password"
+                placeholder="Enter {ex.label} API passphrase…"
+                bind:value={exKeys[ex.id].passphrase}
+                autocomplete="off"
+              />
+            </div>
+          {/if}
+          <div class="form-actions">
+            <button
+              class="btn-primary"
+              onclick={() => saveExchangeKeys(ex.id)}
+              disabled={exKeys[ex.id].saving || (!exKeys[ex.id].key && !exKeys[ex.id].secret)}
+            >
+              {exKeys[ex.id].saving ? 'Saving…' : 'Save Keys'}
+            </button>
+            {#if ex.testable}
+              <button class="btn-ghost" onclick={testKraken} disabled={krakenTesting}>
+                {krakenTesting ? '⏳ Testing…' : '🔌 Test'}
+              </button>
+            {/if}
+            {#if exKeys[ex.id].feedback}
+              <span class="feedback" class:feedback-ok={exKeys[ex.id].feedbackVariant === 'green'} class:feedback-err={exKeys[ex.id].feedbackVariant === 'red'}>
+                {exKeys[ex.id].feedback}
+              </span>
+            {/if}
+          </div>
         </div>
-      </div>
+      {/each}
     </Panel>
 
     <!-- ── Panel 3: Risk Controls ─────────────────────────────────── -->
