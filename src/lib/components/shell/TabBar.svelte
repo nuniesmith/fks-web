@@ -59,6 +59,8 @@
                     href: "/signals",
                 },
                 { id: "performance", label: "Perf", key: "5", href: "/performance" },
+                // Crypto bot balances + net worth (no free number-key slots left).
+                { id: "exchanges", label: "Exchanges", href: "/exchanges" },
             ],
         },
         {

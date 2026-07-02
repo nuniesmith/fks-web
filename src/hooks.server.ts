@@ -42,6 +42,14 @@ const JANUS_URL = env.JANUS_INTERNAL_URL ?? "http://fks_janus:8080"; // janus-ap
 const JANUS_FORWARD_URL = env.JANUS_FORWARD_INTERNAL_URL ?? "http://fks_janus:8180"; // forward (brain/risk)
 const PROMETHEUS_URL = env.PROMETHEUS_INTERNAL_URL ?? "http://fks_prometheus:9090"; // /monitoring
 const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /charts OHLC (HTTP query API)
+// Crypto bot status servers (/exchanges page). Defaults are the Phase-2
+// container DNS names (spawner-managed fks-bot-* on fks_network); during the
+// transitional systemd phase set these to the host bridge instead, e.g.
+// http://host.docker.internal:9091 (spot) / :9095 (funding) — the webui
+// container needs extra_hosts host-gateway for that name on Linux. `||` (not
+// ??) so an empty compose passthrough falls back to the defaults.
+const CRYPTO_SPOT_URL = env.CRYPTO_SPOT_INTERNAL_URL || "http://fks-bot-crypto-spot:9091";
+const CRYPTO_FUNDING_URL = env.CRYPTO_FUNDING_INTERNAL_URL || "http://fks-bot-crypto-funding:9091";
 // Futures live-bars SSE bridge (D1). Empty by default → /sse/bars/:sym serves the
 // graceful idle stub (unchanged). Set to a janus SSE base (the symbol is appended
 // as "/<sym>", emitting `event: bar` frames) to pipe futures bars to the chart.
@@ -538,6 +546,20 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
         timestamp: s.timestamp,
         message: s.signal_type,
       })),
+    });
+  }
+
+  // /exchanges page → the crypto bots' /status documents (spot portfolio +
+  // futures funding paper). Each side degrades to null independently so the
+  // page renders whatever is reachable (e.g. only the spot bot running).
+  if (pathname === "/api/exchanges/status") {
+    const [spot, funding] = await Promise.all([
+      janusJson(event, CRYPTO_SPOT_URL, "/status"),
+      janusJson(event, CRYPTO_FUNDING_URL, "/status"),
+    ]);
+    return json({
+      spot: spot && typeof spot === "object" && "bot" in spot ? spot : null,
+      funding: funding && typeof funding === "object" && "bot" in funding ? funding : null,
     });
   }
 
