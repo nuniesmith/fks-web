@@ -145,6 +145,8 @@ export interface SaveConfigRequest {
   cpu_limit?: number;
   memory_mb?: number;
   env?: Record<string, string>;
+  /** Exchanges whose stored credentials the template injects at spawn time. */
+  secrets?: string[];
 }
 
 /** A saved spawn config row from `GET /configs`. */
@@ -156,6 +158,8 @@ export interface BotConfig {
   cpu_limit: number | null;
   memory_mb: number | null;
   env: Record<string, string>;
+  /** Exchanges the template injects at spawn time (may be absent on old rows). */
+  secrets?: string[];
 }
 
 /** `GET /configs` wrapper. When `db_enabled=false` the array is empty. */

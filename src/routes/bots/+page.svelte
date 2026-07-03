@@ -213,6 +213,9 @@
         spawnCpu = c.cpu_limit != null ? String(c.cpu_limit) : "";
         spawnMem = c.memory_mb != null ? String(c.memory_mb) : "";
         spawnEnvText = envToText(c.env);
+        for (const ex of secretExchanges) {
+            spawnSecrets[ex] = (c.secrets ?? []).includes(ex);
+        }
         configName = c.name;
         feedback = null;
     }
@@ -234,6 +237,7 @@
                 cpu_limit: Number.isFinite(cpu) ? cpu : undefined,
                 memory_mb: Number.isFinite(mem) ? mem : undefined,
                 env: parseEnv(spawnEnvText),
+                secrets: secretExchanges.filter((ex) => spawnSecrets[ex]),
             });
             feedback = { msg: `Saved config "${name}"`, ok: true };
             loadConfigs();
