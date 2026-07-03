@@ -112,16 +112,20 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. Bars come from 
 - **`PUBLIC_API_URL`** is currently used as the dev proxy target. Production talks to nginx via relative URLs.
 - **Auth.** Today the WebUI sits behind nginx + Tailscale; nginx injects `X-Internal-Token` on every proxied request. The Svelte side carries no auth. Don't add browser-side credential handling — Tailscale + a single shared token is the policy.
 - **Exchange API keys are submit-only (server-side storage).** The `/settings`
-  form POSTs `{api_key, api_secret}` to `/api/settings/kraken-keys`; the adapter
-  forwards to the spawner's `POST /secrets`, which persists them in Postgres
-  (`ruby_db.exchange_secrets`) behind `X-Internal-Token`. The secret is **never
-  returned** to the browser — `/api/settings/kraken-status` only reports whether
-  keys are configured. This is compatible with the "no browser-credential
-  handling" policy because the browser submits and forgets (inputs are cleared
-  on save). Default operation stays keyless/public; keys only unlock the
-  authenticated `exchange-apiws` order path, which remains behind the execution
-  gate. (Plaintext-at-rest for now — internal/Tailscale-only; pgcrypto is a
-  tracked follow-up.)
+  form covers Kraken, KuCoin (+ passphrase), and Crypto.com; each card POSTs
+  `{api_key, api_secret[, api_passphrase]}` to the generic
+  `/api/settings/{exchange}-keys` route; the adapter forwards to the spawner's
+  `POST /secrets`, which persists them in Postgres (`ruby_db.exchange_secrets`)
+  behind `X-Internal-Token` — **encrypted at rest** (spawner-side
+  ChaCha20-Poly1305 via `SPAWNER_SECRETS_KEY`; fks #161). The secret is **never
+  returned** to the browser — `/api/settings/{exchange}-status` only reports
+  whether keys are configured. This is compatible with the "no
+  browser-credential handling" policy because the browser submits and forgets
+  (inputs are cleared on save). Default operation stays keyless/public; keys
+  only unlock the authenticated `exchange-apiws` order path, which remains
+  behind the execution gate. The `/bots` spawn form can inject stored keys
+  into a spawned bot's env via the `secrets` checkboxes (spawner decrypts at
+  spawn time; fks #162).
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the
@@ -138,9 +142,13 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   adapter reshapers + QuestDB input sanitizers, the formatters, and the
   poll / SSE stores + the api client.
 - **Pages wired:** charts (full indicator set + presets/persistence, crosshair
-  readout, log scale), `/bots` (spawn presets, saved configs, per-bot CPU/mem +
-  uptime, SSE log viewer, run history), signals, performance, janus-ai, settings
-  (risk controls + exchange API-key entry), monitoring — all with consistent
-  `EmptyState` empty/error states.
+  readout, log scale), `/bots` (spawn presets + secrets-injection checkboxes,
+  saved configs, per-bot CPU/mem + uptime, SSE log viewer, run history),
+  signals (live janus feed via `/api/signals/latest`), performance, janus-ai,
+  settings (risk controls + Kraken/KuCoin/Crypto.com API-key entry),
+  monitoring, `/exchanges` + `/exchanges/[exchange]` (crypto-bot balances, net
+  worth, holdings vs targets, recent rebalance trades — reads the bots'
+  `/status` servers via `CRYPTO_SPOT/FUNDING_INTERNAL_URL`) — all with
+  consistent `EmptyState` empty/error states.
 - Phase-by-phase detail lives in
   [`docs/architecture/WEBUI_BUILDOUT_PLAN.md`](../../docs/architecture/WEBUI_BUILDOUT_PLAN.md).
