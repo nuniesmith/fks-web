@@ -10,26 +10,21 @@ This repo contains the FKS WebUI: a 19-workspace SvelteKit 5 application with a 
 
 ```
 src/
-├── routes/              # 19+ workspace pages (SvelteKit file-based routing)
+├── routes/              # workspace pages (SvelteKit file-based routing) — janus-wired
 │   ├── +page.svelte     # Overview — market table, signals, P&L strip
 │   ├── trading/         # Manual trading — chart, order entry, risk calc, signals
-│   ├── charts/          # Full charting — Kraken WS, SSE, multi-TF, indicators
-│   ├── analysis/        # Scoring table, AI briefing, correlation, scanner, checklist
-│   ├── news/            # News feed with SSE push + sentiment + whale alerts
-│   ├── data/            # Data factory coverage, gap scanner, backfill, datasets
+│   ├── charts/          # Full charting (candles_crypto via /bars + /sse/data) + charts/grid
+│   ├── signals/         # Live janus signals feed (/api/signals/latest)
+│   ├── exchanges/       # Crypto-bot balances + net worth (+ exchanges/[exchange] per-venue detail)
+│   ├── bots/            # Spawner control — spawn form (+ secrets checkboxes), saved configs, SSE logs, run history
+│   ├── performance/     # PnL / performance metrics
 │   ├── journal/         # Trade log, analytics, daily notes
 │   ├── monitoring/      # Prometheus proxy, alert feed, PromQL runner
-│   ├── settings/        # Data sources, connections, risk controls, Janus config
-│   ├── chains/          # CMC macro, whale feed, signal correlation, mempool
-│   ├── crypto/          # Kraken spot portfolio, rebalance controls
-│   ├── simulations/     # Paper trading sessions — create, monitor, compare
-│   ├── janus-ai/        # Brain state, strategy affinity, live signals, memories
+│   ├── settings/        # Risk controls + Kraken / KuCoin / Crypto.com API-key entry
+│   ├── janus-ai/        # Brain state, strategy affinity, live signals
 │   ├── db/              # Redis/Postgres/QuestDB/Janus explorer
-│   ├── dom/             # DOM iframe embed
-│   ├── paper/           # Paper trading iframe embed
-│   ├── positions/       # Positions iframe embed
-│   ├── trainer/         # Trainer iframe embed
-│   └── docs/            # Docs viewer iframe embed
+│   ├── docs/            # Docs viewer
+│   └── login/, logout/  # Auth handoff (nginx + Tailscale)
 ├── lib/
 │   ├── components/
 │   │   ├── shell/       # TabBar, Strip (SSE), StatusBar
@@ -95,6 +90,6 @@ Deployed via [fks](https://github.com/nuniesmith/fks). The Dockerfile clones thi
 
 ## Stats
 
-- 19 workspace routes (+ 4 pending: `/futures`, `/bots`, `/accounts`, `/modules`)
-- ~55 Playwright E2E tests
-- 59 `.svelte` + `.ts` files
+- ~14 workspace routes, all janus / Prometheus / QuestDB-wired (the pre-split
+  fks_ruby-era routes were removed; dashboard is served via `hooks.server.ts`)
+- `npm run check` clean (0/0); vitest unit tests + Playwright E2E

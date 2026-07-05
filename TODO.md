@@ -2,7 +2,7 @@
 
 > **Repo (future):** `github.com/nuniesmith/fks-web`
 > **Today's path:** `fks-full/src/web/`
-> **Last synced:** 2026-05-14
+> **Last synced:** 2026-07-04
 
 ---
 
@@ -45,6 +45,15 @@
 - [ ] Add `/futures` to TabBar under **Trading** group
 
 ### SVK-19: Bot Manager — `/bots`
+
+> **SHIPPED (differently than designed below).** `/bots` is live as a
+> **spawner**-backed control page — spawn form with preset images + per-exchange
+> secrets-injection checkboxes, saved-config templates (save/restore incl. the
+> `secrets` list), per-bot CPU/mem + uptime, an SSE log viewer, and run history —
+> talking to the spawner's `/api/spawner/*` + `/api/bots/*`, not the
+> `/api/bots/{id}/metrics` wizard sketched below. The 5-step-wizard /
+> module-pipeline / sim→live-promotion design (SVK-19b/e/f) was **not** built;
+> keep or drop those as future ideas. The core manager is done.
 > Depends on SPAWN-A/B/C in fks repo
 
 - [ ] **SVK-19a:** Header + sidebar — bot list (10s poll), accent border on selected
