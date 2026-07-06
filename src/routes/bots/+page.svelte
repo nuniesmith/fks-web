@@ -158,7 +158,10 @@
                 "DEMO_BRAIN=janus",
                 "DEMO_SOURCE=synthetic",
                 "DEMO_EXCHANGE=mock",
-                "JANUS_HTTP_URL=http://fks_janus:8080",
+                // POST /api/v1/signals/generate lives on the janus FORWARD
+                // service (:8180 in-container) — :8080 is the api service and
+                // 404s every brain call (the bot "holds" forever).
+                "JANUS_HTTP_URL=http://fks_janus:8180",
                 "DEMO_SYMBOLS=XBTUSDTM,ETHUSDTM,SOLUSDTM",
                 "RUST_LOG=info,crypto_demo=debug",
             ].join("\n"),
