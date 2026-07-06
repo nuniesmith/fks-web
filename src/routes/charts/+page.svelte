@@ -255,7 +255,14 @@
     : n.toFixed(5);
 
   // Logarithmic vs linear price scale
-  let logScale = $state(false);
+  // TradingView-style price-scale state (fks_chart_scale in localStorage).
+  // PriceScaleMode: 0=Regular, 1=Logarithmic, 2=Percent, 3=Indexed to 100.
+  // Logarithmic is the DEFAULT for new sessions (user preference); autoScale
+  // keeps the axis fitted to visible data while panning/zooming, until the
+  // user drags the price scale (the menu's Auto entry restores it).
+  let scaleMode = $state(1);
+  let scaleAuto = $state(true);
+  let scaleMenuOpen = $state(false);
 
   // Loading state
   let loading = $state(true);
@@ -1129,8 +1136,8 @@
       }
     });
 
-    // Keep the chosen price-scale mode across reloads.
-    if (logScale) chart.applyOptions({ rightPriceScale: { mode: 1 as any } });
+    // Keep the chosen price-scale mode + auto-fit across reloads.
+    chart.applyOptions({ rightPriceScale: { mode: scaleMode as any, autoScale: scaleAuto } });
 
     // Resolve asset data source
     await lookupAsset(symbol);
@@ -1138,7 +1145,7 @@
     // Fetch historical bars
     try {
       const res = await fetch(
-        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=10&limit=2000`,
+        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=30&limit=5000`,
         { headers: { Accept: 'application/json' } }
       );
       const data = await res.json();
@@ -1580,9 +1587,43 @@
     loadChart();
   }
 
-  function toggleLogScale() {
-    logScale = !logScale;
-    chart?.applyOptions({ rightPriceScale: { mode: (logScale ? 1 : 0) as any } });
+  const SCALE_MODES = [
+    { mode: 0, label: 'Regular' },
+    { mode: 2, label: 'Percent' },
+    { mode: 3, label: 'Indexed to 100' },
+    { mode: 1, label: 'Logarithmic' },
+  ];
+
+  function saveScaleState() {
+    try {
+      localStorage.setItem('fks_chart_scale', JSON.stringify({ mode: scaleMode, auto: scaleAuto }));
+    } catch { /* unavailable */ }
+  }
+
+  function applyScale() {
+    chart?.applyOptions({ rightPriceScale: { mode: scaleMode as any, autoScale: scaleAuto } });
+    saveScaleState();
+  }
+
+  function setScaleMode(mode: number) {
+    scaleMode = mode;
+    applyScale();
+  }
+
+  // Dragging the price scale silently disables lightweight-charts' autoScale
+  // without touching our state — sync from the chart when opening the menu so
+  // the Auto checkmark reflects reality (TW behavior).
+  function toggleScaleMenu() {
+    if (!scaleMenuOpen) {
+      const cur = chart?.priceScale('right')?.options();
+      if (cur && typeof cur.autoScale === 'boolean') scaleAuto = cur.autoScale;
+    }
+    scaleMenuOpen = !scaleMenuOpen;
+  }
+
+  function toggleAutoScale() {
+    scaleAuto = !scaleAuto;
+    applyScale();
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1591,6 +1632,14 @@
     // values (localStorage). Persist whatever we resolve.
     try {
       const params = new URLSearchParams(window.location.search);
+      try {
+        const sc = localStorage.getItem('fks_chart_scale');
+        if (sc) {
+          const parsed = JSON.parse(sc);
+          if ([0, 1, 2, 3].includes(parsed?.mode)) scaleMode = parsed.mode;
+          if (typeof parsed?.auto === 'boolean') scaleAuto = parsed.auto;
+        }
+      } catch { /* corrupted pref — keep defaults */ }
       const ss = params.get('symbol') || localStorage.getItem('fks_chart_symbol');
       const st = params.get('tf') || params.get('interval') || localStorage.getItem('fks_chart_tf');
       if (ss) { symbol = ss; focusSymbol.set(ss); localStorage.setItem('fks_chart_symbol', ss); }
@@ -1630,11 +1679,11 @@
     const handleOutsideClick = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
       if (!t.closest('.symbol-search-wrap')) showDropdown = false;
-      if (!t.closest('.ind-picker')) { indMenuOpen = false; presetMenuOpen = false; }
+      if (!t.closest('.ind-picker')) { indMenuOpen = false; presetMenuOpen = false; scaleMenuOpen = false; }
     };
     document.addEventListener('click', handleOutsideClick);
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { indMenuOpen = false; presetMenuOpen = false; editorId = null; }
+      if (e.key === 'Escape') { indMenuOpen = false; presetMenuOpen = false; scaleMenuOpen = false; editorId = null; }
     };
     document.addEventListener('keydown', handleEsc);
 
@@ -1787,10 +1836,31 @@
         aria-pressed={drawingActive ? 'true' : 'false'}
       >✏️ Draw</button>
 
-      <!-- Log/linear price scale -->
-      <button class="ind-btn" class:active={logScale} onclick={toggleLogScale}
-        title="Toggle logarithmic price scale" aria-pressed={logScale ? 'true' : 'false'}
-      >{logScale ? 'Log' : 'Lin'}</button>
+      <!-- Price-scale options (TW-style: auto-fit + scale mode) -->
+      <div class="ind-group ind-picker" aria-label="Price scale options">
+        <button class="ind-btn" class:active={scaleMode !== 0}
+          onclick={toggleScaleMenu}
+          aria-expanded={scaleMenuOpen ? 'true' : 'false'} aria-haspopup="menu"
+          title="Price scale options"
+        >{SCALE_MODES.find((m) => m.mode === scaleMode)?.label === 'Logarithmic' ? 'Log' : SCALE_MODES.find((m) => m.mode === scaleMode)?.label ?? 'Scale'} ▾</button>
+        {#if scaleMenuOpen}
+          <div class="ind-menu" role="menu">
+            <button class="ind-menu-item" role="menuitemcheckbox" aria-checked={scaleAuto ? 'true' : 'false'}
+              onclick={toggleAutoScale}>
+              <span class="ind-menu-label">Auto (fits data to screen)</span>
+              {#if scaleAuto}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
+            </button>
+            <div class="ind-menu-sep" aria-hidden="true"></div>
+            {#each SCALE_MODES as m (m.mode)}
+              <button class="ind-menu-item" role="menuitemradio" aria-checked={scaleMode === m.mode ? 'true' : 'false'}
+                onclick={() => setScaleMode(m.mode)}>
+                <span class="ind-menu-label">{m.label}</span>
+                {#if scaleMode === m.mode}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
       <!-- Screenshot / export -->
       <button
@@ -2106,6 +2176,12 @@
     border-radius: var(--r, 4px);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   }
+  .ind-menu-sep {
+    height: 1px;
+    background: var(--b1);
+    margin: 4px 0;
+  }
+
   .ind-menu-item {
     all: unset;
     cursor: pointer;
