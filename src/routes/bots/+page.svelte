@@ -32,6 +32,8 @@
         ContainersResponse,
         BotRun,
         RunsResponse,
+        StoredExchangeCredential,
+        ExchangeKeysStatusResponse,
     } from "$lib/types/spawner";
 
     // ─── Live polls ───────────────────────────────────────────────────────
@@ -66,29 +68,38 @@
     // ─── Spawn-time secrets injection ────────────────────────────────────
     // Checked exchanges are sent as SpawnRequest.secrets; the spawner injects
     // the stored (encrypted-at-rest) credentials into the container env and
-    // fails the spawn if an exchange has no stored keys. `configured` mirrors
-    // the /settings status endpoints so the labels show which are available.
-    const secretExchanges = ["kraken", "kucoin", "cryptocom"] as const;
-    let spawnSecrets = $state<Record<string, boolean>>({
-        kraken: false,
-        kucoin: false,
-        cryptocom: false,
-    });
-    let secretsConfigured = $state<Record<string, boolean | null>>({
-        kraken: null,
-        kucoin: null,
-        cryptocom: null,
-    });
-    async function loadSecretsConfigured() {
-        for (const ex of secretExchanges) {
-            try {
-                const res = await api.get<{ configured?: boolean }>(
-                    `/api/settings/${ex}-status`,
-                );
-                secretsConfigured[ex] = res?.configured ?? false;
-            } catch {
-                secretsConfigured[ex] = null;
-            }
+    // fails the spawn if an exchange has no stored keys. The checkbox list is
+    // driven by GET /api/settings/exchange-keys/status (one fetch — every
+    // stored credential id), so only injectable exchanges are offered.
+    // null = not loaded yet (single skeleton line while the fetch is in flight).
+    let storedSecrets = $state<StoredExchangeCredential[] | null>(null);
+    let secretsDbEnabled = $state(true);
+    let spawnSecrets = $state<Record<string, boolean>>({});
+    // The ids actually submitted: checked AND still stored. Intersecting with
+    // the live list means a credential deleted in /settings can never sneak
+    // into a SpawnRequest via stale checkbox state.
+    let selectedSecrets = $derived(
+        (storedSecrets ?? [])
+            .map((c) => c.exchange)
+            .filter((ex) => spawnSecrets[ex]),
+    );
+    async function loadStoredSecrets() {
+        try {
+            const res = await api.get<ExchangeKeysStatusResponse>(
+                "/api/settings/exchange-keys/status",
+            );
+            storedSecrets = Array.isArray(res?.exchanges) ? res.exchanges : [];
+            secretsDbEnabled = res?.db_enabled !== false;
+        } catch {
+            // Adapter unreachable — degrade like db-disabled (the adapter
+            // itself already degrades spawner errors to that shape).
+            storedSecrets = [];
+            secretsDbEnabled = false;
+        }
+        // Drop checked state for ids that are no longer stored.
+        const stored = new Set(storedSecrets.map((c) => c.exchange));
+        for (const ex of Object.keys(spawnSecrets)) {
+            if (!stored.has(ex)) delete spawnSecrets[ex];
         }
     }
 
@@ -114,7 +125,7 @@
         try {
             const cpu = spawnCpu.trim() ? Number(spawnCpu) : undefined;
             const mem = spawnMem.trim() ? Number(spawnMem) : undefined;
-            const secrets = secretExchanges.filter((ex) => spawnSecrets[ex]);
+            const secrets = selectedSecrets;
             const res = await spawner.spawn({
                 image: spawnImage.trim(),
                 bot_id: spawnBotId.trim() || undefined,
@@ -216,9 +227,12 @@
         spawnCpu = c.cpu_limit != null ? String(c.cpu_limit) : "";
         spawnMem = c.memory_mb != null ? String(c.memory_mb) : "";
         spawnEnvText = envToText(c.env);
-        for (const ex of secretExchanges) {
-            spawnSecrets[ex] = (c.secrets ?? []).includes(ex);
-        }
+        // Check exactly the template's secrets. Ids without stored keys don't
+        // render a checkbox and are filtered out of the payload by
+        // `selectedSecrets`, so a stale template can't fail the spawn.
+        spawnSecrets = Object.fromEntries(
+            (c.secrets ?? []).map((ex) => [ex, true]),
+        );
         configName = c.name;
         feedback = null;
     }
@@ -240,7 +254,7 @@
                 cpu_limit: Number.isFinite(cpu) ? cpu : undefined,
                 memory_mb: Number.isFinite(mem) ? mem : undefined,
                 env: parseEnv(spawnEnvText),
-                secrets: secretExchanges.filter((ex) => spawnSecrets[ex]),
+                secrets: selectedSecrets,
             });
             feedback = { msg: `Saved config "${name}"`, ok: true };
             loadConfigs();
@@ -450,7 +464,7 @@
         containersPoll.start();
         runsPoll.start();
         loadConfigs();
-        loadSecretsConfigured();
+        loadStoredSecrets();
         return () => {
             containersPoll.stop();
             runsPoll.stop();
@@ -575,24 +589,53 @@
                 </label>
 
                 <div class="field">
-                    <span class="lbl">Inject exchange API keys</span>
-                    <div class="secrets-row">
-                        {#each secretExchanges as ex (ex)}
-                            <label class="secret-check">
-                                <input type="checkbox" bind:checked={spawnSecrets[ex]} />
-                                <span>{ex}</span>
-                                {#if secretsConfigured[ex] === true}
-                                    <span class="secret-state ok">keys stored</span>
-                                {:else if secretsConfigured[ex] === false}
-                                    <span class="secret-state none">no keys</span>
-                                {/if}
-                            </label>
-                        {/each}
-                    </div>
-                    <span class="help">
-                        Injects stored credentials (from Settings) into the container env
-                        as EXCHANGE_API_KEY/_API_SECRET. Spawn fails if keys aren't stored.
+                    <span class="lbl-row">
+                        <span class="lbl">Inject exchange API keys</span>
+                        <button
+                            type="button"
+                            class="secrets-refresh"
+                            onclick={loadStoredSecrets}
+                            title="Refresh the stored-credentials list"
+                            aria-label="Refresh stored credentials">↻</button
+                        >
                     </span>
+                    {#if storedSecrets === null}
+                        <Skeleton height="18px" />
+                    {:else if !secretsDbEnabled}
+                        <p class="secrets-empty">
+                            Secret storage unavailable — the spawner has no
+                            secrets database configured (or is unreachable).
+                        </p>
+                    {:else if storedSecrets.length === 0}
+                        <p class="secrets-empty">
+                            No credentials stored — add them in
+                            <a href="/settings">Settings</a>.
+                        </p>
+                    {:else}
+                        <div class="secrets-row">
+                            {#each storedSecrets as cred (cred.exchange)}
+                                <label
+                                    class="secret-check"
+                                    title={cred.updated_at
+                                        ? `Keys stored ${fmtDateTime(cred.updated_at)}`
+                                        : "Keys stored"}
+                                >
+                                    <input
+                                        type="checkbox"
+                                        bind:checked={
+                                            spawnSecrets[cred.exchange]
+                                        }
+                                    />
+                                    <span>{cred.exchange}</span>
+                                </label>
+                            {/each}
+                        </div>
+                        <span class="help">
+                            Injects stored credentials (from Settings) into the container env
+                            as EXCHANGE_API_KEY/_API_SECRET. Only exchanges with stored keys
+                            are listed — the spawner rejects any others.
+                        </span>
+                    {/if}
                 </div>
 
                 <button
@@ -954,18 +997,36 @@
         color: var(--t2);
         cursor: pointer;
     }
-    .secret-state {
-        font-size: 9px;
-        padding: 1px 5px;
-        border-radius: 3px;
+    .lbl-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
     }
-    .secret-state.ok {
-        color: var(--green, #16c784);
-        background: color-mix(in srgb, var(--green, #16c784) 12%, transparent);
-    }
-    .secret-state.none {
+    .secrets-refresh {
+        all: unset;
+        cursor: pointer;
+        font-size: 10px;
+        line-height: 1;
         color: var(--t3);
-        background: var(--bg2, #161b24);
+        padding: 0 3px;
+        border-radius: var(--r);
+    }
+    .secrets-refresh:hover {
+        color: var(--cyan, #00e5ff);
+        background: var(--bg3);
+    }
+    .secrets-empty {
+        margin: 0;
+        font-size: 10px;
+        color: var(--t2);
+        line-height: 1.4;
+    }
+    .secrets-empty a {
+        color: var(--cyan, #00e5ff);
+        text-decoration: none;
+    }
+    .secrets-empty a:hover {
+        text-decoration: underline;
     }
     .inp,
     .sel {
