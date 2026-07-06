@@ -53,16 +53,18 @@ test.describe("Charts Page", () => {
       timeout: 10_000,
     });
 
-    // Toggle EMA 9 — use aria-pressed for reliable state checks
-    const ema9Btn = page.locator("button.ind-btn", { hasText: "EMA 9" });
-    await expect(ema9Btn).toHaveAttribute("aria-pressed", "false");
+    // Open the TW-style Indicators dropdown, then toggle EMA 9.
+    // Menu entries are menuitemcheckbox items — use aria-checked for state.
+    await page.locator("button.ind-btn", { hasText: "Indicators" }).click();
+    const ema9Item = page.getByRole("menuitemcheckbox", { name: "EMA 9" });
+    await expect(ema9Item).toHaveAttribute("aria-checked", "false");
 
-    await ema9Btn.click();
-    await expect(ema9Btn).toHaveAttribute("aria-pressed", "true");
+    await ema9Item.click();
+    await expect(ema9Item).toHaveAttribute("aria-checked", "true");
 
-    // Toggle off
-    await ema9Btn.click();
-    await expect(ema9Btn).toHaveAttribute("aria-pressed", "false");
+    // Toggle off (the menu stays open for multi-add)
+    await ema9Item.click();
+    await expect(ema9Item).toHaveAttribute("aria-checked", "false");
   });
 
   test("BB indicator toggle changes state", async ({ page }) => {
@@ -74,14 +76,19 @@ test.describe("Charts Page", () => {
       timeout: 10_000,
     });
 
-    const bbBtn = page.locator("button.ind-btn", { hasText: "BB" });
-    await expect(bbBtn).toHaveAttribute("aria-pressed", "false");
+    // Bollinger Bands lives in the Indicators dropdown; the label carries the
+    // current params (e.g. "Bollinger Bands (20, 2)"), so match on the name.
+    await page.locator("button.ind-btn", { hasText: "Indicators" }).click();
+    const bbItem = page.getByRole("menuitemcheckbox", {
+      name: /Bollinger Bands/,
+    });
+    await expect(bbItem).toHaveAttribute("aria-checked", "false");
 
-    await bbBtn.click();
-    await expect(bbBtn).toHaveAttribute("aria-pressed", "true");
+    await bbItem.click();
+    await expect(bbItem).toHaveAttribute("aria-checked", "true");
 
-    await bbBtn.click();
-    await expect(bbBtn).toHaveAttribute("aria-pressed", "false");
+    await bbItem.click();
+    await expect(bbItem).toHaveAttribute("aria-checked", "false");
   });
 
   test("RSI sub-pane toggle shows and hides pane", async ({ page }) => {
@@ -96,20 +103,23 @@ test.describe("Charts Page", () => {
     // RSI pane should not be visible initially
     await expect(page.locator(".ind-pane")).toHaveCount(0);
 
-    // Toggle RSI on
-    const rsiBtn = page.locator("button.ind-btn", { hasText: "RSI" });
-    await rsiBtn.click();
-    await expect(rsiBtn).toHaveAttribute("aria-pressed", "true");
+    // Toggle RSI on via the Indicators dropdown (label includes the period)
+    await page.locator("button.ind-btn", { hasText: "Indicators" }).click();
+    const rsiItem = page.getByRole("menuitemcheckbox", { name: "RSI 14" });
+    await rsiItem.click();
+    await expect(rsiItem).toHaveAttribute("aria-checked", "true");
 
-    // RSI pane should now exist in the DOM
+    // RSI pane should now exist in the DOM — the pane label is the base name,
+    // with the parameterized title ("RSI 14") in the pane controls
     await expect(page.locator(".ind-pane")).toHaveCount(1);
+    await expect(page.locator(".pane-label", { hasText: "RSI" })).toBeVisible();
     await expect(
-      page.locator(".pane-label", { hasText: "RSI 14" }),
+      page.locator(".pane-title", { hasText: "RSI 14" }),
     ).toBeVisible();
 
     // Toggle RSI off
-    await rsiBtn.click();
-    await expect(rsiBtn).toHaveAttribute("aria-pressed", "false");
+    await rsiItem.click();
+    await expect(rsiItem).toHaveAttribute("aria-checked", "false");
     await expect(page.locator(".ind-pane")).toHaveCount(0);
   });
 
