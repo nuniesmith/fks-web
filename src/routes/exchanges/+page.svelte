@@ -24,7 +24,6 @@
   });
 
   let spot = $derived($status?.spot ?? null);
-  let funding = $derived($status?.funding ?? null);
 
   /** Backing venues = the spot bot's venues (futures venues live on /futures). */
   let venues = $derived(spot?.exchanges ?? []);
@@ -65,11 +64,14 @@
     <a class="detail-link" href="/futures">Futures →</a>
   </p>
 
-  {#if !spot && !funding}
+  {#if !spot}
+    <!-- This page renders spot venues only, so gate on the spot document
+         alone — with funding up but spot down, `!spot && !funding` used to
+         render a silent $0.00 net worth instead of flagging the outage. -->
     <EmptyState
       icon="🛰"
-      title="No crypto bot status available"
-      hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it."
+      title="No spot-portfolio bot status available"
+      hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it. Futures status lives on /futures."
     />
   {:else}
     <div class="stat-row">

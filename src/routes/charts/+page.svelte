@@ -220,6 +220,9 @@
   // backfills when the chart is reloaded for a new symbol/interval.
   let backfillBusy = false;
   let backfillDone = false;
+  // Widened (×4 up to the server's 365-day cap) when a page comes back empty,
+  // so a >window data gap doesn't end the history; reset after a full page.
+  let backfillWindowDays = 30;
   let loadSeq = 0;
 
   // Auto-focus symbol from strip SSE
@@ -954,11 +957,14 @@
     try {
       const oldestSec = candles[0].time as number;
       const res = await fetch(
-        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=30&limit=1000&before=${oldestSec * 1000}`,
+        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=${backfillWindowDays}&limit=1000&before=${oldestSec * 1000}`,
         { headers: { Accept: 'application/json' } }
       );
       const data = await res.json();
       if (seq !== loadSeq) return; // chart was reloaded while we were fetching
+      // Anchor check: if the array head moved while we awaited (reload race,
+      // any external mutation), this batch was computed against stale state.
+      if (candles.length === 0 || (candles[0].time as number) !== oldestSec) return;
 
       const older: CandleData[] = (Array.isArray(data.candles) ? (data.candles as CandleBar[]) : [])
         .map((c) => ({
@@ -969,9 +975,17 @@
         .filter((c) => (c.time as number) < oldestSec); // drop any seam duplicate
 
       if (older.length === 0) {
-        backfillDone = true; // no more history server-side
+        // Empty page ≠ end of history: a data gap wider than the window looks
+        // identical. Widen the window (up to the server's 365-day cap) before
+        // declaring the history exhausted.
+        if (backfillWindowDays < 365) {
+          backfillWindowDays = Math.min(365, backfillWindowDays * 4);
+        } else {
+          backfillDone = true; // nothing within a full year behind the cutoff
+        }
         return;
       }
+      backfillWindowDays = 30; // gap crossed (or normal page) — reset the window
       candles = [...older, ...candles];
       candleSeries.setData(candles);
       refreshOverlays();
@@ -990,10 +1004,12 @@
     loadSeq += 1;
     backfillBusy = false;
     backfillDone = false;
+    backfillWindowDays = 30;
 
-    const { createChart } = await import('lightweight-charts');
-
-    // Tear down
+    // Tear down BEFORE the dynamic import: the old chart's visible-range
+    // subscription must die in the same macrotask as the loadSeq bump, or a
+    // range event during the await could start a backfill that captures the
+    // new seq while anchored to the old symbol's candles.
     disconnectLiveData();
     ema9Series = null; ema21Series = null; volumeSeries = null;
     bbUpperSeries = null; bbMidSeries = null; bbLowSeries = null;
@@ -1002,6 +1018,10 @@
     dcUpperSeries = null; dcMidSeries = null; dcLowSeries = null;
     kcUpperSeries = null; kcMidSeries = null; kcLowSeries = null;
     if (chart) chart.remove();
+    chart = null;
+    candleSeries = null;
+
+    const { createChart } = await import('lightweight-charts');
 
     chart = createChart(chartContainer, {
       layout: {

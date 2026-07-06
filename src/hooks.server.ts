@@ -331,9 +331,13 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
   const lim = Math.min(5000, Math.max(1, parseInt(p.get("limit") ?? "1000", 10) || 1000));
   // Optional history pagination: only bars strictly older than `before` (ms
   // epoch). Numeric parse → Date → ISO keeps the SQL literal injection-safe.
+  // Upper bound = max representable Date (8.64e15 ms): beyond it toISOString
+  // throws, which a crafted ?before= must degrade from, not 500.
   const beforeMs = parseInt(p.get("before") ?? "", 10);
   const beforeIso =
-    Number.isFinite(beforeMs) && beforeMs > 0 ? new Date(beforeMs).toISOString() : undefined;
+    Number.isFinite(beforeMs) && beforeMs > 0 && beforeMs <= 8.64e15
+      ? new Date(beforeMs).toISOString()
+      : undefined;
 
   let rows = await queryCandles(sym, iv, days, lim, beforeIso);
 

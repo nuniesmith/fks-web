@@ -260,6 +260,9 @@
             low: bar.low,
             close: bar.close,
           });
+          // Live bars can fill a chart whose history fetch came back empty —
+          // don't leave the "No bar data" overlay stuck over real candles.
+          chartEmpty = false;
         } catch {
           // Ignore update errors
         }
@@ -900,6 +903,8 @@
     color: var(--t3);
     font-size: 12px;
     z-index: 5;
+    /* Status text only — never block pan/zoom on the chart underneath. */
+    pointer-events: none;
   }
 
   .spinner {
