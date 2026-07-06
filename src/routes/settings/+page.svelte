@@ -46,41 +46,30 @@
     message: string;
   }
 
-  // ─── Exchange Keys State (Kraken / KuCoin / Crypto.com) ─────────────
-  // One data-driven block per exchange; all share the generic
-  // /api/settings/{exchange}-keys|-status adapter endpoints (spawner secret
-  // store). The browser only submits keys; it never reads a secret back.
-  type ExchangeId = 'kraken' | 'kucoin' | 'cryptocom';
-  const exchangeDefs: { id: ExchangeId; label: string; passphrase: boolean; testable: boolean }[] = [
-    { id: 'kraken', label: 'Kraken', passphrase: false, testable: true },
-    { id: 'kucoin', label: 'KuCoin', passphrase: true, testable: false },
-    { id: 'cryptocom', label: 'Crypto.com', passphrase: false, testable: false },
-  ];
-  type ExchangeKeysState = {
-    key: string;
-    secret: string;
-    passphrase: string;
-    saving: boolean;
-    feedback: string;
-    feedbackVariant: 'green' | 'red' | 'default';
-    // Whether keys are stored server-side. null = unknown/unreachable.
-    configured: boolean | null;
-  };
-  const emptyKeysState = (): ExchangeKeysState => ({
-    key: '',
-    secret: '',
-    passphrase: '',
-    saving: false,
-    feedback: '',
-    feedbackVariant: 'default',
-    configured: null,
-  });
-  let exKeys = $state<Record<ExchangeId, ExchangeKeysState>>({
-    kraken: emptyKeysState(),
-    kucoin: emptyKeysState(),
-    cryptocom: emptyKeysState(),
-  });
+  // ─── Exchange Credentials State (dynamic list) ──────────────────────
+  // The spawner secret store keys credentials by a free-form exchange id, so
+  // the UI is a dynamic list: starts blank, add any venue. The browser only
+  // submits keys; it never reads a secret back. Known ids are offered as
+  // <datalist> suggestions — anything else is accepted too.
+  const KNOWN_EXCHANGES = ['kraken', 'kucoin', 'kucoin-futures', 'cryptocom', 'binance'];
+  interface StoredCredential {
+    exchange: string;
+    updated_at?: string;
+  }
+  // null = secret store unreachable (distinct from "no credentials yet").
+  let credList = $state<StoredCredential[] | null>(null);
+  let credDbEnabled = $state(true);
+  // Add/update form
+  let credExchange = $state('');
+  let credKey = $state('');
+  let credSecret = $state('');
+  let credPassphrase = $state('');
+  let credSaving = $state(false);
+  let credFeedback = $state('');
+  let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
   let krakenTesting = $state(false);
+  let krakenFeedback = $state('');
+  let krakenFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
 
   // ─── Risk Controls State (rustrade PortfolioRiskConfig) ─────────────
   let riskDailyLoss = $state(5000);          // max daily loss (USD; shown positive, stored ≤0)
@@ -146,57 +135,70 @@
     return 'default';
   }
 
-  // ─── API: Exchange Keys ───────────────────────────────────────────
+  // ─── API: Exchange Credentials ─────────────────────────────────────
 
-  async function loadExchangeStatus(id: ExchangeId) {
+  async function loadCredentials() {
     try {
-      const res = await api.get<{ configured?: boolean }>(`/api/settings/${id}-status`);
-      exKeys[id].configured = res?.configured ?? false;
+      const res = await api.get<{ db_enabled?: boolean; exchanges?: StoredCredential[] }>(
+        '/api/settings/exchange-keys/status'
+      );
+      credList = Array.isArray(res?.exchanges) ? res.exchanges : [];
+      credDbEnabled = res?.db_enabled !== false;
     } catch {
-      exKeys[id].configured = null;
+      credList = null;
     }
   }
 
-  async function saveExchangeKeys(id: ExchangeId) {
-    const s = exKeys[id];
-    s.saving = true;
-    s.feedback = '';
+  async function saveCredential() {
+    const exchange = credExchange.trim().toLowerCase();
+    credSaving = true;
+    credFeedback = '';
     try {
-      await api.post(`/api/settings/${id}-keys`, {
-        api_key: s.key,
-        api_secret: s.secret,
-        ...(s.passphrase ? { api_passphrase: s.passphrase } : {}),
+      await api.post('/api/settings/exchange-keys', {
+        exchange,
+        api_key: credKey,
+        api_secret: credSecret,
+        ...(credPassphrase ? { api_passphrase: credPassphrase } : {}),
       });
-      s.feedback = 'Keys saved ✓';
-      s.feedbackVariant = 'green';
-      // Browser submits then forgets: clear the inputs and refresh the badge.
-      s.key = '';
-      s.secret = '';
-      s.passphrase = '';
-      loadExchangeStatus(id);
-      clearFeedbackAfter(v => exKeys[id].feedback = v);
+      credFeedback = `${exchange} keys saved ✓`;
+      credFeedbackVariant = 'green';
+      // Browser submits then forgets: clear the inputs and refresh the list.
+      credExchange = '';
+      credKey = '';
+      credSecret = '';
+      credPassphrase = '';
+      loadCredentials();
+      clearFeedbackAfter(v => credFeedback = v);
     } catch (err: any) {
-      s.feedback = `Error: ${err.message ?? 'Failed to save'}`;
-      s.feedbackVariant = 'red';
-      clearFeedbackAfter(v => exKeys[id].feedback = v, 5000);
+      credFeedback = `Error: ${err.message ?? 'Failed to save'}`;
+      credFeedbackVariant = 'red';
+      clearFeedbackAfter(v => credFeedback = v, 5000);
     } finally {
-      s.saving = false;
+      credSaving = false;
     }
+  }
+
+  // Prefill the form to overwrite an existing credential (upsert semantics).
+  function startUpdate(exchange: string) {
+    credExchange = exchange;
+    credKey = '';
+    credSecret = '';
+    credPassphrase = '';
   }
 
   async function testKraken() {
     krakenTesting = true;
-    exKeys.kraken.feedback = '';
+    krakenFeedback = '';
     try {
       const res = await api.get<{ status?: string; message?: string }>('/kraken/health');
-      exKeys.kraken.feedback = `✓ ${res.status ?? res.message ?? 'Connected'}`;
-      exKeys.kraken.feedbackVariant = 'green';
+      krakenFeedback = `✓ ${res.status ?? res.message ?? 'Connected'}`;
+      krakenFeedbackVariant = 'green';
     } catch (err: any) {
-      exKeys.kraken.feedback = `✗ ${err.message ?? 'Connection failed'}`;
-      exKeys.kraken.feedbackVariant = 'red';
+      krakenFeedback = `✗ ${err.message ?? 'Connection failed'}`;
+      krakenFeedbackVariant = 'red';
     } finally {
       krakenTesting = false;
-      clearFeedbackAfter(v => exKeys.kraken.feedback = v, 5000);
+      clearFeedbackAfter(v => krakenFeedback = v, 5000);
     }
   }
 
@@ -319,7 +321,7 @@
     fetchHealth();
     loadJanusConfig();
     loadRisk();
-    for (const ex of exchangeDefs) loadExchangeStatus(ex.id);
+    loadCredentials();
     healthTimer = setInterval(fetchHealth, 15_000);
   });
 
@@ -339,77 +341,123 @@
   <div class="pane pane-left">
 
     <!-- ── Panel: API Connections ─────────────────────────────────── -->
-    <!-- One block per exchange (Kraken / KuCoin / Crypto.com), all backed by
-         the spawner secret store via the generic settings endpoints. KuCoin
-         additionally requires an API passphrase. -->
+    <!-- Dynamic credential list backed by the spawner secret store. Starts
+         blank; any exchange id can be added (known venues are suggested).
+         Submit-only: secrets are never read back to the browser. -->
     <Panel title="API Connections">
-      {#each exchangeDefs as ex (ex.id)}
-        <div class="connection-block">
-          <div class="connection-title">{ex.label}</div>
-          {#if exKeys[ex.id].configured !== null}
-            <div class="status-display key-status">
-              <span class="status-dot" class:dot-green={exKeys[ex.id].configured} class:dot-amber={!exKeys[ex.id].configured}></span>
-              <span class="mono">
-                {exKeys[ex.id].configured ? 'API keys stored — authenticated path available' : 'No keys — using public/keyless data'}
-              </span>
-            </div>
-          {/if}
-          <div class="form-group">
-            <label class="form-label" for="{ex.id}-api-key">API Key</label>
-            <input
-              id="{ex.id}-api-key"
-              class="form-input"
-              type="password"
-              placeholder="Enter {ex.label} API key…"
-              bind:value={exKeys[ex.id].key}
-              autocomplete="off"
-            />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="{ex.id}-api-secret">API Secret</label>
-            <input
-              id="{ex.id}-api-secret"
-              class="form-input"
-              type="password"
-              placeholder="Enter {ex.label} API secret…"
-              bind:value={exKeys[ex.id].secret}
-              autocomplete="off"
-            />
-          </div>
-          {#if ex.passphrase}
-            <div class="form-group">
-              <label class="form-label" for="{ex.id}-api-passphrase">API Passphrase</label>
-              <input
-                id="{ex.id}-api-passphrase"
-                class="form-input"
-                type="password"
-                placeholder="Enter {ex.label} API passphrase…"
-                bind:value={exKeys[ex.id].passphrase}
-                autocomplete="off"
-              />
-            </div>
-          {/if}
-          <div class="form-actions">
-            <button
-              class="btn-primary"
-              onclick={() => saveExchangeKeys(ex.id)}
-              disabled={exKeys[ex.id].saving || (!exKeys[ex.id].key && !exKeys[ex.id].secret)}
-            >
-              {exKeys[ex.id].saving ? 'Saving…' : 'Save Keys'}
-            </button>
-            {#if ex.testable}
-              <button class="btn-ghost" onclick={testKraken} disabled={krakenTesting}>
-                {krakenTesting ? '⏳ Testing…' : '🔌 Test'}
-              </button>
-            {/if}
-            {#if exKeys[ex.id].feedback}
-              <span class="feedback" class:feedback-ok={exKeys[ex.id].feedbackVariant === 'green'} class:feedback-err={exKeys[ex.id].feedbackVariant === 'red'}>
-                {exKeys[ex.id].feedback}
-              </span>
-            {/if}
-          </div>
+      {#if credList !== null && !credDbEnabled}
+        <div class="status-display key-status">
+          <span class="status-dot dot-amber"></span>
+          <span class="mono">Secret storage (spawner DB) is not configured — saves will fail</span>
         </div>
-      {/each}
+      {/if}
+
+      <!-- Stored credentials -->
+      {#if credList === null}
+        <div class="status-display key-status">
+          <span class="status-dot dot-amber"></span>
+          <span class="mono">Secret store unreachable</span>
+        </div>
+      {:else if credList.length === 0}
+        <div class="cred-empty mono">No API credentials stored — using public/keyless data. Add one below.</div>
+      {:else}
+        {#each credList as cred (cred.exchange)}
+          <div class="cred-row">
+            <span class="status-dot dot-green"></span>
+            <span class="cred-name">{cred.exchange}</span>
+            {#if cred.updated_at}
+              <span class="cred-updated">updated {cred.updated_at}</span>
+            {/if}
+            <span class="cred-actions">
+              {#if cred.exchange === 'kraken'}
+                <button class="btn-ghost" onclick={testKraken} disabled={krakenTesting}>
+                  {krakenTesting ? '⏳ Testing…' : '🔌 Test'}
+                </button>
+              {/if}
+              <button class="btn-ghost" onclick={() => startUpdate(cred.exchange)}>Update</button>
+            </span>
+          </div>
+        {/each}
+        {#if krakenFeedback}
+          <span class="feedback" class:feedback-ok={krakenFeedbackVariant === 'green'} class:feedback-err={krakenFeedbackVariant === 'red'}>
+            {krakenFeedback}
+          </span>
+        {/if}
+      {/if}
+
+      <!-- Add / update credential -->
+      <div class="connection-block">
+        <div class="connection-title">Add / update credential</div>
+        <div class="form-group">
+          <label class="form-label" for="cred-exchange">Exchange</label>
+          <input
+            id="cred-exchange"
+            class="form-input"
+            type="text"
+            list="cred-exchange-suggestions"
+            placeholder="e.g. kraken, kucoin-futures, binance…"
+            bind:value={credExchange}
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <datalist id="cred-exchange-suggestions">
+            {#each KNOWN_EXCHANGES as ex}
+              <option value={ex}></option>
+            {/each}
+          </datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cred-api-key">API Key</label>
+          <input
+            id="cred-api-key"
+            class="form-input"
+            type="password"
+            placeholder="Enter API key…"
+            bind:value={credKey}
+            autocomplete="off"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cred-api-secret">API Secret</label>
+          <input
+            id="cred-api-secret"
+            class="form-input"
+            type="password"
+            placeholder="Enter API secret…"
+            bind:value={credSecret}
+            autocomplete="off"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cred-api-passphrase">API Passphrase (optional — e.g. KuCoin)</label>
+          <input
+            id="cred-api-passphrase"
+            class="form-input"
+            type="password"
+            placeholder="Only if the venue requires one…"
+            bind:value={credPassphrase}
+            autocomplete="off"
+          />
+        </div>
+        <div class="form-actions">
+          <button
+            class="btn-primary"
+            onclick={saveCredential}
+            disabled={credSaving || !credExchange.trim() || !credKey || !credSecret}
+          >
+            {credSaving ? 'Saving…' : 'Save Keys'}
+          </button>
+          {#if credFeedback}
+            <span class="feedback" class:feedback-ok={credFeedbackVariant === 'green'} class:feedback-err={credFeedbackVariant === 'red'}>
+              {credFeedback}
+            </span>
+          {/if}
+        </div>
+        <div class="cred-hint">
+          Keys are submit-only: stored encrypted server-side, never displayed again.
+          Saving an exchange that already has keys overwrites them.
+        </div>
+      </div>
     </Panel>
 
     <!-- ── Panel 3: Risk Controls ─────────────────────────────────── -->
@@ -892,6 +940,51 @@
     height: 1px;
     background: var(--b1);
     margin: 8px 0;
+  }
+
+  /* Dynamic credential list */
+  .cred-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--bg2);
+    border: 1px solid var(--b1);
+    border-radius: var(--r);
+    margin-bottom: 4px;
+  }
+
+  .cred-name {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--t1);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .cred-updated {
+    font-size: 9px;
+    color: var(--t3);
+  }
+
+  .cred-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+  }
+
+  .cred-empty {
+    padding: 10px 8px;
+    font-size: 11px;
+    color: var(--t3);
+    text-align: center;
+  }
+
+  .cred-hint {
+    font-size: 9px;
+    color: var(--t3);
+    margin-top: 6px;
+    line-height: 1.5;
   }
 
   /* ═══════════════════════════════════════════════════════════════════
