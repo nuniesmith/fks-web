@@ -45,9 +45,13 @@
     price?: number;
   }
 
-  interface BarData {
-    columns: string[];
-    data: any[][];
+  interface CandleBar {
+    timestamp: number; // ms epoch
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
   }
 
   // ─── Risk Calculator Presets ─────────────────────────────────────────
@@ -62,7 +66,9 @@
   };
 
   // ─── State ──────────────────────────────────────────────────────────
-  let symbol = $state('MGC');
+  // Default to a symbol janus actually ingests (QuestDB candles_crypto);
+  // futures like MGC have no bars source yet, so they'd render empty.
+  let symbol = $state('BTCUSDT');
   let activeTimeframe = $state('5m');
   const timeframes = [
     { id: '1m', label: '1m' },
@@ -78,9 +84,10 @@
   let chart: any = null;
   let candleSeries: any = null;
   let chartLoading = $state(true);
+  let chartEmpty = $state(false);
 
   // Order form state
-  let orderSymbol = $state('MGC');
+  let orderSymbol = $state('BTCUSDT');
   let orderType = $state<'market' | 'limit' | 'stop'>('market');
   let orderPrice = $state<number | undefined>(undefined);
   let orderQty = $state(1);
@@ -203,31 +210,32 @@
     });
 
     try {
-      const res = await fetch(`/bars/${symbol}?interval=${activeTimeframe}&days_back=5`, {
-        headers: { Accept: 'application/json' },
-      });
-      const data: BarData = await res.json();
+      // Same QuestDB-backed endpoint the /charts page uses (the old Ruby
+      // /bars/:sym {columns,data} route no longer exists).
+      const res = await fetch(
+        `/bars/${encodeURIComponent(symbol)}/candles?interval=${activeTimeframe}&days_back=5&limit=1000`,
+        { headers: { Accept: 'application/json' } }
+      );
+      const data = await res.json();
 
-      if (data.columns && data.data) {
-        const cols = data.columns;
-        const iO = cols.indexOf('open');
-        const iH = cols.indexOf('high');
-        const iL = cols.indexOf('low');
-        const iC = cols.indexOf('close');
-
-        const candles = data.data.map((row: any[]) => ({
-          time: Math.floor(new Date(row[0]).getTime() / 1000) as any,
-          open: row[iO],
-          high: row[iH],
-          low: row[iL],
-          close: row[iC],
+      if (Array.isArray(data.candles) && data.candles.length > 0) {
+        const candles = (data.candles as CandleBar[]).map((c) => ({
+          time: Math.floor(c.timestamp / 1000) as any,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
         }));
 
         candleSeries.setData(candles);
         chart.timeScale().fitContent();
+        chartEmpty = false;
+      } else {
+        chartEmpty = true;
       }
     } catch (e) {
       console.warn('[trading/chart] Failed to load bars:', e);
+      chartEmpty = true;
     } finally {
       chartLoading = false;
     }
@@ -527,6 +535,8 @@
               <div class="spinner"></div>
               Loading {symbol} · {activeTimeframe}
             </div>
+          {:else if chartEmpty}
+            <div class="chart-loading">No bar data for {symbol} · {activeTimeframe}</div>
           {/if}
         </div>
       </Panel>
