@@ -18,6 +18,9 @@ const coerceNum = (v: unknown): number | undefined => {
 // janus `/health` → a superset consumed by both the bottom StatusBar (flat
 // `{janus,redis,feed}`) and the /settings System Info panel
 // (`{status,components,version,uptime}`).
+// janus serves `components: { redis: {status}, feed: {status} }` (a live PING
+// for redis; the data module's health entry for feed — "connected" / "idle" /
+// "disconnected"); the older data/questdb component names stay as fallbacks.
 export function reshapeHealth(j: any): Record<string, unknown> {
   const comp: Record<string, { status?: string; latency?: string }> = (j?.components ??
     {}) as Record<string, { status?: string; latency?: string }>;
@@ -29,7 +32,9 @@ export function reshapeHealth(j: any): Record<string, unknown> {
     components: comp,
     janus: overall,
     redis: String(comp.redis?.status ?? "—"),
-    feed: String(j?.forward_service ?? comp.data?.status ?? comp.questdb?.status ?? "—"),
+    feed: String(
+      j?.forward_service ?? comp.feed?.status ?? comp.data?.status ?? comp.questdb?.status ?? "—",
+    ),
   };
 }
 

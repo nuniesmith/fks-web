@@ -45,6 +45,44 @@ describe("reshapeHealth", () => {
     expect(reshapeHealth({ components: { data: { status: "live" } } }).feed).toBe("live");
     expect(reshapeHealth({ components: { questdb: { status: "ok" } } }).feed).toBe("ok");
   });
+
+  it("lights up from janus's components map (live PING + data-module feed)", () => {
+    // The exact shape janus /health serves since its components PR:
+    // HealthStatus fields + { redis: {status}, feed: {status} }.
+    const out = reshapeHealth({
+      status: "healthy",
+      uptime_seconds: 2863,
+      signals_generated: 72,
+      signals_persisted: 144,
+      modules: [{ name: "data", healthy: true, message: "live: 10 assets" }],
+      shutdown_requested: false,
+      service_state: "running",
+      components: { redis: { status: "connected" }, feed: { status: "connected" } },
+    });
+    expect(out.janus).toBe("healthy"); // StatusBar classifies "healthy" as ok
+    expect(out.redis).toBe("connected");
+    expect(out.feed).toBe("connected"); // no forward_service field → components.feed
+    // The /settings System Info panel renders the components map verbatim.
+    expect(out.components).toEqual({
+      redis: { status: "connected" },
+      feed: { status: "connected" },
+    });
+  });
+
+  it("passes janus's idle/disconnected feed states through", () => {
+    const idle = reshapeHealth({
+      status: "healthy",
+      components: { redis: { status: "connected" }, feed: { status: "idle" } },
+    });
+    expect(idle.feed).toBe("idle");
+
+    const down = reshapeHealth({
+      status: "degraded",
+      components: { redis: { status: "disconnected" }, feed: { status: "disconnected" } },
+    });
+    expect(down.redis).toBe("disconnected");
+    expect(down.feed).toBe("disconnected");
+  });
 });
 
 describe("reshapePerformance", () => {

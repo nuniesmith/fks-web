@@ -657,6 +657,16 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
     return janusAffinity(event);
   }
 
+  // /settings "Janus Optimizer" panel ↔ janus-api /api/config. GET returns the
+  // effective config (env defaults ⊕ Redis overrides) in exactly the page's
+  // JanusConfigResponse shape (plus requires_restart); PUT validates + stores
+  // the overrides. Shapes match 1:1 (both sides were defined together), so
+  // forward straight through — janus self-degrades (GET → env_defaults with
+  // redis_available:false; PUT → honest 503) when Redis is down.
+  if (pathname === "/api/janus/config") {
+    return forward(event, JANUS_URL, "/api/config");
+  }
+
   // /performance metrics grid → forward risk/performance (+ dashboard).
   if (pathname === "/api/performance") {
     return janusPerformance(event);
