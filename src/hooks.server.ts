@@ -12,6 +12,7 @@ import {
   resampleCandles,
   sanitizeInterval,
   sanitizeSymbol,
+  signalStatus,
   toRiskConfigPayload,
   wantsArrayResponse,
 } from "$lib/server/reshape";
@@ -149,9 +150,15 @@ async function janusJson(event: RequestEvent, base: string, path: string): Promi
 // .recent_signals path returned empty on the running stack, so the /signals
 // page and the overview recent-signals panel (both consumers of this helper)
 // showed nothing despite live signals flowing.
-async function janusRecentSignals(
-  event: RequestEvent,
-): Promise<{ symbol?: string; signal_type?: string; confidence?: number; timestamp?: string }[]> {
+async function janusRecentSignals(event: RequestEvent): Promise<
+  {
+    symbol?: string;
+    signal_type?: string;
+    confidence?: number;
+    timestamp?: string;
+    metadata?: Record<string, string>;
+  }[]
+> {
   const j = await janusJson(event, JANUS_URL, "/api/signals/latest");
   const arr = Array.isArray(j) ? j : Array.isArray(j?.signals) ? j.signals : [];
   return arr.map((s: Record<string, unknown>) => ({
@@ -159,6 +166,7 @@ async function janusRecentSignals(
     signal_type: s.signal_type as string | undefined,
     confidence: s.confidence as number | undefined,
     timestamp: s.timestamp as string | undefined,
+    metadata: s.metadata as Record<string, string> | undefined,
   }));
 }
 
@@ -601,21 +609,24 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   }
 
   // Signals page list → janus signals reshaped to { signals: Signal[] }.
-  // (janus has no staging/approve workflow — surface them as read-only
-  // "generated" signals; the approve/reject actions stay no-ops for now.)
+  // Per-signal status is derived from the execution-gate / risk verdicts in
+  // the signal's metadata (signalStatus: approved / rejected / staging), and
+  // the page's ?status= filter (staging / approved / "" = all) is honored
+  // against that derived status. (The approve/reject actions stay no-ops —
+  // janus has no staging workflow to write back to.)
   if (pathname === "/api/signals") {
     const sigs = await janusRecentSignals(event);
-    return json({
-      signals: sigs.map((s, i) => ({
-        id: `${s.symbol ?? "sig"}-${s.timestamp ?? i}`,
-        symbol: s.symbol ?? "—",
-        type: "entry",
-        side: s.signal_type,
-        status: "generated",
-        timestamp: s.timestamp,
-        message: s.signal_type,
-      })),
-    });
+    const wanted = event.url.searchParams.get("status") ?? "";
+    const signals = sigs.map((s, i) => ({
+      id: `${s.symbol ?? "sig"}-${s.timestamp ?? i}`,
+      symbol: s.symbol ?? "—",
+      type: "entry",
+      side: s.signal_type,
+      status: signalStatus(s.metadata),
+      timestamp: s.timestamp,
+      message: s.signal_type,
+    }));
+    return json({ signals: wanted ? signals.filter((s) => s.status === wanted) : signals });
   }
 
   // /exchanges page → the crypto bots' /status documents (spot portfolio +

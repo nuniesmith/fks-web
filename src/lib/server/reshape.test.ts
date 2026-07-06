@@ -10,6 +10,7 @@ import {
   resampleCandles,
   sanitizeInterval,
   sanitizeSymbol,
+  signalStatus,
   toRiskConfigPayload,
   wantsArrayResponse,
 } from "./reshape";
@@ -108,6 +109,30 @@ describe("toRiskConfigPayload", () => {
     expect(out.max_concurrent_positions).toBeUndefined();
     expect(out.max_gross_exposure).toBeUndefined();
     expect(toRiskConfigPayload({ max_positions: "abc" }).max_concurrent_positions).toBeUndefined();
+  });
+});
+
+describe("signalStatus", () => {
+  it("maps a gate pass to approved", () => {
+    expect(signalStatus({ gate: "pass" })).toBe("approved");
+    // gate is the final authority — it already consumed risk_check
+    expect(signalStatus({ gate: "pass", risk_check: "ok" })).toBe("approved");
+  });
+
+  it("maps gate blocks and risk rejections to rejected", () => {
+    expect(signalStatus({ gate: "block_risk:rejected:daily loss" })).toBe("rejected");
+    expect(signalStatus({ gate: "block_confidence" })).toBe("rejected");
+    expect(signalStatus({ risk_check: "rejected:max positions" })).toBe("rejected");
+  });
+
+  it("defaults to staging when no verdict was recorded", () => {
+    // holds / closes never reach the gate; risk_check ok alone is advisory
+    expect(signalStatus({ risk_check: "ok" })).toBe("staging");
+    expect(signalStatus({})).toBe("staging");
+    expect(signalStatus(undefined)).toBe("staging");
+    expect(signalStatus(null)).toBe("staging");
+    expect(signalStatus("not-an-object")).toBe("staging");
+    expect(signalStatus({ gate: 42, risk_check: {} })).toBe("staging");
   });
 });
 

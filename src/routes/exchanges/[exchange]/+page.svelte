@@ -22,18 +22,28 @@
 
   let exchange = $derived($page.params.exchange ?? '');
 
-  /** The venue, wherever it lives (spot bot venues first, then futures). */
-  let venue = $derived(
-    [...($status?.spot?.exchanges ?? []), ...($status?.funding?.exchanges ?? [])].find(
-      (v) => v.exchange === exchange,
+  /** The bot document (spot first, then funding) whose venue list contains this exchange. */
+  let venueDoc = $derived(
+    [$status?.spot, $status?.funding].find((doc) =>
+      (doc?.exchanges ?? []).some((v) => v.exchange === exchange),
     ) ?? null,
   );
 
-  /** This venue's recent trade events, newest first. */
+  /** The venue's status row within that document. */
+  let venue = $derived(venueDoc?.exchanges.find((v) => v.exchange === exchange) ?? null);
+
+  /**
+   * This venue's recent trade events (from the owning bot document), newest
+   * first. Spot events carry a `venue` field (the spot bot is multi-venue) —
+   * match it exactly. The funding bot's events (futures fills / paper records)
+   * carry no `venue`, so venue-less events are attributed to the document's
+   * venue when it reports exactly one (today it registers only
+   * "kucoin-futures", so the attribution is unambiguous).
+   */
   let events = $derived(
-    ([...(($status?.spot?.recent_events as TradeEvent[] | undefined) ?? [])]
-      .filter((e) => e.venue === exchange)
-      .reverse()),
+    [...((venueDoc?.recent_events as TradeEvent[] | undefined) ?? [])]
+      .filter((e) => e.venue === exchange || (e.venue == null && venueDoc?.exchanges.length === 1))
+      .reverse(),
   );
 
   function usd(n: number): string {
