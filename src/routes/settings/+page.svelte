@@ -35,6 +35,9 @@
     source: 'redis' | 'env_defaults';
     valid_intervals: string[];
     redis_available: boolean;
+    /** Fields janus reads once at boot — a saved override only takes effect
+     *  after the janus/optimizer process restarts (currently all of them). */
+    requires_restart?: string[];
   }
 
   interface BootstrapPushResponse {
@@ -108,6 +111,8 @@
   let janusConfigSource = $state<'redis' | 'env_defaults'>('env_defaults');
   let janusRedisAvailable = $state(false);
   let janusValidIntervals = $state<string[]>(['1h', '4h', '6h', '12h', '1D']);
+  // Boot-time fields as reported by janus — saved values apply on restart.
+  let janusRequiresRestart = $state<string[]>([]);
   let janusLoading = $state(true);
   let janusSaving = $state(false);
   let janusFeedback = $state('');
@@ -288,6 +293,7 @@
       janusConfigSource = res.source;
       janusRedisAvailable = res.redis_available;
       if (res.valid_intervals?.length) janusValidIntervals = res.valid_intervals;
+      janusRequiresRestart = res.requires_restart ?? [];
     } catch {
       // Keep defaults
     } finally {
@@ -372,6 +378,14 @@
 <svelte:head>
   <title>Settings — FKS Terminal</title>
 </svelte:head>
+
+<!-- Janus reports which config fields are boot-time only (requires_restart);
+     mark those inputs so a save isn't mistaken for a live reconfigure. -->
+{#snippet restartHint(field: string)}
+  {#if janusRequiresRestart.includes(field)}
+    <span class="restart-hint" title="Janus reads this at boot — the saved value takes effect after a janus restart">↻ after restart</span>
+  {/if}
+{/snippet}
 
 <div class="page">
   <!-- ════════════════════════════════════════════════════════════════════
@@ -641,7 +655,7 @@
       {:else}
         <!-- Optimize Assets -->
         <div class="form-group">
-          <label class="form-label" for="janus-assets">Optimize Assets</label>
+          <label class="form-label" for="janus-assets">Optimize Assets{@render restartHint('optimize_assets')}</label>
           <input
             id="janus-assets"
             class="form-input"
@@ -656,7 +670,7 @@
         <div class="form-row">
           <!-- Interval -->
           <div class="form-group form-grow">
-            <label class="form-label" for="janus-interval">Optimize Interval</label>
+            <label class="form-label" for="janus-interval">Optimize Interval{@render restartHint('optimize_interval')}</label>
             <select id="janus-interval" class="form-select" bind:value={janusConfig.optimize_interval}>
               {#each janusValidIntervals as iv}
                 <option value={iv}>{iv}</option>
@@ -666,7 +680,7 @@
 
           <!-- Trials -->
           <div class="form-group form-grow">
-            <label class="form-label" for="janus-trials">Trials</label>
+            <label class="form-label" for="janus-trials">Trials{@render restartHint('optimize_trials')}</label>
             <input
               id="janus-trials"
               class="form-input"
@@ -680,7 +694,7 @@
 
           <!-- Historical Days -->
           <div class="form-group form-grow">
-            <label class="form-label" for="janus-hist-days">Historical Days</label>
+            <label class="form-label" for="janus-hist-days">Historical Days{@render restartHint('optimize_historical_days')}</label>
             <input
               id="janus-hist-days"
               class="form-input"
@@ -695,7 +709,7 @@
 
         <!-- Kline Intervals -->
         <div class="form-group">
-          <label class="form-label" for="janus-kline">Kline Intervals</label>
+          <label class="form-label" for="janus-kline">Kline Intervals{@render restartHint('data_kline_intervals')}</label>
           <input
             id="janus-kline"
             class="form-input"
@@ -709,7 +723,7 @@
         <div class="form-row">
           <!-- Bootstrap Days -->
           <div class="form-group form-grow">
-            <label class="form-label" for="janus-boot-days">Bootstrap History (days)</label>
+            <label class="form-label" for="janus-boot-days">Bootstrap History (days){@render restartHint('janus_bootstrap_days')}</label>
             <input
               id="janus-boot-days"
               class="form-input"
@@ -723,7 +737,7 @@
 
           <!-- Auto-start -->
           <div class="form-group form-grow">
-            <span class="form-label">Auto-start on Boot</span>
+            <span class="form-label">Auto-start on Boot{@render restartHint('janus_auto_start')}</span>
             <label class="toggle-label">
               <input
                 type="checkbox"
@@ -1051,6 +1065,16 @@
     color: var(--t3);
     margin-top: 2px;
     display: block;
+  }
+
+  /* Boot-time config marker (janus requires_restart fields). */
+  .restart-hint {
+    margin-left: 6px;
+    font-size: 9px;
+    color: var(--amber);
+    text-transform: none;
+    letter-spacing: 0;
+    cursor: help;
   }
 
   /* ═══════════════════════════════════════════════════════════════════
