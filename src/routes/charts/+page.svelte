@@ -174,7 +174,52 @@
   interface OscMeta { id: string; label: string; keys: string[]; }
   let oscillatorCatalog = $state<OscMeta[]>([]);
   let activeOscillators = $state<OscMeta[]>([]);
-  let indPickerOpen = $state(false);
+  // TradingView-style "Indicators" dropdown (replaces the old chip row + picker)
+  let indMenuOpen = $state(false);
+
+  // ── Indicator parameters (TW-style editable settings) ──────────────────────
+  // Persisted alongside the toggle booleans in fks_chart_indicators (additive
+  // `params` key, so pre-existing saved layouts still load).
+  interface OverlayParams {
+    ema9: { period: number };
+    ema21: { period: number };
+    sma20: { period: number };
+    wma: { period: number };
+    bb: { period: number; std: number };
+    atr: { period: number };
+    donchian: { period: number };
+    keltner: { period: number; mult: number };
+    rsi: { period: number };
+    macd: { fast: number; slow: number; signal: number };
+  }
+  const DEFAULT_PARAMS: OverlayParams = {
+    ema9: { period: 9 }, ema21: { period: 21 }, sma20: { period: 20 },
+    wma: { period: 20 }, bb: { period: 20, std: 2 }, atr: { period: 14 },
+    donchian: { period: 20 }, keltner: { period: 20, mult: 2 },
+    rsi: { period: 14 }, macd: { fast: 12, slow: 26, signal: 9 },
+  };
+  function mergeParams(p?: Partial<OverlayParams>): OverlayParams {
+    const base = structuredClone(DEFAULT_PARAMS) as any;
+    for (const k of Object.keys(base)) {
+      const o = (p as any)?.[k];
+      if (o && typeof o === 'object') base[k] = { ...base[k], ...o };
+    }
+    return base as OverlayParams;
+  }
+  let indParams = $state<OverlayParams>(structuredClone(DEFAULT_PARAMS));
+  // Per-oscillator-pane params (stoch/willr/cci/adx), by catalog id.
+  let oscParams = $state<Record<string, number[]>>({});
+  // Which oscillator panes take params, and what they mean (obv has none).
+  const OSC_PARAM_DEFS: Record<string, { names: string[]; defaults: number[] }> = {
+    stoch: { names: ['%K Length', '%D Smoothing'], defaults: [14, 3] },
+    willr: { names: ['Length'], defaults: [14] },
+    cci:   { names: ['Length'], defaults: [20] },
+    adx:   { names: ['Length'], defaults: [14] },
+  };
+
+  // Inline legend/pane parameter editor (one open at a time, by indicator id)
+  let editorId = $state<string | null>(null);
+  let editorDraft = $state<Record<string, number>>({});
 
   // Indicator presets + layout persistence (C3)
   let presetMenuOpen = $state(false);
@@ -185,6 +230,8 @@
     atr: boolean; sma20: boolean; vwap: boolean; wma: boolean;
     donchian: boolean; keltner: boolean; rsi: boolean; macd: boolean;
     oscillators: string[];
+    params?: Partial<OverlayParams>;
+    oscParams?: Record<string, number[]>;
   }
   const BLANK_INDICATORS: IndicatorState = {
     ema9: false, ema21: false, volume: false, bb: false, atr: false,
@@ -270,7 +317,7 @@
     const _track = [
       showEma9, showEma21, showVolume, showBB, showATR, showSMA20,
       showVWAP, showWMA, showDonchian, showKeltner, showRSI, showMACD,
-      activeOscillators,
+      activeOscillators, JSON.stringify(indParams), JSON.stringify(oscParams),
     ];
     if (persistReady && _track.length) saveIndicatorState();
   });
@@ -314,9 +361,9 @@
     ema9Series = chart.addLineSeries({
       color: '#00e5ff', lineWidth: 1,
       priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false, title: 'EMA 9',
+      crosshairMarkerVisible: false, title: `EMA ${indParams.ema9.period}`,
     });
-    ema9Series.setData(calcEMA(candles, 9));
+    ema9Series.setData(calcEMA(candles, indParams.ema9.period));
   }
   function removeEma9() {
     if (!chart || !ema9Series) return;
@@ -329,9 +376,9 @@
     ema21Series = chart.addLineSeries({
       color: '#b388ff', lineWidth: 1,
       priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false, title: 'EMA 21',
+      crosshairMarkerVisible: false, title: `EMA ${indParams.ema21.period}`,
     });
-    ema21Series.setData(calcEMA(candles, 21));
+    ema21Series.setData(calcEMA(candles, indParams.ema21.period));
   }
   function removeEma21() {
     if (!chart || !ema21Series) return;
@@ -358,8 +405,8 @@
   }
 
   function refreshOverlays() {
-    if (showEma9 && ema9Series) ema9Series.setData(calcEMA(candles, 9));
-    if (showEma21 && ema21Series) ema21Series.setData(calcEMA(candles, 21));
+    if (showEma9 && ema9Series) ema9Series.setData(calcEMA(candles, indParams.ema9.period));
+    if (showEma21 && ema21Series) ema21Series.setData(calcEMA(candles, indParams.ema21.period));
     if (showVolume && volumeSeries) {
       volumeSeries.setData(candles.map((c) => ({
         time: c.time, value: c.volume,
@@ -394,8 +441,9 @@
     if (!showBB) return;
 
     try {
+      const { period, std } = indParams.bb;
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=bbands`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=bb:${period}:${std}`
       );
       const ind = res.indicators ?? {};
       if (ind.bb_upper?.length && chart) {
@@ -461,7 +509,7 @@
     indicatorLoading = true;
     try {
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=rsi`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=rsi:${indParams.rsi.period}`
       );
       const rsiData = res.indicators?.rsi ?? [];
       rsiSeries.setData(rsiData);
@@ -491,7 +539,7 @@
     indicatorLoading = true;
     try {
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=atr`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=atr:${indParams.atr.period}`
       );
       const atrData = res.indicators?.atr ?? [];
       if (atrData.length && chart) {
@@ -501,7 +549,7 @@
           priceLineVisible: false,
           lastValueVisible: true,
           crosshairMarkerVisible: false,
-          title: 'ATR 14',
+          title: `ATR ${indParams.atr.period}`,
           priceScaleId: 'atr',
         });
         chart.priceScale('atr').applyOptions({
@@ -524,15 +572,16 @@
     if (!showSMA20) return;
     indicatorLoading = true;
     try {
+      const p = indParams.sma20.period;
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=sma20`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=sma${p}`
       );
-      const data = res.indicators?.sma20 ?? [];
+      const data = res.indicators?.[`sma${p}`] ?? [];
       if (data.length && chart) {
         sma20Series = chart.addLineSeries({
           color: '#eab308', lineWidth: 1,
           priceLineVisible: false, lastValueVisible: false,
-          crosshairMarkerVisible: false, title: 'SMA 20',
+          crosshairMarkerVisible: false, title: `SMA ${p}`,
         });
         sma20Series.setData(data);
       }
@@ -574,15 +623,16 @@
     if (!showWMA) return;
     indicatorLoading = true;
     try {
+      const p = indParams.wma.period;
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=wma20`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=wma${p}`
       );
-      const data = res.indicators?.wma20 ?? [];
+      const data = res.indicators?.[`wma${p}`] ?? [];
       if (data.length && chart) {
         wmaSeries = chart.addLineSeries({
           color: '#34d399', lineWidth: 1,
           priceLineVisible: false, lastValueVisible: false,
-          crosshairMarkerVisible: false, title: 'WMA 20',
+          crosshairMarkerVisible: false, title: `WMA ${p}`,
         });
         wmaSeries.setData(data);
       }
@@ -601,7 +651,7 @@
     if (!showDonchian) return;
     try {
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=donchian`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=donchian:${indParams.donchian.period}`
       );
       const ind = res.indicators ?? {};
       if (ind.dc_upper?.length && chart) {
@@ -625,8 +675,9 @@
     if (kcLowSeries)   { chart.removeSeries(kcLowSeries);   kcLowSeries = null; }
     if (!showKeltner) return;
     try {
+      const { period, mult } = indParams.keltner;
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=keltner`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=keltner:${period}:${mult}`
       );
       const ind = res.indicators ?? {};
       if (ind.kc_upper?.length && chart) {
@@ -715,8 +766,9 @@
     if (!macdHistSeries || !macdLineSeries || !macdSignalSeries) return;
     indicatorLoading = true;
     try {
+      const { fast, slow, signal } = indParams.macd;
       const res = await api.get<{ indicators?: Record<string, IndicatorPoint[]> }>(
-        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=macd`
+        `/api/chart/${encodeURIComponent(apiSymbol)}/indicators?interval=${interval}&days_back=5&indicators=macd:${fast}:${slow}:${signal}`
       );
       const ind = res.indicators ?? {};
       // Histogram bars: green above zero, red below
@@ -947,48 +999,71 @@
   // When the visible range nears the oldest loaded bar, fetch older candles
   // and prepend them. Local overlays (EMA/volume) recompute over the merged
   // series; server-computed overlays keep their original window.
+  //
+  // A single visible-range event runs a fetch *burst*: after each successful
+  // prepend the CURRENT visible logical range is re-checked, and fetching
+  // continues while the left edge is still starved (barsBefore < threshold) —
+  // so one big zoom-out fills the whole gap instead of loading one page per
+  // user interaction. Bounded by BACKFILL_MAX_PAGES per burst; empty pages
+  // widen the days window (gap crossing) and count against the same cap, so
+  // the exhausted case (common here — QuestDB only has recent data) converges
+  // in ≤3 requests and then never refires (backfillDone).
+  const BACKFILL_TRIGGER_BARS = 30;
+  const BACKFILL_MAX_PAGES = 12;
+
   async function maybeBackfill(range: any) {
     if (!range || backfillBusy || backfillDone || !candleSeries || candles.length === 0) return;
-    const info = candleSeries.barsInLogicalRange(range);
-    if (!info || info.barsBefore > 30) return;
+    const first = candleSeries.barsInLogicalRange(range);
+    if (!first || first.barsBefore > BACKFILL_TRIGGER_BARS) return;
 
     backfillBusy = true;
     const seq = loadSeq;
     try {
-      const oldestSec = candles[0].time as number;
-      const res = await fetch(
-        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=${backfillWindowDays}&limit=1000&before=${oldestSec * 1000}`,
-        { headers: { Accept: 'application/json' } }
-      );
-      const data = await res.json();
-      if (seq !== loadSeq) return; // chart was reloaded while we were fetching
-      // Anchor check: if the array head moved while we awaited (reload race,
-      // any external mutation), this batch was computed against stale state.
-      if (candles.length === 0 || (candles[0].time as number) !== oldestSec) return;
+      for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
+        if (backfillDone || !candleSeries || candles.length === 0) return;
+        const oldestSec = candles[0].time as number;
+        const res = await fetch(
+          `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=${backfillWindowDays}&limit=1000&before=${oldestSec * 1000}`,
+          { headers: { Accept: 'application/json' } }
+        );
+        const data = await res.json();
+        if (seq !== loadSeq) return; // chart was reloaded while we were fetching
+        // Anchor check: if the array head moved while we awaited (reload race,
+        // any external mutation), this batch was computed against stale state.
+        if (candles.length === 0 || (candles[0].time as number) !== oldestSec) return;
 
-      const older: CandleData[] = (Array.isArray(data.candles) ? (data.candles as CandleBar[]) : [])
-        .map((c) => ({
-          time: Math.floor(c.timestamp / 1000) as any,
-          open: c.open, high: c.high, low: c.low, close: c.close,
-          volume: c.volume ?? 0,
-        }))
-        .filter((c) => (c.time as number) < oldestSec); // drop any seam duplicate
+        const older: CandleData[] = (Array.isArray(data.candles) ? (data.candles as CandleBar[]) : [])
+          .map((c) => ({
+            time: Math.floor(c.timestamp / 1000) as any,
+            open: c.open, high: c.high, low: c.low, close: c.close,
+            volume: c.volume ?? 0,
+          }))
+          .filter((c) => (c.time as number) < oldestSec); // drop any seam duplicate
 
-      if (older.length === 0) {
-        // Empty page ≠ end of history: a data gap wider than the window looks
-        // identical. Widen the window (up to the server's 365-day cap) before
-        // declaring the history exhausted.
-        if (backfillWindowDays < 365) {
-          backfillWindowDays = Math.min(365, backfillWindowDays * 4);
-        } else {
+        if (older.length === 0) {
+          // Empty page ≠ end of history: a data gap wider than the window looks
+          // identical. Widen the window (up to the server's 365-day cap) before
+          // declaring the history exhausted. Widening retries continue within
+          // this burst (they count toward the page cap).
+          if (backfillWindowDays < 365) {
+            backfillWindowDays = Math.min(365, backfillWindowDays * 4);
+            continue;
+          }
           backfillDone = true; // nothing within a full year behind the cutoff
+          return;
         }
-        return;
+        backfillWindowDays = 30; // gap crossed (or normal page) — reset the window
+        candles = [...older, ...candles];
+        candleSeries.setData(candles);
+        refreshOverlays();
+
+        // Re-check the CURRENT visible range (prepending shifts logical
+        // indices; the event's range is stale). Keep fetching while the left
+        // edge is still starved — e.g. after a single deep zoom-out.
+        const now = chart?.timeScale().getVisibleLogicalRange();
+        const info = now && candleSeries ? candleSeries.barsInLogicalRange(now) : null;
+        if (!info || info.barsBefore > BACKFILL_TRIGGER_BARS) return;
       }
-      backfillWindowDays = 30; // gap crossed (or normal page) — reset the window
-      candles = [...older, ...candles];
-      candleSeries.setData(candles);
-      refreshOverlays();
     } catch {
       // transient failure — retry on the next range change
     } finally {
@@ -1215,10 +1290,166 @@
     if (!activeOscillators.some((x) => x.id === m.id)) {
       activeOscillators = [...activeOscillators, m];
     }
-    indPickerOpen = false;
   }
   function removeOscillator(id: string) {
     activeOscillators = activeOscillators.filter((x) => x.id !== id);
+    if (editorId === `osc:${id}`) editorId = null;
+  }
+
+  // ─── TW-style Indicators menu ──────────────────────────────────────────────
+  // One dropdown, grouped Overlays / Oscillators. Clicking toggles the entry
+  // (active rows are checked); the menu stays open for multi-add and closes on
+  // outside click or Esc.
+  interface MenuItem { id: string; label: string; color: string; active: boolean; }
+
+  let overlayMenu = $derived<MenuItem[]>([
+    { id: 'ema9',     label: `EMA ${indParams.ema9.period}`,   color: '#00e5ff', active: showEma9 },
+    { id: 'ema21',    label: `EMA ${indParams.ema21.period}`,  color: '#b388ff', active: showEma21 },
+    { id: 'sma20',    label: `SMA ${indParams.sma20.period}`,  color: '#eab308', active: showSMA20 },
+    { id: 'wma',      label: `WMA ${indParams.wma.period}`,    color: '#34d399', active: showWMA },
+    { id: 'vwap',     label: 'VWAP',                           color: '#e879f9', active: showVWAP },
+    { id: 'bb',       label: `Bollinger Bands (${indParams.bb.period}, ${indParams.bb.std})`, color: '#ffa726', active: showBB },
+    { id: 'donchian', label: `Donchian (${indParams.donchian.period})`, color: '#38bdf8', active: showDonchian },
+    { id: 'keltner',  label: `Keltner (${indParams.keltner.period}, ${indParams.keltner.mult})`, color: '#c084fc', active: showKeltner },
+    { id: 'volume',   label: 'Volume',                         color: '#26a69a', active: showVolume },
+    { id: 'atr',      label: `ATR ${indParams.atr.period}`,    color: '#f59e0b', active: showATR },
+  ]);
+
+  // Live label for a catalog oscillator: base name + current params (the
+  // catalog label bakes in the defaults, e.g. "Stochastic (14, 3)").
+  const OSC_BASE_LABELS: Record<string, string> = {
+    stoch: 'Stochastic', willr: 'Williams %R', cci: 'CCI', adx: 'ADX',
+  };
+  function oscLabel(m: OscMeta): string {
+    const def = OSC_PARAM_DEFS[m.id];
+    if (!def) return m.label;
+    const p = oscParams[m.id] ?? def.defaults;
+    return `${OSC_BASE_LABELS[m.id] ?? m.label} (${p.join(', ')})`;
+  }
+
+  let oscillatorMenu = $derived<MenuItem[]>([
+    { id: 'rsi',  label: `RSI ${indParams.rsi.period}`, color: '#6366f1', active: showRSI },
+    { id: 'macd', label: `MACD (${indParams.macd.fast}, ${indParams.macd.slow}, ${indParams.macd.signal})`, color: '#2196f3', active: showMACD },
+    ...oscillatorCatalog.map((m) => ({
+      id: `osc:${m.id}`,
+      label: oscLabel(m),
+      color: '#22d3ee',
+      active: activeOscillators.some((x) => x.id === m.id),
+    })),
+  ]);
+
+  async function toggleIndicator(id: string) {
+    if (id.startsWith('osc:')) {
+      const oid = id.slice(4);
+      if (activeOscillators.some((x) => x.id === oid)) removeOscillator(oid);
+      else {
+        const m = oscillatorCatalog.find((x) => x.id === oid);
+        if (m) addOscillator(m);
+      }
+      return;
+    }
+    switch (id) {
+      case 'ema9': toggleEma9(); break;
+      case 'ema21': toggleEma21(); break;
+      case 'sma20': await toggleSMA20(); break;
+      case 'wma': await toggleWMA(); break;
+      case 'vwap': await toggleVWAP(); break;
+      case 'bb': await toggleBB(); break;
+      case 'donchian': await toggleDonchian(); break;
+      case 'keltner': await toggleKeltner(); break;
+      case 'volume': toggleVolume(); break;
+      case 'atr': await toggleATR(); break;
+      case 'rsi': await toggleRSI(); break;
+      case 'macd': await toggleMACD(); break;
+    }
+    if (editorId === id && !isIndicatorActive(id)) editorId = null;
+  }
+
+  function isIndicatorActive(id: string): boolean {
+    return [...overlayMenu, ...oscillatorMenu].find((m) => m.id === id)?.active ?? false;
+  }
+
+  // ─── On-chart legend (active overlays) + inline param editor ───────────────
+  // Each active price-pane overlay gets a legend row: label, gear (edit params
+  // in place), X (remove). VWAP / Volume have no free parameters — the editor
+  // shows them as display-only.
+  interface ParamField { key: string; label: string; step?: number; }
+  interface LegendItem {
+    id: string; label: string; color: string;
+    fields: ParamField[]; // empty → display-only note
+    note?: string;
+  }
+
+  const PERIOD: ParamField = { key: 'period', label: 'Length' };
+  let legendItems = $derived<LegendItem[]>([
+    ...(showEma9  ? [{ id: 'ema9',  label: `EMA ${indParams.ema9.period}`,  color: '#00e5ff', fields: [PERIOD] }] : []),
+    ...(showEma21 ? [{ id: 'ema21', label: `EMA ${indParams.ema21.period}`, color: '#b388ff', fields: [PERIOD] }] : []),
+    ...(showSMA20 ? [{ id: 'sma20', label: `SMA ${indParams.sma20.period}`, color: '#eab308', fields: [PERIOD] }] : []),
+    ...(showWMA   ? [{ id: 'wma',   label: `WMA ${indParams.wma.period}`,   color: '#34d399', fields: [PERIOD] }] : []),
+    ...(showVWAP  ? [{ id: 'vwap',  label: 'VWAP', color: '#e879f9', fields: [], note: 'Cumulative session VWAP — no parameters' }] : []),
+    ...(showBB    ? [{ id: 'bb',    label: `BB (${indParams.bb.period}, ${indParams.bb.std})`, color: '#ffa726',
+                       fields: [PERIOD, { key: 'std', label: 'StdDev', step: 0.1 }] }] : []),
+    ...(showDonchian ? [{ id: 'donchian', label: `Donchian (${indParams.donchian.period})`, color: '#38bdf8', fields: [PERIOD] }] : []),
+    ...(showKeltner  ? [{ id: 'keltner',  label: `Keltner (${indParams.keltner.period}, ${indParams.keltner.mult})`, color: '#c084fc',
+                       fields: [PERIOD, { key: 'mult', label: 'Multiplier', step: 0.1 }] }] : []),
+    ...(showVolume ? [{ id: 'volume', label: 'Volume', color: '#26a69a', fields: [], note: 'Bar volume — no parameters' }] : []),
+    ...(showATR    ? [{ id: 'atr', label: `ATR ${indParams.atr.period}`, color: '#f59e0b', fields: [PERIOD] }] : []),
+  ]);
+
+  const clampPeriod = (v: number, def: number): number =>
+    Number.isFinite(v) ? Math.min(500, Math.max(2, Math.round(v))) : def;
+  const clampFactor = (v: number, def: number): number =>
+    Number.isFinite(v) ? Math.min(10, Math.max(0.1, Math.round(v * 10) / 10)) : def;
+
+  function openEditor(id: string) {
+    if (editorId === id) { editorId = null; return; }
+    editorDraft = { ...(indParams as any)[id] };
+    editorId = id;
+  }
+
+  // Apply the draft params for `id`, clamp, persist, and reload that overlay/pane.
+  async function applyEditor(id: string) {
+    const cur = (indParams as any)[id] as Record<string, number>;
+    const next: Record<string, number> = {};
+    for (const [k, v] of Object.entries(cur)) {
+      const draft = Number(editorDraft[k]);
+      next[k] = k === 'std' || k === 'mult' ? clampFactor(draft, v) : clampPeriod(draft, v);
+    }
+    (indParams as any)[id] = next;
+    editorId = null;
+    await reloadIndicator(id);
+  }
+
+  // Recompute/refetch a single indicator after a param change.
+  async function reloadIndicator(id: string) {
+    switch (id) {
+      case 'ema9':
+        if (ema9Series) {
+          ema9Series.applyOptions({ title: `EMA ${indParams.ema9.period}` });
+          ema9Series.setData(calcEMA(candles, indParams.ema9.period));
+        }
+        break;
+      case 'ema21':
+        if (ema21Series) {
+          ema21Series.applyOptions({ title: `EMA ${indParams.ema21.period}` });
+          ema21Series.setData(calcEMA(candles, indParams.ema21.period));
+        }
+        break;
+      case 'sma20': await loadSMA20(); break;
+      case 'wma': await loadWMA(); break;
+      case 'bb': await loadBBands(); break;
+      case 'donchian': await loadDonchian(); break;
+      case 'keltner': await loadKeltner(); break;
+      case 'atr': await loadATR(); break;
+      case 'rsi': await loadRSIData(); break;
+      case 'macd': await loadMACDData(); break;
+    }
+  }
+
+  // Remove an indicator from its legend/pane X (same as toggling it off).
+  async function removeIndicator(id: string) {
+    if (isIndicatorActive(id)) await toggleIndicator(id);
+    if (editorId === id) editorId = null;
   }
 
   // ─── Indicator presets + layout persistence (C3) ───────────────────────────
@@ -1228,6 +1459,8 @@
       atr: showATR, sma20: showSMA20, vwap: showVWAP, wma: showWMA,
       donchian: showDonchian, keltner: showKeltner, rsi: showRSI, macd: showMACD,
       oscillators: activeOscillators.map((m) => m.id),
+      params: $state.snapshot(indParams),
+      oscParams: $state.snapshot(oscParams),
     };
   }
 
@@ -1246,6 +1479,8 @@
         ...BLANK_INDICATORS,
         ...p,
         oscillators: Array.isArray(p.oscillators) ? p.oscillators.map(String) : [],
+        params: mergeParams(p.params),
+        oscParams: typeof p.oscParams === 'object' && p.oscParams !== null ? p.oscParams : {},
       };
     } catch {
       return null;
@@ -1254,6 +1489,9 @@
 
   // Reconcile the chart to a desired indicator set (used by presets + restore).
   async function applyIndicatorState(s: IndicatorState) {
+    // Restore saved params first (presets omit them → current params stay).
+    if (s.params) indParams = mergeParams(s.params);
+    if (s.oscParams) oscParams = { ...s.oscParams };
     // Client overlays (synchronous add/remove).
     showEma9 = s.ema9;     if (s.ema9) addEma9(); else removeEma9();
     showEma21 = s.ema21;   if (s.ema21) addEma21(); else removeEma21();
@@ -1390,13 +1628,20 @@
     ro.observe(chartContainer);
 
     const handleOutsideClick = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest('.symbol-search-wrap')) showDropdown = false;
+      const t = e.target as HTMLElement;
+      if (!t.closest('.symbol-search-wrap')) showDropdown = false;
+      if (!t.closest('.ind-picker')) { indMenuOpen = false; presetMenuOpen = false; }
     };
     document.addEventListener('click', handleOutsideClick);
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { indMenuOpen = false; presetMenuOpen = false; editorId = null; }
+    };
+    document.addEventListener('keydown', handleEsc);
 
     return () => {
       ro.disconnect();
       document.removeEventListener('click', handleOutsideClick);
+      document.removeEventListener('keydown', handleEsc);
     };
   });
 
@@ -1471,80 +1716,36 @@
         {/each}
       </div>
 
-      <!-- Indicators: client-side -->
-      <div class="ind-group" aria-label="Overlay indicators">
-        <button class="ind-btn" class:active={showEma9}  onclick={toggleEma9}  aria-pressed={showEma9 ? 'true' : 'false'}>
-          <span class="ind-dot" style="background:#00e5ff"></span>EMA 9
+      <!-- Indicators dropdown (TW-style: one button, grouped menu) -->
+      <div class="ind-group ind-picker" aria-label="Indicators">
+        <button class="ind-btn" class:active={indMenuOpen}
+          onclick={() => { indMenuOpen = !indMenuOpen; presetMenuOpen = false; }}
+          aria-expanded={indMenuOpen ? 'true' : 'false'} aria-haspopup="menu"
+          title="Add or remove indicators">
+          ƒ Indicators
+          {#if indicatorLoading}<span class="ind-spin"></span>{/if}
         </button>
-        <button class="ind-btn" class:active={showEma21} onclick={toggleEma21} aria-pressed={showEma21 ? 'true' : 'false'}>
-          <span class="ind-dot" style="background:#b388ff"></span>EMA 21
-        </button>
-        <button class="ind-btn" class:active={showVolume} onclick={toggleVolume} aria-pressed={showVolume ? 'true' : 'false'}>
-          <span class="ind-dot" style="background:#26a69a"></span>VOL
-        </button>
-        <button class="ind-btn" class:active={showBB} onclick={toggleBB} aria-pressed={showBB ? 'true' : 'false'}
-          title="Bollinger Bands 20/2 (server-computed)">
-          <span class="ind-dot" style="background:#ffa726"></span>BB
-          {#if indicatorLoading && showBB}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showATR} onclick={toggleATR} aria-pressed={showATR ? 'true' : 'false'}
-          title="Average True Range 14 — price overlay (server-computed)">
-          <span class="ind-dot" style="background:#f59e0b"></span>ATR
-          {#if indicatorLoading && showATR}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showSMA20} onclick={toggleSMA20} aria-pressed={showSMA20 ? 'true' : 'false'}
-          title="Simple Moving Average 20 (server-computed)">
-          <span class="ind-dot" style="background:#eab308"></span>SMA
-          {#if indicatorLoading && showSMA20}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showVWAP} onclick={toggleVWAP} aria-pressed={showVWAP ? 'true' : 'false'}
-          title="Volume-Weighted Average Price (server-computed)">
-          <span class="ind-dot" style="background:#e879f9"></span>VWAP
-          {#if indicatorLoading && showVWAP}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showWMA} onclick={toggleWMA} aria-pressed={showWMA ? 'true' : 'false'}
-          title="Weighted Moving Average 20 (server-computed)">
-          <span class="ind-dot" style="background:#34d399"></span>WMA
-          {#if indicatorLoading && showWMA}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showDonchian} onclick={toggleDonchian} aria-pressed={showDonchian ? 'true' : 'false'}
-          title="Donchian Channel 20 (server-computed)">
-          <span class="ind-dot" style="background:#38bdf8"></span>DC
-          {#if indicatorLoading && showDonchian}<span class="ind-spin"></span>{/if}
-        </button>
-        <button class="ind-btn" class:active={showKeltner} onclick={toggleKeltner} aria-pressed={showKeltner ? 'true' : 'false'}
-          title="Keltner Channel 20/2 (server-computed)">
-          <span class="ind-dot" style="background:#c084fc"></span>KC
-          {#if indicatorLoading && showKeltner}<span class="ind-spin"></span>{/if}
-        </button>
-      </div>
-
-      <!-- Indicators: sub-pane -->
-      <div class="ind-group" aria-label="Sub-pane indicators">
-        <button class="ind-btn" class:active={showRSI} onclick={toggleRSI} aria-pressed={showRSI ? 'true' : 'false'}
-          title="RSI 14 (server-computed)">
-          <span class="ind-dot" style="background:#6366f1"></span>RSI
-        </button>
-        <button class="ind-btn" class:active={showMACD} onclick={toggleMACD} aria-pressed={showMACD ? 'true' : 'false'}
-          title="MACD 12/26/9 — histogram + signal (server-computed)">
-          <span class="ind-dot" style="background:#2196f3"></span>MACD
-          {#if indicatorLoading && showMACD}<span class="ind-spin"></span>{/if}
-        </button>
-      </div>
-
-      <!-- More indicators: oscillator sub-pane picker -->
-      <div class="ind-group ind-picker" aria-label="Add oscillator sub-pane">
-        <button class="ind-btn" onclick={() => (indPickerOpen = !indPickerOpen)}
-          aria-expanded={indPickerOpen ? 'true' : 'false'} aria-haspopup="menu"
-          title="Add an oscillator sub-pane (Stoch, Williams %R, CCI, OBV, ADX)">+ IND</button>
-        {#if indPickerOpen}
-          <div class="ind-menu" role="menu">
-            {#each oscillatorCatalog as m (m.id)}
-              <button class="ind-menu-item" role="menuitem"
-                onclick={() => addOscillator(m)}
-                disabled={activeOscillators.some((x) => x.id === m.id)}>{m.label}</button>
-            {:else}
-              <span class="ind-menu-empty">loading…</span>
+        {#if indMenuOpen}
+          <div class="ind-menu ind-menu-groups" role="menu" aria-label="Indicators menu">
+            <div class="ind-menu-head" role="presentation">Overlays</div>
+            {#each overlayMenu as item (item.id)}
+              <button class="ind-menu-item" class:checked={item.active} role="menuitemcheckbox"
+                aria-checked={item.active ? 'true' : 'false'}
+                onclick={() => toggleIndicator(item.id)}>
+                <span class="ind-dot" style="background:{item.color}"></span>
+                <span class="ind-menu-label">{item.label}</span>
+                {#if item.active}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
+              </button>
+            {/each}
+            <div class="ind-menu-head" role="presentation">Oscillators</div>
+            {#each oscillatorMenu as item (item.id)}
+              <button class="ind-menu-item" class:checked={item.active} role="menuitemcheckbox"
+                aria-checked={item.active ? 'true' : 'false'}
+                onclick={() => toggleIndicator(item.id)}>
+                <span class="ind-dot" style="background:{item.color}"></span>
+                <span class="ind-menu-label">{item.label}</span>
+                {#if item.active}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
+              </button>
             {/each}
           </div>
         {/if}
@@ -1552,7 +1753,7 @@
 
       <!-- Indicator presets -->
       <div class="ind-group ind-picker" aria-label="Indicator presets">
-        <button class="ind-btn" onclick={() => (presetMenuOpen = !presetMenuOpen)}
+        <button class="ind-btn" onclick={() => { presetMenuOpen = !presetMenuOpen; indMenuOpen = false; }}
           aria-expanded={presetMenuOpen ? 'true' : 'false'} aria-haspopup="menu"
           title="Apply an indicator preset layout">☰ Presets</button>
         {#if presetMenuOpen}
@@ -1657,12 +1858,71 @@
               >{hoverBar.chg >= 0 ? '+' : ''}{hoverBar.chg.toFixed(2)}%</span>
           </div>
         {/if}
+
+        <!-- Active-overlay legend (TW-style, under the OHLC readout) -->
+        {#if legendItems.length > 0}
+          <div class="chart-legend" role="list" aria-label="Active overlays">
+            {#each legendItems as item (item.id)}
+              <div class="legend-row" role="listitem">
+                <span class="ind-dot" style="background:{item.color}"></span>
+                <span class="legend-label">{item.label}</span>
+                <button class="legend-btn" title="Settings — {item.label}"
+                  aria-label="Edit {item.label} settings"
+                  onclick={() => openEditor(item.id)}>⚙</button>
+                <button class="legend-btn legend-x" title="Remove {item.label}"
+                  aria-label="Remove {item.label}"
+                  onclick={() => removeIndicator(item.id)}>✕</button>
+              </div>
+              {#if editorId === item.id}
+                <div class="legend-editor">
+                  {#if item.fields.length > 0}
+                    {#each item.fields as f (f.key)}
+                      <label class="editor-field">
+                        <span>{f.label}</span>
+                        <input type="number" step={f.step ?? 1} min={f.step ? 0.1 : 2} max={f.step ? 10 : 500}
+                          bind:value={editorDraft[f.key]} />
+                      </label>
+                    {/each}
+                    <div class="editor-actions">
+                      <button class="editor-apply" onclick={() => applyEditor(item.id)}>Apply</button>
+                      <button class="editor-cancel" onclick={() => (editorId = null)}>Cancel</button>
+                    </div>
+                  {:else}
+                    <div class="editor-note">{item.note}</div>
+                    <div class="editor-actions">
+                      <button class="editor-cancel" onclick={() => (editorId = null)}>Close</button>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <!-- RSI sub-pane -->
       {#if showRSI}
-        <div class="ind-pane" role="region" aria-label="RSI 14 indicator">
-          <div class="pane-label">RSI 14</div>
+        <div class="ind-pane" role="region" aria-label="RSI {indParams.rsi.period} indicator">
+          <div class="pane-label">RSI</div>
+          <div class="pane-controls">
+            <span class="pane-title">RSI {indParams.rsi.period}</span>
+            <button class="legend-btn" title="Settings — RSI" aria-label="Edit RSI settings"
+              onclick={() => openEditor('rsi')}>⚙</button>
+            <button class="legend-btn legend-x" title="Remove RSI pane" aria-label="Remove RSI pane"
+              onclick={() => removeIndicator('rsi')}>✕</button>
+          </div>
+          {#if editorId === 'rsi'}
+            <div class="legend-editor pane-editor">
+              <label class="editor-field">
+                <span>Length</span>
+                <input type="number" step="1" min="2" max="500" bind:value={editorDraft.period} />
+              </label>
+              <div class="editor-actions">
+                <button class="editor-apply" onclick={() => applyEditor('rsi')}>Apply</button>
+                <button class="editor-cancel" onclick={() => (editorId = null)}>Cancel</button>
+              </div>
+            </div>
+          {/if}
           <div class="pane-chart" bind:this={rsiChartEl}></div>
           <!-- Overbought/oversold markers -->
           <div class="rsi-levels" aria-hidden="true">
@@ -1674,8 +1934,36 @@
 
       <!-- MACD sub-pane -->
       {#if showMACD}
-        <div class="ind-pane macd-pane" role="region" aria-label="MACD 12/26/9 indicator">
+        <div class="ind-pane macd-pane" role="region"
+          aria-label="MACD ({indParams.macd.fast}, {indParams.macd.slow}, {indParams.macd.signal}) indicator">
           <div class="pane-label">MACD</div>
+          <div class="pane-controls">
+            <span class="pane-title">MACD ({indParams.macd.fast}, {indParams.macd.slow}, {indParams.macd.signal})</span>
+            <button class="legend-btn" title="Settings — MACD" aria-label="Edit MACD settings"
+              onclick={() => openEditor('macd')}>⚙</button>
+            <button class="legend-btn legend-x" title="Remove MACD pane" aria-label="Remove MACD pane"
+              onclick={() => removeIndicator('macd')}>✕</button>
+          </div>
+          {#if editorId === 'macd'}
+            <div class="legend-editor pane-editor">
+              <label class="editor-field">
+                <span>Fast</span>
+                <input type="number" step="1" min="2" max="500" bind:value={editorDraft.fast} />
+              </label>
+              <label class="editor-field">
+                <span>Slow</span>
+                <input type="number" step="1" min="2" max="500" bind:value={editorDraft.slow} />
+              </label>
+              <label class="editor-field">
+                <span>Signal</span>
+                <input type="number" step="1" min="2" max="500" bind:value={editorDraft.signal} />
+              </label>
+              <div class="editor-actions">
+                <button class="editor-apply" onclick={() => applyEditor('macd')}>Apply</button>
+                <button class="editor-cancel" onclick={() => (editorId = null)}>Cancel</button>
+              </div>
+            </div>
+          {/if}
           <div class="pane-chart" bind:this={macdChartEl}></div>
         </div>
       {/if}
@@ -1686,9 +1974,12 @@
           {symbol}
           {interval}
           id={osc.id}
-          label={osc.label}
+          label={oscLabel(osc)}
           keys={osc.keys}
           mainChart={chart}
+          params={oscParams[osc.id] ?? OSC_PARAM_DEFS[osc.id]?.defaults ?? []}
+          paramNames={OSC_PARAM_DEFS[osc.id]?.names ?? []}
+          onparams={(p) => { oscParams = { ...oscParams, [osc.id]: p }; }}
           onremove={() => removeOscillator(osc.id)}
         />
       {/each}
@@ -1832,11 +2123,120 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
-  .ind-menu-empty {
-    padding: 5px 8px;
+  .ind-menu-groups {
+    min-width: 210px;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .ind-menu-head {
+    padding: 6px 8px 3px;
+    font-size: 9px;
+    color: var(--t3, #8890b8);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .ind-menu-head:not(:first-child) {
+    margin-top: 4px;
+    border-top: 1px solid var(--b1, #1a1a2e);
+  }
+  .ind-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ind-menu-label { flex: 1; }
+  .ind-menu-item.checked { color: var(--t1, #e6e9f5); }
+  .ind-menu-check { color: var(--accent, #6366f1); font-size: 10px; }
+
+  /* ── On-chart overlay legend + inline param editor ─────────────────────── */
+  .chart-legend {
+    position: absolute;
+    top: 30px; /* under the OHLC readout */
+    left: 8px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    max-height: calc(100% - 60px);
+    overflow-y: auto;
+    pointer-events: none; /* don't block chart drags — rows re-enable */
+  }
+  .chart-legend .legend-row,
+  .chart-legend .legend-editor { pointer-events: auto; }
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 6px;
+    font-size: 10px;
+    color: var(--t2, #b8c0e0);
+    background: rgba(7, 7, 13, 0.72);
+    border: 1px solid var(--b1, #1a1a2e);
+    border-radius: var(--r, 4px);
+    width: fit-content;
+  }
+  .legend-row .ind-dot { opacity: 1; }
+  .legend-label { font-variant-numeric: tabular-nums; }
+  .legend-btn {
+    all: unset;
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--t3, #8890b8);
+    opacity: 0.55;
+    transition: opacity .15s, color .15s;
+  }
+  .legend-row:hover .legend-btn,
+  .pane-controls:hover .legend-btn { opacity: 1; }
+  .legend-btn:hover { color: var(--t1, #e6e9f5); }
+  .legend-btn.legend-x:hover { color: var(--red, #ea3943); }
+  .legend-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: fit-content;
+    padding: 6px 8px;
+    background: var(--bg1, #0a0a12);
+    border: 1px solid var(--b2, #1a1a2e);
+    border-radius: var(--r, 4px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  }
+  .editor-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     font-size: 10px;
     color: var(--t3, #8890b8);
   }
+  .editor-field input {
+    width: 56px;
+    padding: 1px 4px;
+    font-size: 10px;
+    font-family: inherit;
+    color: var(--t1, #e6e9f5);
+    background: var(--bg2, #0c0f14);
+    border: 1px solid var(--b2, #1a1a2e);
+    border-radius: var(--r, 4px);
+  }
+  .editor-field input:focus { border-color: var(--accent, #6366f1); outline: none; }
+  .editor-note { font-size: 9px; color: var(--t3, #8890b8); max-width: 180px; }
+  .editor-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .editor-apply, .editor-cancel {
+    all: unset;
+    cursor: pointer;
+    padding: 2px 8px;
+    font-size: 10px;
+    border-radius: var(--r, 4px);
+    border: 1px solid var(--b2, #1a1a2e);
+    color: var(--t2, #b8c0e0);
+  }
+  .editor-apply { color: var(--t1, #e6e9f5); background: var(--accent-dim, rgba(99,102,241,.15)); }
+  .editor-apply:hover { background: var(--accent, #6366f1); }
+  .editor-cancel:hover { background: var(--bg3, #161b24); }
+
   .ohlc-readout {
     position: absolute;
     top: 6px;
@@ -1875,7 +2275,7 @@
   .ind-btn:hover { color: var(--t2); background: var(--bg3); border-color: var(--b2); }
   .ind-btn.active { color: var(--t1); background: var(--bg3); border-color: var(--b2); }
   .ind-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; opacity: .45; transition: opacity .15s; }
-  .ind-btn.active .ind-dot { opacity: 1; }
+  .ind-menu-item.checked .ind-dot { opacity: 1; }
   .ind-spin {
     display: inline-block; width: 8px; height: 8px;
     border: 1px solid var(--b2); border-top-color: var(--accent);
@@ -1989,6 +2389,37 @@
   .pane-chart {
     flex: 1;
     min-width: 0;
+  }
+  /* Pane header controls (title + settings/close, TW-style) */
+  .pane-controls {
+    position: absolute;
+    top: 3px;
+    left: 18px; /* clear of the vertical label strip */
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    background: rgba(7, 7, 13, 0.72);
+    border: 1px solid var(--b1, #1a1a2e);
+    border-radius: var(--r, 4px);
+  }
+  .pane-title {
+    font-size: 9px;
+    color: var(--t2, #b8c0e0);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-variant-numeric: tabular-nums;
+  }
+  .pane-editor {
+    position: absolute;
+    top: 24px;
+    left: 18px;
+    z-index: 4;
+    /* Panes are short (88–100px, overflow hidden) — lay the editor out as one row. */
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
   }
   .rsi-levels {
     position: absolute;

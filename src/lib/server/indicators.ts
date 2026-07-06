@@ -383,6 +383,41 @@ export const INDICATOR_CATALOG: IndicatorMeta[] = [
   { id: "adx", label: "ADX 14 (+DI/−DI)", pane: "separate", keys: ["adx", "plus_di", "minus_di"] },
 ];
 
+// ── Param scheme ────────────────────────────────────────────────────────────
+// Each `indicators=` entry accepts optional colon-separated numeric params:
+//   rsi:9 · atr:20 · bb:20:2 · macd:12:26:9 · stoch:14:3 · donchian:55 ·
+//   keltner:20:1.5 · willr:21 · cci:14 · adx:20
+// Bare names keep today's defaults, so existing clients are unaffected.
+// Malformed / out-of-range params fall back per-slot to the default. Response
+// keys never change with params (bb:30:3 still emits bb_upper/bb_middle/…).
+
+export interface IndicatorSpec {
+  name: string;
+  params: number[];
+}
+
+// "bb:20:2" → { name: "bb", params: [20, 2] }. Non-numeric params come through
+// as NaN so positions are preserved (bb:x:3 keeps the stddev in slot 1).
+export function parseIndicatorSpec(raw: string): IndicatorSpec {
+  const parts = raw.toLowerCase().trim().split(":");
+  return {
+    name: (parts[0] ?? "").trim(),
+    params: parts.slice(1).map((s) => Number(s.trim())),
+  };
+}
+
+// Integer period param: slot i of `params`, else `def`. Clamped to 2..500.
+export function periodParam(params: number[], i: number, def: number): number {
+  const v = params[i];
+  return Number.isFinite(v) ? Math.min(500, Math.max(2, Math.round(v))) : def;
+}
+
+// Float factor param (band multipliers): slot i, else `def`. Clamped 0.1..10.
+export function factorParam(params: number[], i: number, def: number): number {
+  const v = params[i];
+  return Number.isFinite(v) ? Math.min(10, Math.max(0.1, v)) : def;
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────────
 
 // Compute the requested indicators and return them keyed exactly as the chart
@@ -396,46 +431,51 @@ export function computeIndicators(
   const out: Record<string, Point[]> = {};
 
   for (const raw of names) {
-    const name = raw.toLowerCase().trim();
+    const { name, params } = parseIndicatorSpec(raw);
     if (!name) continue;
     if (name === "rsi") {
-      out.rsi = toPoints(times, rsiArr(closes, 14));
+      out.rsi = toPoints(times, rsiArr(closes, periodParam(params, 0, 14)));
     } else if (name === "atr") {
-      out.atr = toPoints(times, atrArr(candles, 14));
+      out.atr = toPoints(times, atrArr(candles, periodParam(params, 0, 14)));
     } else if (name === "bbands" || name === "bb") {
-      const b = bbandsArr(closes, 20, 2);
+      const b = bbandsArr(closes, periodParam(params, 0, 20), factorParam(params, 1, 2));
       out.bb_upper = toPoints(times, b.upper);
       out.bb_middle = toPoints(times, b.mid);
       out.bb_lower = toPoints(times, b.lower);
     } else if (name === "macd") {
-      const m = macdArr(closes, 12, 26, 9);
+      const m = macdArr(
+        closes,
+        periodParam(params, 0, 12),
+        periodParam(params, 1, 26),
+        periodParam(params, 2, 9),
+      );
       out.macd_line = toPoints(times, m.line);
       out.macd_signal = toPoints(times, m.signal);
       out.macd_hist = toPoints(times, m.hist);
     } else if (name === "vwap") {
       out.vwap = toPoints(times, vwapArr(candles));
     } else if (name === "stoch") {
-      const s = stochArr(candles, 14, 3);
+      const s = stochArr(candles, periodParam(params, 0, 14), periodParam(params, 1, 3));
       out.stoch_k = toPoints(times, s.k);
       out.stoch_d = toPoints(times, s.d);
     } else if (name === "willr" || name === "williamsr") {
-      out.willr = toPoints(times, williamsRArr(candles, 14));
+      out.willr = toPoints(times, williamsRArr(candles, periodParam(params, 0, 14)));
     } else if (name === "cci") {
-      out.cci = toPoints(times, cciArr(candles, 20));
+      out.cci = toPoints(times, cciArr(candles, periodParam(params, 0, 20)));
     } else if (name === "obv") {
       out.obv = toPoints(times, obvArr(candles));
     } else if (name === "adx") {
-      const a = adxArr(candles, 14);
+      const a = adxArr(candles, periodParam(params, 0, 14));
       out.adx = toPoints(times, a.adx);
       out.plus_di = toPoints(times, a.plusDI);
       out.minus_di = toPoints(times, a.minusDI);
     } else if (name === "donchian" || name === "dc") {
-      const d = donchianArr(candles, 20);
+      const d = donchianArr(candles, periodParam(params, 0, 20));
       out.dc_upper = toPoints(times, d.upper);
       out.dc_middle = toPoints(times, d.mid);
       out.dc_lower = toPoints(times, d.lower);
     } else if (name === "keltner" || name === "kc") {
-      const k = keltnerArr(candles, 20, 2);
+      const k = keltnerArr(candles, periodParam(params, 0, 20), factorParam(params, 1, 2));
       out.kc_upper = toPoints(times, k.upper);
       out.kc_middle = toPoints(times, k.mid);
       out.kc_lower = toPoints(times, k.lower);
