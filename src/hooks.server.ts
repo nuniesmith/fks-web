@@ -465,7 +465,16 @@ async function riskConfigPost(event: RequestEvent): Promise<Response> {
 // back. The spawner persists them server-side behind X-Internal-Token; the
 // status endpoint reports only WHICH exchanges are configured (never the keys).
 // Default operation is keyless/public — keys only unlock the authenticated path.
-async function exchangeKeysPost(event: RequestEvent, exchange: string): Promise<Response> {
+// Exchange ids are free-form server-side (the spawner stores them as strings);
+// constrain to a sane slug so arbitrary UI input can't smuggle odd characters.
+function sanitizeExchangeId(raw: unknown): string {
+  const s = (typeof raw === "string" ? raw : "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,31}$/.test(s) ? s : "";
+}
+
+// `exchange` comes from the legacy per-venue routes; the generic
+// POST /api/settings/exchange-keys route reads it from the body instead.
+async function exchangeKeysPost(event: RequestEvent, exchange?: string): Promise<Response> {
   let body: any = {};
   try {
     body = await event.request.json();
@@ -473,13 +482,17 @@ async function exchangeKeysPost(event: RequestEvent, exchange: string): Promise<
     /* empty / non-JSON body */
   }
   const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+  const exch = exchange ?? sanitizeExchangeId(body?.exchange);
+  if (!exch) {
+    return json({ ok: false, message: "A valid exchange id is required (a-z, 0-9, -, _)" }, 400);
+  }
   const api_key = str(body?.api_key);
   const api_secret = str(body?.api_secret);
   const passphrase = str(body?.api_passphrase);
   if (!api_key || !api_secret) {
     return json({ ok: false, message: "API key and secret are required" }, 400);
   }
-  const payload: Record<string, string> = { exchange, api_key, api_secret };
+  const payload: Record<string, string> = { exchange: exch, api_key, api_secret };
   if (passphrase) payload.api_passphrase = passphrase;
   try {
     const headers = upstreamHeaders(event.request.headers);
@@ -493,7 +506,7 @@ async function exchangeKeysPost(event: RequestEvent, exchange: string): Promise<
       return json({ ok: false, message: "Secret storage (spawner DB) is not configured" }, 503);
     }
     if (!r.ok) return json({ ok: false, message: `Save rejected by spawner (${r.status})` }, 502);
-    return json({ ok: true, exchange });
+    return json({ ok: true, exchange: exch });
   } catch {
     return json({ ok: false, message: "Secret storage service unreachable" }, 502);
   }
@@ -515,6 +528,27 @@ async function exchangeKeysStatus(event: RequestEvent, exchange: string): Promis
     });
   } catch {
     return json({ configured: false, db_enabled: false });
+  }
+}
+
+// GET /api/settings/exchange-keys/status → every stored credential (ids +
+// updated_at only — never the secrets), for the dynamic /settings list.
+async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
+  try {
+    const headers = upstreamHeaders(event.request.headers);
+    const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
+    if (!r.ok) return json({ db_enabled: false, exchanges: [] });
+    const j: any = await r.json();
+    const list: any[] = Array.isArray(j?.exchanges) ? j.exchanges : [];
+    return json({
+      db_enabled: j?.db_enabled !== false,
+      exchanges: list.map((e) => ({
+        exchange: String(e?.exchange ?? "").toLowerCase(),
+        updated_at: e?.updated_at,
+      })),
+    });
+  } catch {
+    return json({ db_enabled: false, exchanges: [] });
   }
 }
 
@@ -601,9 +635,15 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   }
 
   // /settings exchange API keys → spawner secret store (browser submits only;
-  // -status reports only whether keys are configured, never the secrets).
-  // Generic across the venues the crypto bots trade: Kraken, KuCoin (+
-  // passphrase), Crypto.com.
+  // status reports only WHICH exchanges are configured, never the secrets).
+  // Dynamic list endpoints (any exchange id) — used by the /settings page:
+  if (pathname === "/api/settings/exchange-keys/status") {
+    return exchangeKeysStatusAll(event);
+  }
+  if (pathname === "/api/settings/exchange-keys" && event.request.method === "POST") {
+    return exchangeKeysPost(event);
+  }
+  // Legacy fixed-venue routes (kept for compatibility with older clients).
   const exchangeKeysMatch = /^\/api\/settings\/(kraken|kucoin|cryptocom)-(keys|status)$/.exec(
     pathname,
   );
