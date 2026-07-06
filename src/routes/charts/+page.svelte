@@ -215,6 +215,13 @@
   let indicatorLoading = $state(false);
   let barsError = $state(false); // true when the historical-bars fetch fails (vs. just empty)
 
+  // Dynamic history backfill (fires when zooming/panning near the oldest bar).
+  // Plain lets — nothing renders off them; loadSeq invalidates in-flight
+  // backfills when the chart is reloaded for a new symbol/interval.
+  let backfillBusy = false;
+  let backfillDone = false;
+  let loadSeq = 0;
+
   // Auto-focus symbol from strip SSE
   let ignoreNextFocusChange = false;
   $effect(() => {
@@ -933,11 +940,56 @@
     activeSource = 'none';
   }
 
+  // ─── History backfill ──────────────────────────────────────────────────────
+  // When the visible range nears the oldest loaded bar, fetch older candles
+  // and prepend them. Local overlays (EMA/volume) recompute over the merged
+  // series; server-computed overlays keep their original window.
+  async function maybeBackfill(range: any) {
+    if (!range || backfillBusy || backfillDone || !candleSeries || candles.length === 0) return;
+    const info = candleSeries.barsInLogicalRange(range);
+    if (!info || info.barsBefore > 30) return;
+
+    backfillBusy = true;
+    const seq = loadSeq;
+    try {
+      const oldestSec = candles[0].time as number;
+      const res = await fetch(
+        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=30&limit=1000&before=${oldestSec * 1000}`,
+        { headers: { Accept: 'application/json' } }
+      );
+      const data = await res.json();
+      if (seq !== loadSeq) return; // chart was reloaded while we were fetching
+
+      const older: CandleData[] = (Array.isArray(data.candles) ? (data.candles as CandleBar[]) : [])
+        .map((c) => ({
+          time: Math.floor(c.timestamp / 1000) as any,
+          open: c.open, high: c.high, low: c.low, close: c.close,
+          volume: c.volume ?? 0,
+        }))
+        .filter((c) => (c.time as number) < oldestSec); // drop any seam duplicate
+
+      if (older.length === 0) {
+        backfillDone = true; // no more history server-side
+        return;
+      }
+      candles = [...older, ...candles];
+      candleSeries.setData(candles);
+      refreshOverlays();
+    } catch {
+      // transient failure — retry on the next range change
+    } finally {
+      if (seq === loadSeq) backfillBusy = false;
+    }
+  }
+
   // ─── Main chart load ───────────────────────────────────────────────────────
   async function loadChart() {
     if (!chartContainer) return;
     loading = true;
     barsError = false;
+    loadSeq += 1;
+    backfillBusy = false;
+    backfillDone = false;
 
     const { createChart } = await import('lightweight-charts');
 
@@ -991,7 +1043,7 @@
     // Fetch historical bars
     try {
       const res = await fetch(
-        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=5&limit=1000`,
+        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=10&limit=2000`,
         { headers: { Accept: 'application/json' } }
       );
       const data = await res.json();
@@ -1004,6 +1056,10 @@
         }));
         candleSeries?.setData(candles);
         chart?.timeScale().fitContent();
+        // Older history loads on demand as the user zooms/pans toward the left edge.
+        chart?.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          void maybeBackfill(range);
+        });
       } else {
         candles = [];
       }
