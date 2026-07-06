@@ -151,6 +151,15 @@
 
   async function saveCredential() {
     const exchange = credExchange.trim().toLowerCase();
+    // Same slug rule the adapter enforces — but with a message the user can
+    // act on (the api client discards server error bodies, so a 400 would
+    // surface as an unhelpful "API 400: Bad Request").
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(exchange)) {
+      credFeedback = `Invalid id "${exchange}" — letters, digits, - and _ only (e.g. cryptocom, not crypto.com)`;
+      credFeedbackVariant = 'red';
+      clearFeedbackAfter(v => credFeedback = v, 6000);
+      return;
+    }
     credSaving = true;
     credFeedback = '';
     try {
