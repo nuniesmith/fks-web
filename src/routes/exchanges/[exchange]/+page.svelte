@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * /exchanges/[exchange] — one venue in detail: balances, holdings vs
-   * targets, drift, last rebalance, and the recent rebalance-trade events for
-   * this venue. Same 10s poll of /api/exchanges/status as the overview; the
-   * venue and its events are selected client-side.
+   * targets, drift, last rebalance, and the venue's recent trade events
+   * (spot rebalance trades, or futures fills / funding-reversion paper
+   * records on funding venues). Same 10s poll of /api/exchanges/status as
+   * the overview; the venue and its events are selected client-side.
    */
   import { page } from '$app/stores';
   import Panel from '$lib/components/ui/Panel.svelte';
@@ -12,6 +13,7 @@
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
+  import { normalizeFuturesEvent } from '$lib/utils/tradeEvents';
   import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
@@ -45,6 +47,17 @@
       .filter((e) => e.venue === exchange || (e.venue == null && venueDoc?.exchanges.length === 1))
       .reverse(),
   );
+
+  /**
+   * Futures (funding-bot) venues get their own event table: TradeEvents there
+   * are live fills (`kind: "futures-fill"` — symbol/size/price) or
+   * funding-reversion paper records (`action`/`sym`/`dir`/`*_px`/`ret_pct`),
+   * which share almost no field names with spot rebalance trades.
+   */
+  let isFuturesVenue = $derived(venueDoc?.market === 'futures');
+
+  /** The venue's events normalized for the futures table (unused on spot venues). */
+  let futuresRows = $derived(isFuturesVenue ? events.map(normalizeFuturesEvent) : []);
 
   function usd(n: number): string {
     return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -127,30 +140,61 @@
       <p class="dim">Snapshot updated {epochLabel(venue.updated)}.</p>
     </Panel>
 
-    <Panel title="Recent rebalance trades">
-      {#if events.length > 0}
-        <table class="tbl">
-          <thead>
-            <tr><th>Time</th><th>Side</th><th>Asset</th><th>Volume</th><th>Price</th><th>USD</th><th>Mode</th></tr>
-          </thead>
-          <tbody>
-            {#each events as e, i (e.ts ?? i)}
-              <tr>
-                <td>{epochLabel(e.ts)}</td>
-                <td class:pos={e.side === 'Buy'} class:neg={e.side === 'Sell'}>{e.side ?? '—'}</td>
-                <td>{e.asset ?? '—'}</td>
-                <td>{fmtFixed(e.volume ?? null, 6)}</td>
-                <td>{e.price != null ? usd(e.price) : '—'}</td>
-                <td>{e.usd != null ? usd(e.usd) : '—'}</td>
-                <td>{e.live ? 'live' : 'dry-run'}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {:else}
-        <p class="dim">No rebalance trades for this venue in the bot's recent-event window.</p>
-      {/if}
-    </Panel>
+    {#if isFuturesVenue}
+      <Panel title="Recent trade events">
+        {#if futuresRows.length > 0}
+          <table class="tbl">
+            <thead>
+              <tr><th>Time</th><th>Event</th><th>Side</th><th>Symbol</th><th>Size</th><th>Price</th><th>Return</th></tr>
+            </thead>
+            <tbody>
+              {#each futuresRows as r, i (`${r.ts}-${i}`)}
+                <tr>
+                  <td>{epochLabel(r.ts)}</td>
+                  <td>{r.event}</td>
+                  <td class:pos={r.side === 'Buy' || r.side === 'long'} class:neg={r.side === 'Sell' || r.side === 'short'}>
+                    {r.side ?? '—'}
+                  </td>
+                  <td>{r.symbol ?? '—'}</td>
+                  <td>{fmtFixed(r.size, 4)}</td>
+                  <td>{r.price != null ? usd(r.price) : '—'}</td>
+                  <td class:pos={r.ret_pct != null && r.ret_pct > 0} class:neg={r.ret_pct != null && r.ret_pct < 0}>
+                    {r.ret_pct != null ? fmtPct(r.ret_pct) : '—'}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="dim">No trade events for this venue in the bot's recent-event window.</p>
+        {/if}
+      </Panel>
+    {:else}
+      <Panel title="Recent rebalance trades">
+        {#if events.length > 0}
+          <table class="tbl">
+            <thead>
+              <tr><th>Time</th><th>Side</th><th>Asset</th><th>Volume</th><th>Price</th><th>USD</th><th>Mode</th></tr>
+            </thead>
+            <tbody>
+              {#each events as e, i (e.ts ?? i)}
+                <tr>
+                  <td>{epochLabel(e.ts)}</td>
+                  <td class:pos={e.side === 'Buy'} class:neg={e.side === 'Sell'}>{e.side ?? '—'}</td>
+                  <td>{e.asset ?? '—'}</td>
+                  <td>{fmtFixed(e.volume ?? null, 6)}</td>
+                  <td>{e.price != null ? usd(e.price) : '—'}</td>
+                  <td>{e.usd != null ? usd(e.usd) : '—'}</td>
+                  <td>{e.live ? 'live' : 'dry-run'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="dim">No rebalance trades for this venue in the bot's recent-event window.</p>
+        {/if}
+      </Panel>
+    {/if}
   {/if}
 </div>
 
