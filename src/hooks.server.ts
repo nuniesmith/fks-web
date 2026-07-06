@@ -582,6 +582,64 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
   }
 }
 
+// ── Venue connectivity test (/settings Test buttons) ────────────────────────
+// GET /api/exchanges/:venue/ping — server-side reachability check against the
+// venue's cheapest PUBLIC endpoint. This deliberately does NOT validate the
+// stored credentials (secrets are never read back to the webui; signed
+// test-calls would have to run in the spawner — noted follow-up). It replaces
+// the old kraken-only Test, which hit the unmapped /kraken/health route and
+// reported "Connected" for any 200-empty-JSON — i.e. it tested nothing.
+const VENUE_PING: Record<string, { url: string; ok: (j: any) => boolean; label: string }> = {
+  kraken: {
+    url: "https://api.kraken.com/0/public/SystemStatus",
+    ok: (j) => j?.result?.status === "online",
+    label: "Kraken system online",
+  },
+  kucoin: {
+    url: "https://api.kucoin.com/api/v1/timestamp",
+    ok: (j) => j?.code === "200000",
+    label: "KuCoin reachable",
+  },
+  "kucoin-futures": {
+    url: "https://api-futures.kucoin.com/api/v1/timestamp",
+    ok: (j) => j?.code === "200000",
+    label: "KuCoin Futures reachable",
+  },
+  cryptocom: {
+    url: "https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT",
+    ok: (j) => j?.code === 0,
+    label: "Crypto.com reachable",
+  },
+  binance: {
+    url: "https://api.binance.com/api/v3/ping",
+    ok: (j) => typeof j === "object" && j !== null,
+    label: "Binance reachable",
+  },
+};
+
+async function venuePing(venue: string): Promise<Response> {
+  const spec = VENUE_PING[venue];
+  if (!spec) {
+    return json({ ok: false, message: `No connectivity test for '${venue}'` }, 404);
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const r = await fetch(spec.url, {
+      signal: controller.signal,
+      headers: { accept: "application/json" },
+    });
+    clearTimeout(timer);
+    const j: any = await r.json().catch(() => null);
+    if (r.ok && spec.ok(j)) {
+      return json({ ok: true, venue, message: spec.label });
+    }
+    return json({ ok: false, venue, message: `Venue responded abnormally (HTTP ${r.status})` });
+  } catch {
+    return json({ ok: false, venue, message: "Venue unreachable (network/timeout)" });
+  }
+}
+
 async function proxyBackend(event: RequestEvent): Promise<Response> {
   const { pathname, search } = event.url;
 
@@ -689,6 +747,11 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   const exchangeKeyDeleteMatch = /^\/api\/settings\/exchange-keys\/([^/]+)$/.exec(pathname);
   if (exchangeKeyDeleteMatch && event.request.method === "DELETE") {
     return exchangeKeysDelete(event, exchangeKeyDeleteMatch[1]);
+  }
+  // Venue reachability test for the /settings credential rows.
+  const venuePingMatch = /^\/api\/exchanges\/([a-z0-9_-]+)\/ping$/.exec(pathname);
+  if (venuePingMatch) {
+    return venuePing(venuePingMatch[1]);
   }
   // Legacy fixed-venue routes (kept for compatibility with older clients).
   const exchangeKeysMatch = /^\/api\/settings\/(kraken|kucoin|cryptocom)-(keys|status)$/.exec(

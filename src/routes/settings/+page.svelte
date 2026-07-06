@@ -73,9 +73,13 @@
   let credDeleting = $state<string | null>(null);
   let credFeedback = $state('');
   let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
-  let krakenTesting = $state(false);
-  let krakenFeedback = $state('');
-  let krakenFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
+  // Venues with a server-side reachability test (GET /api/exchanges/:venue/ping).
+  // Reachability only — stored credentials are never read back, so key
+  // validation would have to run in the spawner (follow-up).
+  const TESTABLE_VENUES = new Set(['kraken', 'kucoin', 'kucoin-futures', 'cryptocom', 'binance']);
+  let venueTesting = $state<string | null>(null);
+  let venueTestFeedback = $state('');
+  let venueTestVariant = $state<'green' | 'red' | 'default'>('default');
 
   // ─── Risk Controls State (rustrade PortfolioRiskConfig) ─────────────
   let riskDailyLoss = $state(5000);          // max daily loss (USD; shown positive, stored ≤0)
@@ -230,19 +234,26 @@
     }
   }
 
-  async function testKraken() {
-    krakenTesting = true;
-    krakenFeedback = '';
+  async function testVenue(exchange: string) {
+    venueTesting = exchange;
+    venueTestFeedback = '';
     try {
-      const res = await api.get<{ status?: string; message?: string }>('/kraken/health');
-      krakenFeedback = `✓ ${res.status ?? res.message ?? 'Connected'}`;
-      krakenFeedbackVariant = 'green';
+      const res = await api.get<{ ok?: boolean; message?: string }>(
+        `/api/exchanges/${encodeURIComponent(exchange)}/ping`
+      );
+      if (res?.ok) {
+        venueTestFeedback = `✓ ${res.message ?? 'Reachable'}`;
+        venueTestVariant = 'green';
+      } else {
+        venueTestFeedback = `✗ ${res?.message ?? 'Unreachable'}`;
+        venueTestVariant = 'red';
+      }
     } catch (err: any) {
-      krakenFeedback = `✗ ${err.message ?? 'Connection failed'}`;
-      krakenFeedbackVariant = 'red';
+      venueTestFeedback = `✗ ${err.message ?? 'Connection failed'}`;
+      venueTestVariant = 'red';
     } finally {
-      krakenTesting = false;
-      clearFeedbackAfter(v => krakenFeedback = v, 5000);
+      venueTesting = null;
+      clearFeedbackAfter(v => venueTestFeedback = v, 5000);
     }
   }
 
@@ -422,9 +433,13 @@
               <span class="cred-updated">updated {cred.updated_at}</span>
             {/if}
             <span class="cred-actions">
-              {#if cred.exchange === 'kraken'}
-                <button class="btn-ghost" onclick={testKraken} disabled={krakenTesting}>
-                  {krakenTesting ? '⏳ Testing…' : '🔌 Test'}
+              {#if TESTABLE_VENUES.has(cred.exchange)}
+                <button
+                  class="btn-ghost"
+                  onclick={() => testVenue(cred.exchange)}
+                  disabled={venueTesting !== null}
+                >
+                  {venueTesting === cred.exchange ? '⏳ Testing…' : '🔌 Test'}
                 </button>
               {/if}
               <button class="btn-ghost" onclick={() => startUpdate(cred.exchange)}>Update</button>
@@ -443,9 +458,9 @@
             </span>
           </div>
         {/each}
-        {#if krakenFeedback}
-          <span class="feedback" class:feedback-ok={krakenFeedbackVariant === 'green'} class:feedback-err={krakenFeedbackVariant === 'red'}>
-            {krakenFeedback}
+        {#if venueTestFeedback}
+          <span class="feedback" class:feedback-ok={venueTestVariant === 'green'} class:feedback-err={venueTestVariant === 'red'}>
+            {venueTestFeedback}
           </span>
         {/if}
       {/if}
