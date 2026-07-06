@@ -59,8 +59,11 @@
                     href: "/signals",
                 },
                 { id: "performance", label: "Perf", key: "5", href: "/performance" },
-                // Crypto bot balances + net worth (no free number-key slots left).
+                // Backing accounts (spot venues + hardware wallet) — the backbone.
                 { id: "exchanges", label: "Exchanges", href: "/exchanges" },
+                // Trading types on top of the backing accounts (crypto futures live,
+                // CME/COMEX planned).
+                { id: "futures", label: "Futures", href: "/futures" },
             ],
         },
         {

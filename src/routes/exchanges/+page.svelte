@@ -1,20 +1,21 @@
 <script lang="ts">
   /**
-   * /exchanges — per-exchange balances + total net worth across the crypto
-   * bots (spot portfolio: Kraken / KuCoin / Crypto.com; futures funding
-   * paper). Data: GET /api/exchanges/status (adapter → the bots' :9091
-   * /status documents), polled every 10s.
+   * /exchanges — the BACKING page: the spot venues (Kraken / KuCoin /
+   * Crypto.com) that are the platform's backbone, plus the future BTC
+   * hardware wallet (placeholder until integrated). Trading types built on
+   * top of this base (crypto futures, CME/COMEX, …) live on /futures.
    *
-   * "Real" totals exclude venues reporting mode="paper" (the futures paper
-   * account is notional cash, not money).
+   * Data: GET /api/exchanges/status (adapter → the bots' :9091 /status
+   * documents), polled every 10s. "Real" totals exclude venues reporting
+   * mode="paper" (paper cash is notional, not money).
    */
   import Panel from '$lib/components/ui/Panel.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import { createPoll } from '$lib/stores/poll';
-  import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
-  import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
+  import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
+  import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
   $effect(() => {
@@ -25,10 +26,10 @@
   let spot = $derived($status?.spot ?? null);
   let funding = $derived($status?.funding ?? null);
 
-  /** All venues from both bots, spot first. */
-  let venues = $derived([...(spot?.exchanges ?? []), ...(funding?.exchanges ?? [])]);
+  /** Backing venues = the spot bot's venues (futures venues live on /futures). */
+  let venues = $derived(spot?.exchanges ?? []);
 
-  /** Real net worth = non-paper venues only (paper cash is notional). */
+  /** Real net worth = non-paper backing venues only (paper cash is notional). */
   let realNetWorth = $derived(
     venues.filter((v) => v.mode !== 'paper').reduce((s, v) => s + v.total_value, 0),
   );
@@ -52,21 +53,23 @@
     return `${Math.round(s / 3600)}h ago`;
   }
 
-  function dirLabel(p: PositionStatus): string {
-    return p.dir > 0 ? 'LONG' : 'SHORT';
-  }
-
   function venueKey(v: VenueStatus): string {
     return `${v.exchange}:${v.mode}`;
   }
 </script>
 
 <div class="exchanges-page">
+  <p class="page-blurb">
+    Backing accounts — the backbone the platform grows from. Trading types built
+    on top (crypto futures, CME/COMEX, …) live under
+    <a class="detail-link" href="/futures">Futures →</a>
+  </p>
+
   {#if !spot && !funding}
     <EmptyState
       icon="🛰"
       title="No crypto bot status available"
-      hint="Neither the spot-portfolio nor the funding bot's status server responded. Check that the bots are running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL / CRYPTO_FUNDING_INTERNAL_URL point at them."
+      hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it."
     />
   {:else}
     <div class="stat-row">
@@ -78,85 +81,59 @@
       {#if spot}
         <StatCard label="Spot PnL (since start)" value={fmtDollar(spot.pnl_usd)} color={spot.pnl_usd >= 0 ? 'green' : 'red'} />
       {/if}
-      {#if funding}
-        <StatCard
-          label="Futures paper PnL"
-          value={fmtDollar(funding.pnl_usd)}
-          color={funding.pnl_usd >= 0 ? 'green' : 'red'}
-        />
-        <StatCard label="Futures W / L" value={`${fmtInt(funding.wins)} / ${fmtInt(funding.losses)}`} />
-      {/if}
     </div>
 
-    {#if venues.length > 0}
-      <div class="venue-grid">
-        {#each venues as v (venueKey(v))}
-          <Panel title={v.exchange}>
-            <div class="venue-head">
-              <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
-              <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-              <span class="venue-total">{usd(v.total_value)}</span>
-            </div>
-            <div class="venue-meta">
-              <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
-              <span>drift {fmtPct(v.max_drift * 100)}</span>
-              <span class="dim">updated {agoSecs(v.updated)}</span>
-            </div>
-            {#if v.holdings.length > 0}
-              <table class="holdings">
-                <thead>
-                  <tr><th>Asset</th><th>Qty</th><th>Value</th><th>Weight / target</th></tr>
-                </thead>
-                <tbody>
-                  {#each v.holdings as h (h.asset)}
-                    <tr>
-                      <td>{h.asset}</td>
-                      <td>{fmtFixed(h.qty, 6)}</td>
-                      <td>{usd(h.value)}</td>
-                      <td>{fmtPct(h.weight * 100)} / {fmtPct(h.target_weight * 100)}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            {:else}
-              <p class="dim">No holdings (cash only).</p>
-            {/if}
-          </Panel>
-        {/each}
-      </div>
-    {/if}
+    <div class="venue-grid">
+      {#each venues as v (venueKey(v))}
+        <Panel title={v.exchange}>
+          <div class="venue-head">
+            <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
+            <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
+            <span class="venue-total">{usd(v.total_value)}</span>
+          </div>
+          <div class="venue-meta">
+            <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
+            <span>drift {fmtPct(v.max_drift * 100)}</span>
+            <span class="dim">updated {agoSecs(v.updated)}</span>
+          </div>
+          {#if v.holdings.length > 0}
+            <table class="holdings">
+              <thead>
+                <tr><th>Asset</th><th>Qty</th><th>Value</th><th>Weight / target</th></tr>
+              </thead>
+              <tbody>
+                {#each v.holdings as h (h.asset)}
+                  <tr>
+                    <td>{h.asset}</td>
+                    <td>{fmtFixed(h.qty, 6)}</td>
+                    <td>{usd(h.value)}</td>
+                    <td>{fmtPct(h.weight * 100)} / {fmtPct(h.target_weight * 100)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:else}
+            <p class="dim">No holdings (cash only).</p>
+          {/if}
+        </Panel>
+      {/each}
 
-    {#if funding}
-      <Panel title={`Futures — ${funding.bot} (${funding.mode})`}>
-        <div class="venue-meta">
-          <span>{fmtInt(funding.signals_total)} signals</span>
-          <span>{fmtInt(funding.trades_total)} trades</span>
-          <span>win rate {fmtPct(funding.win_rate * 100)}</span>
+      <!-- Hardware wallet — placeholder until the integration exists. The
+           BTC cold-storage backbone sits alongside the exchange venues. -->
+      <Panel title="Hardware wallet">
+        <div class="venue-head">
+          <Badge variant="default">not connected</Badge>
+          <span class="venue-total dim">—</span>
         </div>
-        {#if funding.positions.length > 0}
-          <table class="holdings">
-            <thead>
-              <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Mark</th><th>Return</th></tr>
-            </thead>
-            <tbody>
-              {#each funding.positions as p (p.symbol)}
-                <tr>
-                  <td>{p.symbol}</td>
-                  <td>
-                    <Badge variant={p.dir > 0 ? 'green' : 'red'}>{dirLabel(p)}</Badge>
-                  </td>
-                  <td>{fmtFixed(p.entry_px, 4)}</td>
-                  <td>{fmtFixed(p.mark_px, 4)}</td>
-                  <td class:pos={p.ret_pct >= 0} class:neg={p.ret_pct < 0}>{fmtPct(p.ret_pct)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {:else}
-          <p class="dim">No open positions.</p>
-        {/if}
+        <div class="venue-meta">
+          <span>BTC cold storage</span>
+        </div>
+        <p class="dim">
+          Planned: read-only balance via xpub/descriptor — the long-term BTC
+          backbone the exchange accounts feed into. No integration yet.
+        </p>
       </Panel>
-    {/if}
+    </div>
   {/if}
 </div>
 
@@ -166,6 +143,11 @@
     flex-direction: column;
     gap: 12px;
     padding: 12px;
+  }
+  .page-blurb {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--t2, #9aa4b2);
   }
   .stat-row {
     display: grid;
@@ -222,11 +204,5 @@
   table.holdings td {
     padding: 3px 8px 3px 0;
     border-bottom: 1px solid var(--bg2, #161b24);
-  }
-  .pos {
-    color: var(--green, #16c784);
-  }
-  .neg {
-    color: var(--red, #ea3943);
   }
 </style>
