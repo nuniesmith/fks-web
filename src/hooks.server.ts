@@ -589,6 +589,8 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
 // test-calls would have to run in the spawner — noted follow-up). It replaces
 // the old kraken-only Test, which hit the unmapped /kraken/health route and
 // reported "Connected" for any 200-empty-JSON — i.e. it tested nothing.
+// Rithmic is deliberately absent: R|API is a proprietary gateway protocol with
+// no public HTTP ping, so the /settings page shows no Test button for it.
 const VENUE_PING: Record<string, { url: string; ok: (j: any) => boolean; label: string }> = {
   kraken: {
     url: "https://api.kraken.com/0/public/SystemStatus",
