@@ -51,10 +51,95 @@
 
   // ─── Exchange Credentials State (dynamic list) ──────────────────────
   // The spawner secret store keys credentials by a free-form exchange id, so
-  // the UI is a dynamic list: starts blank, add any venue. The browser only
-  // submits keys; it never reads a secret back. Known ids are offered as
-  // <datalist> suggestions — anything else is accepted too.
-  const KNOWN_EXCHANGES = ['kraken', 'kucoin', 'kucoin-futures', 'cryptocom', 'binance'];
+  // the UI stays a dynamic list: starts blank, any venue can be added. The
+  // browser only submits keys; it never reads a secret back.
+  //
+  // Provider registry: the spawner schema has exactly THREE encrypted slots
+  // per credential — api_key / api_secret / api_passphrase (optional). Every
+  // provider maps its fields onto those slots, so storage is unchanged; only
+  // the form labels differ. Rithmic (a futures broker, not an exchange)
+  // re-labels the slots:  User → api_key, Password → api_secret,
+  // System → api_passphrase.
+  // Exchange creds are for read-only pulls (balances, trade history) + book
+  // data — not autonomous trading. Rithmic is the futures-trading focus: its
+  // workflows only activate when a rithmic credential is present.
+  interface ProviderSpec {
+    id: string; // slug stored in the spawner secret store
+    label: string;
+    kind: 'exchange' | 'broker';
+    /** One-line expectation setter shown under the picker. */
+    purpose: string;
+    keyLabel: string;
+    keyPlaceholder: string;
+    secretLabel: string;
+    secretPlaceholder: string;
+    /** Third slot (api_passphrase). Absent = field hidden for this provider. */
+    third?: { label: string; placeholder: string; required: boolean; hint?: string };
+    /** Has a public reachability ping in hooks.server.ts (rithmic has none). */
+    testable: boolean;
+  }
+
+  const EXCHANGE_PURPOSE =
+    'Read-only: balances, trade history, book-level data — not autonomous trading.';
+  const KUCOIN_THIRD = {
+    label: 'API Passphrase',
+    placeholder: 'Passphrase chosen when the key was created…',
+    required: true,
+    hint: 'KuCoin keys sign requests with the passphrase set at key creation.',
+  };
+  const PROVIDERS: ProviderSpec[] = [
+    {
+      id: 'kraken', label: 'Kraken', kind: 'exchange', purpose: EXCHANGE_PURPOSE,
+      keyLabel: 'API Key', keyPlaceholder: 'Enter API key…',
+      secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
+      testable: true,
+    },
+    {
+      id: 'kucoin', label: 'KuCoin', kind: 'exchange', purpose: EXCHANGE_PURPOSE,
+      keyLabel: 'API Key', keyPlaceholder: 'Enter API key…',
+      secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
+      third: KUCOIN_THIRD, testable: true,
+    },
+    {
+      id: 'kucoin-futures', label: 'KuCoin Futures', kind: 'exchange', purpose: EXCHANGE_PURPOSE,
+      keyLabel: 'API Key', keyPlaceholder: 'Enter API key…',
+      secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
+      third: KUCOIN_THIRD, testable: true,
+    },
+    {
+      id: 'cryptocom', label: 'Crypto.com', kind: 'exchange', purpose: EXCHANGE_PURPOSE,
+      keyLabel: 'API Key', keyPlaceholder: 'Enter API key…',
+      secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
+      testable: true,
+    },
+    {
+      id: 'binance', label: 'Binance', kind: 'exchange', purpose: EXCHANGE_PURPOSE,
+      keyLabel: 'API Key', keyPlaceholder: 'Enter API key…',
+      secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
+      testable: true,
+    },
+    {
+      id: 'rithmic', label: 'Rithmic', kind: 'broker',
+      purpose:
+        'Futures trading focus — enables the Rithmic workflows when present. ' +
+        'We trade manually; creds unlock read-only account pulls + book data.',
+      keyLabel: 'User', keyPlaceholder: 'Rithmic login user…',
+      secretLabel: 'Password', secretPlaceholder: 'Rithmic password…',
+      third: {
+        label: 'System', placeholder: 'e.g. Rithmic Paper Trading', required: true,
+        hint:
+          'Stored in the standard 3-slot secret record: User → api_key, ' +
+          'Password → api_secret, System → api_passphrase.',
+      },
+      // No public ping endpoint — R|API is a proprietary gateway protocol.
+      testable: false,
+    },
+  ];
+  const PROVIDER_BY_ID = new Map(PROVIDERS.map((p) => [p.id, p]));
+  // "Other…" escape hatch: free-form slug keeps the store's generality.
+  // The sentinel is not a valid slug, so it can never collide with a stored id.
+  const OTHER = '__other__';
+
   interface StoredCredential {
     exchange: string;
     updated_at?: string;
@@ -63,7 +148,10 @@
   let credList = $state<StoredCredential[] | null>(null);
   let credDbEnabled = $state(true);
   // Add/update form
-  let credExchange = $state('');
+  let credProviderId = $state<string>(PROVIDERS[0].id);
+  // undefined ⇒ "Other…" mode (free-text slug input).
+  let credProvider = $derived(PROVIDER_BY_ID.get(credProviderId));
+  let credExchange = $state(''); // free-text slug — Other… mode only
   let credKey = $state('');
   let credSecret = $state('');
   let credPassphrase = $state('');
@@ -75,8 +163,9 @@
   let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
   // Venues with a server-side reachability test (GET /api/exchanges/:venue/ping).
   // Reachability only — stored credentials are never read back, so key
-  // validation would have to run in the spawner (follow-up).
-  const TESTABLE_VENUES = new Set(['kraken', 'kucoin', 'kucoin-futures', 'cryptocom', 'binance']);
+  // validation would have to run in the spawner (follow-up). Rithmic is not
+  // testable: it has no public ping.
+  const TESTABLE_VENUES = new Set(PROVIDERS.filter((p) => p.testable).map((p) => p.id));
   let venueTesting = $state<string | null>(null);
   let venueTestFeedback = $state('');
   let venueTestVariant = $state<'green' | 'red' | 'default'>('default');
@@ -161,8 +250,18 @@
     }
   }
 
+  // Switching provider clears the inputs so a value typed under one
+  // provider's labels can't be silently submitted under another's.
+  function onProviderChange() {
+    credExchange = '';
+    credKey = '';
+    credSecret = '';
+    credPassphrase = '';
+  }
+
   async function saveCredential() {
-    const exchange = credExchange.trim().toLowerCase();
+    // Known providers submit their fixed slug; Other… uses the free text.
+    const exchange = credProvider ? credProvider.id : credExchange.trim().toLowerCase();
     // Same slug rule the adapter enforces — but with a message the user can
     // act on (the api client discards server error bodies, so a 400 would
     // surface as an unhelpful "API 400: Bad Request").
@@ -181,7 +280,7 @@
         api_secret: credSecret,
         ...(credPassphrase ? { api_passphrase: credPassphrase } : {}),
       });
-      credFeedback = `${exchange} keys saved ✓`;
+      credFeedback = `${exchange} credentials saved ✓`;
       credFeedbackVariant = 'green';
       // Browser submits then forgets: clear the inputs and refresh the list.
       credExchange = '';
@@ -200,8 +299,11 @@
   }
 
   // Prefill the form to overwrite an existing credential (upsert semantics).
+  // Known ids select their provider; anything else opens the Other… slug path.
   function startUpdate(exchange: string) {
-    credExchange = exchange;
+    const known = PROVIDER_BY_ID.has(exchange);
+    credProviderId = known ? exchange : OTHER;
+    credExchange = known ? '' : exchange;
     credKey = '';
     credSecret = '';
     credPassphrase = '';
@@ -406,7 +508,8 @@
 
     <!-- ── Panel: API Connections ─────────────────────────────────── -->
     <!-- Dynamic credential list backed by the spawner secret store. Starts
-         blank; any exchange id can be added (known venues are suggested).
+         blank; known providers are picked from the dropdown (per-provider
+         labels/hints), and Other… accepts any slug so nothing is lost.
          Submit-only: secrets are never read back to the browser. -->
     <Panel title="API Connections">
       {#if credList !== null && !credDbEnabled}
@@ -426,9 +529,14 @@
         <div class="cred-empty mono">No API credentials stored — using public/keyless data. Add one below.</div>
       {:else}
         {#each credList as cred (cred.exchange)}
+          {@const prov = PROVIDER_BY_ID.get(cred.exchange)}
           <div class="cred-row">
             <span class="status-dot dot-green"></span>
             <span class="cred-name">{cred.exchange}</span>
+            {#if prov}
+              <!-- Known-provider kind badge; unknown ids render as before. -->
+              <Badge variant={prov.kind === 'broker' ? 'purple' : 'cyan'}>{prov.kind}</Badge>
+            {/if}
             {#if cred.updated_at}
               <span class="cred-updated">updated {cred.updated_at}</span>
             {/if}
@@ -469,63 +577,94 @@
       <div class="connection-block">
         <div class="connection-title">Add / update credential</div>
         <div class="form-group">
-          <label class="form-label" for="cred-exchange">Exchange</label>
-          <input
-            id="cred-exchange"
-            class="form-input"
-            type="text"
-            list="cred-exchange-suggestions"
-            placeholder="e.g. kraken, kucoin-futures, binance…"
-            bind:value={credExchange}
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <datalist id="cred-exchange-suggestions">
-            {#each KNOWN_EXCHANGES as ex}
-              <option value={ex}></option>
+          <label class="form-label" for="cred-provider">Provider</label>
+          <select
+            id="cred-provider"
+            class="form-select"
+            bind:value={credProviderId}
+            onchange={onProviderChange}
+          >
+            {#each PROVIDERS as p (p.id)}
+              <option value={p.id}>{p.label}</option>
             {/each}
-          </datalist>
+            <option value={OTHER}>Other…</option>
+          </select>
+          <span class="form-hint">
+            {credProvider?.purpose ??
+              'Any other venue — generic key/secret (+ optional passphrase), stored under the slug below.'}
+          </span>
         </div>
+        {#if !credProvider}
+          <div class="form-group">
+            <label class="form-label" for="cred-exchange">Venue id (slug)</label>
+            <input
+              id="cred-exchange"
+              class="form-input"
+              type="text"
+              placeholder="e.g. bybit, okx, deribit…"
+              bind:value={credExchange}
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span class="form-hint">Lowercase letters, digits, - and _ (e.g. cryptocom, not crypto.com)</span>
+          </div>
+        {/if}
         <div class="form-group">
-          <label class="form-label" for="cred-api-key">API Key</label>
+          <label class="form-label" for="cred-api-key">{credProvider?.keyLabel ?? 'API Key'}</label>
           <input
             id="cred-api-key"
             class="form-input"
             type="password"
-            placeholder="Enter API key…"
+            placeholder={credProvider?.keyPlaceholder ?? 'Enter API key…'}
             bind:value={credKey}
             autocomplete="off"
           />
         </div>
         <div class="form-group">
-          <label class="form-label" for="cred-api-secret">API Secret</label>
+          <label class="form-label" for="cred-api-secret">{credProvider?.secretLabel ?? 'API Secret'}</label>
           <input
             id="cred-api-secret"
             class="form-input"
             type="password"
-            placeholder="Enter API secret…"
+            placeholder={credProvider?.secretPlaceholder ?? 'Enter API secret…'}
             bind:value={credSecret}
             autocomplete="off"
           />
         </div>
-        <div class="form-group">
-          <label class="form-label" for="cred-api-passphrase">API Passphrase (optional — e.g. KuCoin)</label>
-          <input
-            id="cred-api-passphrase"
-            class="form-input"
-            type="password"
-            placeholder="Only if the venue requires one…"
-            bind:value={credPassphrase}
-            autocomplete="off"
-          />
-        </div>
+        <!-- Third encrypted slot (api_passphrase): shown only for providers
+             that use it (kucoin, kucoin-futures) or re-label it (rithmic
+             System), and always in Other… mode to keep the generality. -->
+        {#if credProvider?.third || !credProvider}
+          <div class="form-group">
+            <label class="form-label" for="cred-api-passphrase">
+              {credProvider?.third
+                ? credProvider.third.label + (credProvider.third.required ? '' : ' (optional)')
+                : 'API Passphrase (optional — only if the venue uses one)'}
+            </label>
+            <input
+              id="cred-api-passphrase"
+              class="form-input"
+              type="password"
+              placeholder={credProvider?.third?.placeholder ?? 'Only if the venue requires one…'}
+              bind:value={credPassphrase}
+              autocomplete="off"
+            />
+            {#if credProvider?.third?.hint}
+              <span class="form-hint">{credProvider.third.hint}</span>
+            {/if}
+          </div>
+        {/if}
         <div class="form-actions">
           <button
             class="btn-primary"
             onclick={saveCredential}
-            disabled={credSaving || !credExchange.trim() || !credKey || !credSecret}
+            disabled={credSaving ||
+              (!credProvider && !credExchange.trim()) ||
+              !credKey ||
+              !credSecret ||
+              (credProvider?.third?.required === true && !credPassphrase)}
           >
-            {credSaving ? 'Saving…' : 'Save Keys'}
+            {credSaving ? 'Saving…' : 'Save Credentials'}
           </button>
           {#if credFeedback}
             <span class="feedback" class:feedback-ok={credFeedbackVariant === 'green'} class:feedback-err={credFeedbackVariant === 'red'}>
@@ -534,8 +673,8 @@
           {/if}
         </div>
         <div class="cred-hint">
-          Keys are submit-only: stored encrypted server-side, never displayed again.
-          Saving an exchange that already has keys overwrites them.
+          Credentials are submit-only: stored encrypted server-side, never displayed again.
+          Saving a provider that already has credentials overwrites them.
         </div>
       </div>
     </Panel>
