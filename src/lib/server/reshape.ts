@@ -84,6 +84,26 @@ export function toRiskConfigPayload(body: any): {
   };
 }
 
+// janus signal → the signals page's status vocabulary. janus has no
+// staging/approve workflow; the closest thing to a per-signal verdict is the
+// metadata the forward service stamps when it publishes:
+//   metadata.gate       — "pass" | "block_<gate>[:detail]"  (buy/sell entries only)
+//   metadata.risk_check — "ok" | "rejected:<reason>"        (advisory RiskManager)
+// Map the execution-gate verdict onto the page's statuses: gate-passed →
+// "approved", gate-blocked / risk-rejected → "rejected", and no verdict at all
+// (holds, non-forward sources, pre-gate signals) → "staging".
+export function signalStatus(metadata: unknown): "approved" | "rejected" | "staging" {
+  const md = (metadata && typeof metadata === "object" ? metadata : {}) as Record<
+    string,
+    unknown
+  >;
+  const gate = typeof md.gate === "string" ? md.gate : "";
+  const risk = typeof md.risk_check === "string" ? md.risk_check : "";
+  if (gate === "pass") return "approved";
+  if (gate.startsWith("block") || risk.startsWith("rejected")) return "rejected";
+  return "staging";
+}
+
 // "2026-06-08T12:00:00Z" → a compact age ("5m" / "2h" / "3d") for the alert feed.
 export function humanizeSince(iso?: string): string {
   if (!iso) return "—";
