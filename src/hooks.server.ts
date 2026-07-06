@@ -552,6 +552,24 @@ async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
   }
 }
 
+// DELETE /api/settings/exchange-keys/:exchange → spawner DELETE /secrets/:exchange.
+// ok:false + 200 when no row existed (idempotent from the UI's perspective).
+async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Promise<Response> {
+  const exch = sanitizeExchangeId(decodeURIComponent(exchangeRaw));
+  if (!exch) {
+    return json({ ok: false, message: "A valid exchange id is required (a-z, 0-9, -, _)" }, 400);
+  }
+  try {
+    const headers = upstreamHeaders(event.request.headers);
+    const r = await fetch(`${SPAWNER_URL}/secrets/${exch}`, { method: "DELETE", headers });
+    if (!r.ok) return json({ ok: false, message: `Delete rejected by spawner (${r.status})` }, 502);
+    const j: any = await r.json().catch(() => ({}));
+    return json({ ok: j?.ok === true, exchange: exch, db_enabled: j?.db_enabled !== false });
+  } catch {
+    return json({ ok: false, message: "Secret storage service unreachable" }, 502);
+  }
+}
+
 async function proxyBackend(event: RequestEvent): Promise<Response> {
   const { pathname, search } = event.url;
 
@@ -642,6 +660,10 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   }
   if (pathname === "/api/settings/exchange-keys" && event.request.method === "POST") {
     return exchangeKeysPost(event);
+  }
+  const exchangeKeyDeleteMatch = /^\/api\/settings\/exchange-keys\/([^/]+)$/.exec(pathname);
+  if (exchangeKeyDeleteMatch && event.request.method === "DELETE") {
+    return exchangeKeysDelete(event, exchangeKeyDeleteMatch[1]);
   }
   // Legacy fixed-venue routes (kept for compatibility with older clients).
   const exchangeKeysMatch = /^\/api\/settings\/(kraken|kucoin|cryptocom)-(keys|status)$/.exec(

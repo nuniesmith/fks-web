@@ -65,6 +65,9 @@
   let credSecret = $state('');
   let credPassphrase = $state('');
   let credSaving = $state(false);
+  // Delete flow: exchange id armed for confirm / currently deleting.
+  let credPendingDelete = $state<string | null>(null);
+  let credDeleting = $state<string | null>(null);
   let credFeedback = $state('');
   let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
   let krakenTesting = $state(false);
@@ -184,6 +187,33 @@
     credKey = '';
     credSecret = '';
     credPassphrase = '';
+  }
+
+  // Two-step inline confirm: first click arms (auto-disarms after 4s),
+  // second click deletes. No browser dialogs.
+  async function deleteCredential(exchange: string) {
+    if (credPendingDelete !== exchange) {
+      credPendingDelete = exchange;
+      setTimeout(() => {
+        if (credPendingDelete === exchange) credPendingDelete = null;
+      }, 4000);
+      return;
+    }
+    credPendingDelete = null;
+    credDeleting = exchange;
+    try {
+      await api.delete(`/api/settings/exchange-keys/${encodeURIComponent(exchange)}`);
+      credFeedback = `${exchange} keys deleted`;
+      credFeedbackVariant = 'green';
+      loadCredentials();
+      clearFeedbackAfter(v => credFeedback = v);
+    } catch (err: any) {
+      credFeedback = `Error: ${err.message ?? 'Failed to delete'}`;
+      credFeedbackVariant = 'red';
+      clearFeedbackAfter(v => credFeedback = v, 5000);
+    } finally {
+      credDeleting = null;
+    }
   }
 
   async function testKraken() {
@@ -375,6 +405,18 @@
                 </button>
               {/if}
               <button class="btn-ghost" onclick={() => startUpdate(cred.exchange)}>Update</button>
+              <button
+                class="btn-ghost btn-delete"
+                class:armed={credPendingDelete === cred.exchange}
+                onclick={() => deleteCredential(cred.exchange)}
+                disabled={credDeleting === cred.exchange}
+              >
+                {credDeleting === cred.exchange
+                  ? 'Deleting…'
+                  : credPendingDelete === cred.exchange
+                    ? 'Confirm delete?'
+                    : 'Delete'}
+              </button>
             </span>
           </div>
         {/each}
@@ -985,6 +1027,11 @@
     color: var(--t3);
     margin-top: 6px;
     line-height: 1.5;
+  }
+
+  .btn-delete:hover:not(:disabled),
+  .btn-delete.armed {
+    color: var(--red);
   }
 
   /* ═══════════════════════════════════════════════════════════════════
