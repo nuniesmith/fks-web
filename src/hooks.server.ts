@@ -289,11 +289,17 @@ async function queryCandles(
   iv: string,
   days: number,
   lim: number,
+  beforeIso?: string,
 ): Promise<CandleRow[]> {
+  // With `beforeIso` (history pagination) the days window anchors to that
+  // cutoff instead of now(), so scrolling far back keeps returning rows.
+  const timeCond = beforeIso
+    ? `timestamp < '${beforeIso}' AND timestamp >= dateadd('d', -${days}, cast('${beforeIso}' as timestamp))`
+    : `timestamp >= dateadd('d', -${days}, now())`;
   const sql =
     `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM candles_crypto ` +
     `WHERE (symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%') ` +
-    `AND interval = '${iv}' AND timestamp >= dateadd('d', -${days}, now()) ` +
+    `AND interval = '${iv}' AND ${timeCond} ` +
     `ORDER BY timestamp DESC LIMIT ${lim}`;
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
@@ -315,15 +321,26 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
   const iv = sanitizeInterval(p.get("interval"));
   const days = Math.min(365, Math.max(1, parseInt(p.get("days_back") ?? "5", 10) || 5));
   const lim = Math.min(5000, Math.max(1, parseInt(p.get("limit") ?? "1000", 10) || 1000));
+  // Optional history pagination: only bars strictly older than `before` (ms
+  // epoch). Numeric parse → Date → ISO keeps the SQL literal injection-safe.
+  const beforeMs = parseInt(p.get("before") ?? "", 10);
+  const beforeIso =
+    Number.isFinite(beforeMs) && beforeMs > 0 ? new Date(beforeMs).toISOString() : undefined;
 
-  let rows = await queryCandles(sym, iv, days, lim);
+  let rows = await queryCandles(sym, iv, days, lim, beforeIso);
 
   // B3: if nothing is stored natively at this interval, synthesize it by
   // resampling 1m bars. Only fires when the direct query came back empty, so it
   // can only improve on the "no data" case — it never changes a populated chart.
   const sec = intervalToSeconds(iv);
   if (rows.length === 0 && iv !== "1m" && sec !== null && sec % 60 === 0) {
-    const oneMin = await queryCandles(sym, "1m", days, Math.min(5000, Math.ceil((sec / 60) * lim)));
+    const oneMin = await queryCandles(
+      sym,
+      "1m",
+      days,
+      Math.min(5000, Math.ceil((sec / 60) * lim)),
+      beforeIso,
+    );
     if (oneMin.length > 0) rows = resampleCandles(oneMin, sec);
   }
   return rows;
