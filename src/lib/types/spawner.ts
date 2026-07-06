@@ -169,6 +169,26 @@ export interface ConfigsResponse {
   db_enabled: boolean;
 }
 
+// ─── Stored exchange credentials (secret store) ──────────────────────────
+
+/**
+ * One stored credential id from the spawner's `GET /secrets/status`, surfaced
+ * to the browser via the adapter's `GET /api/settings/exchange-keys/status`.
+ * Only the id + last-upsert time — the secret itself is never returned.
+ */
+export interface StoredExchangeCredential {
+  exchange: string;
+  /** ISO-8601 timestamp of the last upsert, when known. */
+  updated_at?: string;
+}
+
+/** `GET /api/settings/exchange-keys/status` wrapper. When `db_enabled=false`
+ *  (no secret-store database, or the spawner is unreachable) the array is empty. */
+export interface ExchangeKeysStatusResponse {
+  db_enabled: boolean;
+  exchanges: StoredExchangeCredential[];
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────
 
 /** Error envelope used by all 4xx/5xx responses. */
