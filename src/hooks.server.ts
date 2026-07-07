@@ -55,6 +55,10 @@ const CRYPTO_FUNDING_URL = env.CRYPTO_FUNDING_INTERNAL_URL || "http://fks-bot-cr
 // graceful idle stub (unchanged). Set to a janus SSE base (the symbol is appended
 // as "/<sym>", emitting `event: bar` frames) to pipe futures bars to the chart.
 const JANUS_BARS_SSE_URL = env.JANUS_BARS_SSE_URL ?? "";
+// Backward service HTTP API inside the janus container (unified binary
+// serves it from start_module; port = janus http 8080 + 200). Must match
+// janus PR #140's wiring — env-correctable if that ever moves.
+const BACKWARD_URL = env.BACKWARD_INTERNAL_URL ?? "http://fks_janus:8280";
 
 // Forward a request to `base + path`, streaming the response straight back.
 async function forward(
@@ -705,6 +709,25 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
       spot: spot && typeof spot === "object" && "bot" in spot ? spot : null,
       funding: funding && typeof funding === "object" && "bot" in funding ? funding : null,
     });
+  }
+
+  // Experience Map (UMAP view): recent decision vectors + payload from the
+  // backward service. Graceful empty when the endpoint isn't up yet.
+  if (pathname === "/api/janus/experiences/sample") {
+    try {
+      const r = await fetch(`${BACKWARD_URL}/api/v1/experiences/sample${search}`, {
+        headers: { accept: "application/json" },
+      });
+      if (r.ok) {
+        return new Response(r.body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    } catch {
+      /* fall through to empty */
+    }
+    return json({ points: [], total: 0 });
   }
 
   // janus-ai "Janus State" panel → brain health + recent signals.

@@ -25,6 +25,7 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "lightweight-charts": "^4.2.0"
+    "lightweight-charts": "^4.2.0",
+    "umap-js": "^1.4.0"
   }
 }
