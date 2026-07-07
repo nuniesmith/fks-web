@@ -52,6 +52,10 @@ const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /c
 // ??) so an empty compose passthrough falls back to the defaults.
 const CRYPTO_SPOT_URL = env.CRYPTO_SPOT_INTERNAL_URL || "http://fks-bot-crypto-spot:9091";
 const CRYPTO_FUNDING_URL = env.CRYPTO_FUNDING_INTERNAL_URL || "http://fks-bot-crypto-funding:9091";
+// Read-only Rithmic connector health/status server (:9091). Runs only under the
+// `rithmic` compose profile (not in the default up), so this is unreachable by
+// default → /api/rithmic/positions degrades to an empty, connected:false view.
+const RITHMIC_CONNECTOR_URL = env.RITHMIC_CONNECTOR_INTERNAL_URL || "http://fks_rithmic_connector:9091";
 // Futures live-bars SSE bridge (D1). Empty by default → /sse/bars/:sym serves the
 // graceful idle stub (unchanged). Set to a janus SSE base (the symbol is appended
 // as "/<sym>", emitting `event: bar` frames) to pipe futures bars to the chart.
@@ -616,6 +620,39 @@ async function futuresSymbols(): Promise<Response> {
   }
 }
 
+// GET /api/rithmic/positions → the read-only positions book from the Rithmic
+// connector's /positions surface (fks #183). The connector is `rithmic`
+// profile-gated (not in the default up) and only fills positions when the
+// account triple is configured, so any failure degrades to an honest empty,
+// disconnected view rather than an error the panel has to special-case.
+async function rithmicPositions(): Promise<Response> {
+  const empty = {
+    connected: false,
+    account: "",
+    count: 0,
+    positions: [] as unknown[],
+    account_summary: null as unknown,
+  };
+  try {
+    const r = await fetch(`${RITHMIC_CONNECTOR_URL}/positions`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!r.ok) return json(empty);
+    const j: any = await r.json();
+    return json({
+      connected: true,
+      account: typeof j?.account === "string" ? j.account : "",
+      count: Array.isArray(j?.positions) ? j.positions.length : 0,
+      positions: Array.isArray(j?.positions) ? j.positions : [],
+      account_summary: j?.account_summary ?? null,
+    });
+  } catch {
+    // Connector not running / not on the network → gated-off empty view.
+    return json(empty);
+  }
+}
+
 // DELETE /api/settings/exchange-keys/:exchange → spawner DELETE /secrets/:exchange.
 // ok:false + 200 when no row existed (idempotent from the UI's perspective).
 async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Promise<Response> {
@@ -908,6 +945,9 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   }
   if (pathname === "/api/futures/symbols") {
     return futuresSymbols();
+  }
+  if (pathname === "/api/rithmic/positions") {
+    return rithmicPositions();
   }
   if (pathname === "/api/exchanges/status") {
     const [spot, funding] = await Promise.all([
