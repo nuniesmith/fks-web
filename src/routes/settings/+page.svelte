@@ -359,6 +359,141 @@
     }
   }
 
+  // ─── Notification Channels State ────────────────────────────────────
+  // Operator-configured Discord webhooks stored in the spawner (encrypted at
+  // rest, never read back — mirrors the credential store above). Submit-only:
+  // the browser sends the URL and forgets it.
+  interface NotificationChannel {
+    name: string;
+    kind: string;
+    events: string[];
+    updated_at?: string;
+  }
+  // Known event kinds the notifier follow-up will emit. Empty selection =
+  // catch-all ("send everything").
+  const NOTIFY_EVENTS: { id: string; label: string }[] = [
+    { id: 'spawn', label: 'Bot spawned' },
+    { id: 'stop', label: 'Bot stopped' },
+    { id: 'live_flip', label: 'Paper → live flip' },
+    { id: 'pnl_digest', label: 'PnL digest' },
+    { id: 'error', label: 'Bot error' },
+  ];
+  // null = notification store unreachable (distinct from "no channels yet").
+  let channelList = $state<NotificationChannel[] | null>(null);
+  let channelDbEnabled = $state(true);
+  // Add/update form
+  let channelName = $state('');
+  let channelUrl = $state('');
+  let channelCatchAll = $state(true); // true = subscribe to all events
+  let channelEvents = $state<Set<string>>(new Set());
+  let channelSaving = $state(false);
+  let channelPendingDelete = $state<string | null>(null);
+  let channelDeleting = $state<string | null>(null);
+  let channelFeedback = $state('');
+  let channelFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
+
+  // ─── API: Notification Channels ────────────────────────────────────
+
+  async function loadNotifications() {
+    try {
+      const res = await api.get<{ db_enabled?: boolean; channels?: NotificationChannel[] }>(
+        '/api/settings/notifications'
+      );
+      channelList = Array.isArray(res?.channels) ? res.channels : [];
+      channelDbEnabled = res?.db_enabled !== false;
+    } catch {
+      channelList = null;
+    }
+  }
+
+  function toggleChannelEvent(id: string) {
+    const next = new Set(channelEvents);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    channelEvents = next;
+  }
+
+  async function saveNotification() {
+    const name = channelName.trim();
+    // Same rule the adapter enforces — surfaced with an actionable message.
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name)) {
+      channelFeedback = 'Invalid name — letters, digits, space . _ - (max 64 chars)';
+      channelFeedbackVariant = 'red';
+      clearFeedbackAfter(v => channelFeedback = v, 6000);
+      return;
+    }
+    const url = channelUrl.trim();
+    if (!/^https?:\/\//.test(url)) {
+      channelFeedback = 'Webhook URL must start with https:// (or http://)';
+      channelFeedbackVariant = 'red';
+      clearFeedbackAfter(v => channelFeedback = v, 6000);
+      return;
+    }
+    // Catch-all ⇒ empty events list; otherwise the selected subset.
+    const events = channelCatchAll ? [] : Array.from(channelEvents);
+    channelSaving = true;
+    channelFeedback = '';
+    try {
+      await api.post('/api/settings/notifications', {
+        name,
+        kind: 'discord_webhook',
+        url,
+        events,
+      });
+      channelFeedback = `${name} saved ✓`;
+      channelFeedbackVariant = 'green';
+      // Browser submits then forgets: clear inputs and refresh the list.
+      channelName = '';
+      channelUrl = '';
+      channelCatchAll = true;
+      channelEvents = new Set();
+      loadNotifications();
+      clearFeedbackAfter(v => channelFeedback = v);
+    } catch (err: any) {
+      channelFeedback = `Error: ${err.message ?? 'Failed to save'}`;
+      channelFeedbackVariant = 'red';
+      clearFeedbackAfter(v => channelFeedback = v, 5000);
+    } finally {
+      channelSaving = false;
+    }
+  }
+
+  // Prefill the name to overwrite an existing channel (upsert semantics). The
+  // URL is never returned, so it must be re-entered on update.
+  function startChannelUpdate(ch: NotificationChannel) {
+    channelName = ch.name;
+    channelUrl = '';
+    channelCatchAll = ch.events.length === 0;
+    channelEvents = new Set(ch.events);
+  }
+
+  // Two-step inline confirm: first click arms (auto-disarms after 4s),
+  // second click deletes. No browser dialogs.
+  async function deleteNotification(name: string) {
+    if (channelPendingDelete !== name) {
+      channelPendingDelete = name;
+      setTimeout(() => {
+        if (channelPendingDelete === name) channelPendingDelete = null;
+      }, 4000);
+      return;
+    }
+    channelPendingDelete = null;
+    channelDeleting = name;
+    try {
+      await api.delete(`/api/settings/notifications/${encodeURIComponent(name)}`);
+      channelFeedback = `${name} deleted`;
+      channelFeedbackVariant = 'green';
+      loadNotifications();
+      clearFeedbackAfter(v => channelFeedback = v);
+    } catch (err: any) {
+      channelFeedback = `Error: ${err.message ?? 'Failed to delete'}`;
+      channelFeedbackVariant = 'red';
+      clearFeedbackAfter(v => channelFeedback = v, 5000);
+    } finally {
+      channelDeleting = null;
+    }
+  }
+
   // ─── API: Risk Controls ────────────────────────────────────────────
 
   async function loadRisk() {
@@ -480,6 +615,7 @@
     loadJanusConfig();
     loadRisk();
     loadCredentials();
+    loadNotifications();
     healthTimer = setInterval(fetchHealth, 15_000);
   });
 
@@ -675,6 +811,132 @@
         <div class="cred-hint">
           Credentials are submit-only: stored encrypted server-side, never displayed again.
           Saving a provider that already has credentials overwrites them.
+        </div>
+      </div>
+    </Panel>
+
+    <!-- ── Panel: Notifications ───────────────────────────────────── -->
+    <!-- Operator-configured Discord webhooks stored in the spawner (encrypted
+         at rest, never read back). Submit-only, like the credential form. No
+         Test button: the spawner exposes no notification test route yet, and
+         actually SENDING is a consumer-side follow-up. -->
+    <Panel title="Notifications">
+      {#if channelList !== null && !channelDbEnabled}
+        <div class="status-display key-status">
+          <span class="status-dot dot-amber"></span>
+          <span class="mono">Notification storage (spawner DB) is not configured — saves will fail</span>
+        </div>
+      {/if}
+
+      <!-- Stored channels -->
+      {#if channelList === null}
+        <div class="status-display key-status">
+          <span class="status-dot dot-amber"></span>
+          <span class="mono">Notification store unreachable</span>
+        </div>
+      {:else if channelList.length === 0}
+        <div class="cred-empty mono">No notification channels — add a Discord webhook below.</div>
+      {:else}
+        {#each channelList as ch (ch.name)}
+          <div class="cred-row">
+            <span class="status-dot dot-green"></span>
+            <span class="cred-name">{ch.name}</span>
+            <Badge variant="cyan">{ch.kind === 'discord_webhook' ? 'discord' : ch.kind}</Badge>
+            <span class="channel-events mono">
+              {ch.events.length === 0 ? 'all events' : ch.events.join(', ')}
+            </span>
+            {#if ch.updated_at}
+              <span class="cred-updated">updated {ch.updated_at}</span>
+            {/if}
+            <span class="cred-actions">
+              <button class="btn-ghost" onclick={() => startChannelUpdate(ch)}>Update</button>
+              <button
+                class="btn-ghost btn-delete"
+                class:armed={channelPendingDelete === ch.name}
+                onclick={() => deleteNotification(ch.name)}
+                disabled={channelDeleting === ch.name}
+              >
+                {channelDeleting === ch.name
+                  ? 'Deleting…'
+                  : channelPendingDelete === ch.name
+                    ? 'Confirm delete?'
+                    : 'Delete'}
+              </button>
+            </span>
+          </div>
+        {/each}
+      {/if}
+
+      <!-- Add / update channel -->
+      <div class="connection-block">
+        <div class="connection-title">Add Discord webhook</div>
+        <div class="form-group">
+          <label class="form-label" for="channel-name">Channel name</label>
+          <input
+            id="channel-name"
+            class="form-input"
+            type="text"
+            placeholder="e.g. ops-alerts"
+            bind:value={channelName}
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <span class="form-hint">Letters, digits, space . _ - (max 64 chars). Re-using a name overwrites it.</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="channel-url">Webhook URL</label>
+          <input
+            id="channel-url"
+            class="form-input"
+            type="password"
+            placeholder="https://discord.com/api/webhooks/…"
+            bind:value={channelUrl}
+            autocomplete="off"
+          />
+          <span class="form-hint">Stored encrypted server-side, never displayed again.</span>
+        </div>
+        <div class="form-group">
+          <label class="check-row">
+            <input type="checkbox" bind:checked={channelCatchAll} />
+            <span>Send all events (catch-all)</span>
+          </label>
+          {#if !channelCatchAll}
+            <div class="event-grid">
+              {#each NOTIFY_EVENTS as ev (ev.id)}
+                <label class="check-row">
+                  <input
+                    type="checkbox"
+                    checked={channelEvents.has(ev.id)}
+                    onchange={() => toggleChannelEvent(ev.id)}
+                  />
+                  <span>{ev.label}</span>
+                </label>
+              {/each}
+            </div>
+            <span class="form-hint">Pick at least one event, or re-enable catch-all above.</span>
+          {/if}
+        </div>
+        <div class="form-actions">
+          <button
+            class="btn-primary"
+            onclick={saveNotification}
+            disabled={channelSaving ||
+              !channelName.trim() ||
+              !channelUrl.trim() ||
+              (!channelCatchAll && channelEvents.size === 0)}
+          >
+            {channelSaving ? 'Saving…' : 'Save Channel'}
+          </button>
+          {#if channelFeedback}
+            <span class="feedback" class:feedback-ok={channelFeedbackVariant === 'green'} class:feedback-err={channelFeedbackVariant === 'red'}>
+              {channelFeedback}
+            </span>
+          {/if}
+        </div>
+        <div class="cred-hint">
+          Submit-only: the webhook URL is stored encrypted server-side and never
+          returned. Sending notifications is a spawner-side follow-up — this only
+          manages the channels.
         </div>
       </div>
     </Panel>
@@ -1204,6 +1466,35 @@
     color: var(--t3);
     margin-top: 6px;
     line-height: 1.5;
+  }
+
+  .channel-events {
+    font-size: 9px;
+    color: var(--t3);
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--t2);
+    cursor: pointer;
+  }
+
+  .check-row input {
+    accent-color: var(--cyan);
+  }
+
+  .event-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+    margin: 6px 0 4px;
   }
 
   .btn-delete:hover:not(:disabled),
