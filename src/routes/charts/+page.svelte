@@ -6,8 +6,16 @@
   import Panel from '$components/ui/Panel.svelte';
   import DrawingTools from '$components/ui/DrawingTools.svelte';
   import IndicatorPane from '$components/ui/IndicatorPane.svelte';
+  import RustIndicatorPane from '$components/ui/RustIndicatorPane.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
   import type { IChartApi, ISeriesApi } from 'lightweight-charts';
+  import {
+    parseRustCatalog,
+    rustOnlyIndicators,
+    defaultParams,
+    type RustIndicator,
+    type RustCatalogResponse,
+  } from '$lib/charts/rustIndicators';
 
   // ─── Types ─────────────────────────────────────────────────────────────────
   interface CandleBar {
@@ -174,6 +182,19 @@
   interface OscMeta { id: string; label: string; keys: string[]; }
   let oscillatorCatalog = $state<OscMeta[]>([]);
   let activeOscillators = $state<OscMeta[]>([]);
+
+  // ── Rust indicators-ta catalog (janus) — merged into the Indicators dropdown ─
+  // `rustCatalog` holds only the Rust-ONLY descriptors (TS-covered concepts are
+  // deduped out); janus unreachable → empty → the dropdown shows just the TS
+  // set (no regression). `activeRustIds` are enabled ones; `rustParams` holds
+  // per-indicator tunables keyed by descriptor param name (editable on-chart).
+  let rustCatalog = $state<RustIndicator[]>([]);
+  let activeRustIds = $state<string[]>([]);
+  let rustParams = $state<Record<string, Record<string, number>>>({});
+  const rustById = (id: string): RustIndicator | undefined => rustCatalog.find((r) => r.id === id);
+  const activeRustIndicators = $derived(
+    activeRustIds.map((id) => rustById(id)).filter((r): r is RustIndicator => !!r),
+  );
   // TradingView-style "Indicators" dropdown (replaces the old chip row + picker)
   let indMenuOpen = $state(false);
 
@@ -232,6 +253,9 @@
     oscillators: string[];
     params?: Partial<OverlayParams>;
     oscParams?: Record<string, number[]>;
+    // Rust indicators-ta selections + per-indicator tunables (janus-backed).
+    rustIndicators?: string[];
+    rustParams?: Record<string, Record<string, number>>;
   }
   const BLANK_INDICATORS: IndicatorState = {
     ema9: false, ema21: false, volume: false, bb: false, atr: false,
@@ -325,6 +349,7 @@
       showEma9, showEma21, showVolume, showBB, showATR, showSMA20,
       showVWAP, showWMA, showDonchian, showKeltner, showRSI, showMACD,
       activeOscillators, JSON.stringify(indParams), JSON.stringify(oscParams),
+      activeRustIds, JSON.stringify(rustParams),
     ];
     if (persistReady && _track.length) saveIndicatorState();
   });
@@ -1303,11 +1328,45 @@
     if (editorId === `osc:${id}`) editorId = null;
   }
 
+  // ── Rust indicators-ta catalog (janus) ──────────────────────────────────────
+  // Fetch janus's Rust catalog and keep only the Rust-ONLY descriptors (TS wins
+  // for concepts already wired). Failure/empty → rustCatalog stays [] so the
+  // dropdown degrades to exactly today's TS indicators.
+  async function loadRustCatalog() {
+    try {
+      const resp = await api.get<RustCatalogResponse>('/api/janus/indicators/catalog');
+      rustCatalog = rustOnlyIndicators(parseRustCatalog(resp));
+    } catch {
+      rustCatalog = [];
+    }
+  }
+  function addRustIndicator(id: string) {
+    if (!rustById(id)) return;
+    if (!activeRustIds.includes(id)) activeRustIds = [...activeRustIds, id];
+  }
+  function removeRustIndicator(id: string) {
+    activeRustIds = activeRustIds.filter((x) => x !== id);
+    if (editorId === `rust:${id}`) editorId = null;
+  }
+
   // ─── TW-style Indicators menu ──────────────────────────────────────────────
   // One dropdown, grouped Overlays / Oscillators. Clicking toggles the entry
   // (active rows are checked); the menu stays open for multi-add and closes on
   // outside click or Esc.
-  interface MenuItem { id: string; label: string; color: string; active: boolean; }
+  interface MenuItem { id: string; label: string; color: string; active: boolean; ta?: boolean; }
+
+  // Rust-only descriptors split by pane, marked `ta` (from the indicators-ta
+  // crate). Appended after the TS entries within each group.
+  let rustOverlayMenu = $derived<MenuItem[]>(
+    rustCatalog
+      .filter((r) => r.category === 'Overlay')
+      .map((r) => ({ id: `rust:${r.id}`, label: r.display_name, color: '#22d3ee', active: activeRustIds.includes(r.id), ta: true })),
+  );
+  let rustOscMenu = $derived<MenuItem[]>(
+    rustCatalog
+      .filter((r) => r.category === 'Oscillator')
+      .map((r) => ({ id: `rust:${r.id}`, label: r.display_name, color: '#22d3ee', active: activeRustIds.includes(r.id), ta: true })),
+  );
 
   let overlayMenu = $derived<MenuItem[]>([
     { id: 'ema9',     label: `EMA ${indParams.ema9.period}`,   color: '#00e5ff', active: showEma9 },
@@ -1355,6 +1414,12 @@
       }
       return;
     }
+    if (id.startsWith('rust:')) {
+      const rid = id.slice(5);
+      if (activeRustIds.includes(rid)) removeRustIndicator(rid);
+      else addRustIndicator(rid);
+      return;
+    }
     switch (id) {
       case 'ema9': toggleEma9(); break;
       case 'ema21': toggleEma21(); break;
@@ -1373,7 +1438,8 @@
   }
 
   function isIndicatorActive(id: string): boolean {
-    return [...overlayMenu, ...oscillatorMenu].find((m) => m.id === id)?.active ?? false;
+    return [...overlayMenu, ...oscillatorMenu, ...rustOverlayMenu, ...rustOscMenu]
+      .find((m) => m.id === id)?.active ?? false;
   }
 
   // ─── On-chart legend (active overlays) + inline param editor ───────────────
@@ -1468,6 +1534,8 @@
       oscillators: activeOscillators.map((m) => m.id),
       params: $state.snapshot(indParams),
       oscParams: $state.snapshot(oscParams),
+      rustIndicators: [...activeRustIds],
+      rustParams: $state.snapshot(rustParams),
     };
   }
 
@@ -1488,6 +1556,8 @@
         oscillators: Array.isArray(p.oscillators) ? p.oscillators.map(String) : [],
         params: mergeParams(p.params),
         oscParams: typeof p.oscParams === 'object' && p.oscParams !== null ? p.oscParams : {},
+        rustIndicators: Array.isArray(p.rustIndicators) ? p.rustIndicators.map(String) : [],
+        rustParams: typeof p.rustParams === 'object' && p.rustParams !== null ? p.rustParams : {},
       };
     } catch {
       return null;
@@ -1517,6 +1587,12 @@
     if (s.rsi || s.macd) await tick();
     // Oscillator panes (only those present in the loaded catalog).
     activeOscillators = oscillatorCatalog.filter((m) => s.oscillators.includes(m.id));
+    // Rust indicators — restore params first, then re-enable those still present
+    // in the (possibly changed / empty) Rust catalog. Missing ids are dropped so
+    // a shrunken/unreachable catalog never leaves a dangling pane.
+    if (s.rustParams) rustParams = { ...s.rustParams };
+    const rustAvail = new Set(rustCatalog.map((r) => r.id));
+    activeRustIds = (s.rustIndicators ?? []).filter((id) => rustAvail.has(id));
     saveIndicatorState();
   }
 
@@ -1648,7 +1724,7 @@
     // Load the chart + oscillator catalog, then restore the saved indicator
     // layout (the catalog is needed to rebuild oscillator panes). persistReady
     // gates the persistence effect until this restore has completed.
-    Promise.all([loadChart(), loadOscillatorCatalog()]).then(() => {
+    Promise.all([loadChart(), loadOscillatorCatalog(), loadRustCatalog()]).then(() => {
       const saved = readSavedIndicatorState();
       if (saved) applyIndicatorState(saved).finally(() => { persistReady = true; });
       else persistReady = true;
@@ -1777,22 +1853,24 @@
         {#if indMenuOpen}
           <div class="ind-menu ind-menu-groups" role="menu" aria-label="Indicators menu">
             <div class="ind-menu-head" role="presentation">Overlays</div>
-            {#each overlayMenu as item (item.id)}
+            {#each [...overlayMenu, ...rustOverlayMenu] as item (item.id)}
               <button class="ind-menu-item" class:checked={item.active} role="menuitemcheckbox"
                 aria-checked={item.active ? 'true' : 'false'}
                 onclick={() => toggleIndicator(item.id)}>
                 <span class="ind-dot" style="background:{item.color}"></span>
                 <span class="ind-menu-label">{item.label}</span>
+                {#if item.ta}<span class="ind-ta-badge" title="From the Rust indicators-ta crate">ta</span>{/if}
                 {#if item.active}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
               </button>
             {/each}
             <div class="ind-menu-head" role="presentation">Oscillators</div>
-            {#each oscillatorMenu as item (item.id)}
+            {#each [...oscillatorMenu, ...rustOscMenu] as item (item.id)}
               <button class="ind-menu-item" class:checked={item.active} role="menuitemcheckbox"
                 aria-checked={item.active ? 'true' : 'false'}
                 onclick={() => toggleIndicator(item.id)}>
                 <span class="ind-dot" style="background:{item.color}"></span>
                 <span class="ind-menu-label">{item.label}</span>
+                {#if item.ta}<span class="ind-ta-badge" title="From the Rust indicators-ta crate">ta</span>{/if}
                 {#if item.active}<span class="ind-menu-check" aria-hidden="true">✓</span>{/if}
               </button>
             {/each}
@@ -2053,6 +2131,19 @@
           onremove={() => removeOscillator(osc.id)}
         />
       {/each}
+
+      <!-- Rust indicators-ta panes/overlays (janus-computed) -->
+      {#each activeRustIndicators as rust (rust.id)}
+        <RustIndicatorPane
+          symbol={apiSymbol}
+          {interval}
+          indicator={rust}
+          mainChart={chart}
+          params={rustParams[rust.id] ?? defaultParams(rust)}
+          onparams={(p) => { rustParams = { ...rustParams, [rust.id]: p }; }}
+          onremove={() => removeRustIndicator(rust.id)}
+        />
+      {/each}
     </div>
   </div>
 </div>
@@ -2223,6 +2314,18 @@
   .ind-menu-label { flex: 1; }
   .ind-menu-item.checked { color: var(--t1, #e6e9f5); }
   .ind-menu-check { color: var(--accent, #6366f1); font-size: 10px; }
+  /* "ta" badge — indicator sourced from the Rust indicators-ta crate (janus). */
+  .ind-ta-badge {
+    font-size: 8px;
+    line-height: 1;
+    padding: 1px 3px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--cyan, #00e5ff);
+    border: 1px solid var(--cyan, #00e5ff);
+    opacity: 0.7;
+  }
 
   /* ── On-chart overlay legend + inline param editor ─────────────────────── */
   .chart-legend {
