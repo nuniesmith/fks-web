@@ -106,3 +106,132 @@ describe("createPoll", () => {
     expect(readStore(poll)).toEqual({ value: 1 });
   });
 });
+
+describe("createPoll shared/deduped pollers", () => {
+  it("shares one interval + fetch across subscribers to the same (url, interval)", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/shared", 1000);
+    const b = createPoll("/api/shared", 1000);
+    a.start();
+    b.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // Only ONE immediate fetch is issued, even with two subscribers.
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    // Both handles observe the shared value.
+    expect(readStore(a)).toEqual({ value: 1 });
+    expect(readStore(b)).toEqual({ value: 1 });
+    // One fetch per tick, not two.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    a.stop();
+    b.stop();
+  });
+
+  it("keeps polling until the LAST subscriber stops (ref-count teardown)", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/rc", 1000);
+    const b = createPoll("/api/rc", 1000);
+    a.start();
+    b.start();
+    await vi.advanceTimersByTimeAsync(0); // immediate → 1
+    await vi.advanceTimersByTimeAsync(1000); // tick → 2
+    expect(apiGet).toHaveBeenCalledTimes(2);
+
+    a.stop(); // one subscriber left — timer must survive
+    await vi.advanceTimersByTimeAsync(1000); // tick → 3
+    expect(apiGet).toHaveBeenCalledTimes(3);
+
+    b.stop(); // last subscriber — timer torn down
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(apiGet).toHaveBeenCalledTimes(3); // no further fetches
+  });
+
+  it("de-dupes only the immediate fetch too (second start() piggybacks)", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/imm", 1000);
+    const b = createPoll("/api/imm", 1000);
+    a.start(); // refCount 0→1 → immediate fetch
+    b.start(); // refCount 1→2 → NO extra immediate fetch
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    a.stop();
+    b.stop();
+  });
+
+  it("does NOT share across different urls", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/u1", 1000);
+    const b = createPoll("/api/u2", 1000);
+    a.start();
+    b.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiGet).toHaveBeenCalledTimes(2); // one per distinct url
+    expect(apiGet).toHaveBeenCalledWith("/api/u1");
+    expect(apiGet).toHaveBeenCalledWith("/api/u2");
+    a.stop();
+    b.stop();
+  });
+
+  it("does NOT share across different intervals for the same url", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/int", 1000);
+    const b = createPoll("/api/int", 2000);
+    a.start();
+    b.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // Two independent engines ⇒ two immediate fetches.
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    a.stop();
+    b.stop();
+  });
+
+  it("re-uses a fresh engine after full teardown (last stop evicts)", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/reuse", 1000);
+    a.start();
+    await vi.advanceTimersByTimeAsync(0);
+    a.stop(); // evicts the engine from the registry
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(apiGet).toHaveBeenCalledTimes(1); // stayed torn down
+
+    const b = createPoll("/api/reuse", 1000);
+    b.start(); // brand-new engine, fresh timer
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    b.stop();
+  });
+
+  it("each subscriber applies its OWN transform to the shared fetch", async () => {
+    apiGet.mockResolvedValue({ n: 10 });
+    const raw = createPoll<{ n: number }>("/api/tf", 1000);
+    const doubled = createPoll<number>("/api/tf", 1000, {
+      transform: (r: any) => r.n * 2,
+    });
+    raw.start();
+    doubled.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiGet).toHaveBeenCalledTimes(1); // shared fetch
+    expect(readStore(raw)).toEqual({ n: 10 });
+    expect(readStore(doubled)).toBe(20);
+    raw.stop();
+    doubled.stop();
+  });
+
+  it("a repeated start()/stop() on one handle ref-counts correctly", async () => {
+    apiGet.mockResolvedValue({ value: 1 });
+    const a = createPoll("/api/guard", 1000);
+    const b = createPoll("/api/guard", 1000);
+    a.start();
+    a.start(); // guarded no-op — must not add a second ref
+    b.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    a.stop(); // a's single ref released; b still active
+    a.stop(); // guarded no-op
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(apiGet).toHaveBeenCalledTimes(2); // still polling for b
+    b.stop();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(apiGet).toHaveBeenCalledTimes(2); // fully torn down
+  });
+});

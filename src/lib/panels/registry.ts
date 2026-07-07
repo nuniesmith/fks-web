@@ -128,26 +128,27 @@ export const PANELS = {
         description: "A localStorage-backed scratchpad / trade-journal note.",
     },
 
-    // ── Placeholders: registered so the dock is complete; real extraction
-    //    (roadmap Phase A) lands page by page. They still add/drag/persist. ──
     bots: {
         id: "bots",
         title: "Bots",
         category: "System",
-        load: () => import("./components/PlaceholderPanel.svelte"),
-        defaultParams: { label: "Bots", route: "/bots" },
-        status: "placeholder",
-        description: "Spawner-managed bot list + logs (placeholder).",
+        load: () => import("./components/BotsPanel.svelte"),
+        defaultParams: { intervalMs: 3000 },
+        status: "real",
+        description: "Compact running-bots list from /api/spawner/containers.",
     },
     performance: {
         id: "performance",
         title: "Performance",
         category: "Trading",
-        load: () => import("./components/PlaceholderPanel.svelte"),
-        defaultParams: { label: "Performance", route: "/performance" },
-        status: "placeholder",
-        description: "Equity curve + PnL stats (placeholder).",
+        load: () => import("./components/PerformancePanel.svelte"),
+        defaultParams: { intervalMs: 10000 },
+        status: "real",
+        description: "Key PnL / win-rate / Sharpe stats from /api/performance.",
     },
+
+    // ── Placeholders: registered so the dock is complete; real extraction
+    //    (roadmap Phase A) lands page by page. They still add/drag/persist. ──
     janusAi: {
         id: "janusAi",
         title: "Janus AI",
