@@ -13,6 +13,7 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
   import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
@@ -84,6 +85,11 @@
         <StatCard label="Spot PnL (since start)" value={fmtDollar(spot.pnl_usd)} color={spot.pnl_usd >= 0 ? 'green' : 'red'} />
       {/if}
     </div>
+
+    <!-- History panel: the spot bot's net worth over time, straight from
+         Prometheus (fks_bot_net_worth_usd) via the /api/metrics/query_range
+         proxy — complements the live StatCard above with a trend. -->
+    <NetWorthHistory />
 
     <div class="venue-grid">
       {#each venues as v (venueKey(v))}
