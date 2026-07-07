@@ -25,6 +25,7 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
+    "dockview-core": "^7.0.2",
     "lightweight-charts": "^4.2.0",
     "umap-js": "^1.4.0"
   }

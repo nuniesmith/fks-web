@@ -38,6 +38,14 @@
                     href: "/",
                 },
                 { id: "charts", label: "Charts", key: "2", href: "/charts" },
+                // Dockable panel layouts — snap panels into custom workspaces.
+                {
+                    id: "workspace",
+                    label: "Workspace",
+                    dot: "var(--accent)",
+                    shiftKey: "2",
+                    href: "/workspace",
+                },
             ],
         },
         {
