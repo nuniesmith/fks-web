@@ -4,6 +4,7 @@
   import Badge from '$components/ui/Badge.svelte';
   import InnerTabs from '$components/ui/InnerTabs.svelte';
   import Panel from '$components/ui/Panel.svelte';
+  import ExperienceMap from '$lib/components/ExperienceMap.svelte';
   import ProgressBar from '$components/ui/ProgressBar.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Modal from '$components/ui/Modal.svelte';
@@ -490,6 +491,13 @@
 
   <!-- ─── LEFT PANE: Brain State ─────────────────────────────────────── -->
   <div class="pane pane-left">
+
+    <!-- Experience Map: UMAP projection of live decision vectors -->
+    <div class="map-span">
+      <Panel title="Experience Map" badge="UMAP">
+        <ExperienceMap />
+      </Panel>
+    </div>
 
     <!-- Panel 1: Janus State -->
     <Panel title="Janus State" badge="10s">
@@ -1420,5 +1428,8 @@
     color: var(--red);
     font-size: 10px;
     padding: 6px 8px;
+  }
+  .map-span {
+    grid-column: 1 / -1;
   }
 </style>
