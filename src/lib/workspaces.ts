@@ -5,6 +5,12 @@
  * Pages under /[workspace]/* read their API base from the resolved WorkspaceConfig
  * so the same Svelte components work for any asset class — futures, crypto, equities.
  *
+ * NOTE (2026-07): this file binds an API base to a *page group* (nav-level) and
+ * stays that way for nav grouping. The complementary panel-level registry that
+ * powers the dockable `/workspace` route — binding a data source + component to
+ * a *panel instance* — lives in `$lib/panels/registry.ts` (its "spiritual
+ * successor", per WEBUI_PLATFORM_ROADMAP.md §2.2). The two are independent.
+ *
  * To add a new asset class:
  *   1. Add an entry to WORKSPACES below.
  *   2. Spin up the corresponding API service (same contract as web/app.py).

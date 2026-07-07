@@ -1,0 +1,74 @@
+/*
+ * Dockview theme overrides — terminal dark palette.
+ * =================================================
+ *
+ * We use dockview's built-in `themeDark` (class `dockview-theme-dark`, which
+ * defines every `--dv-*` default) and override the visible subset here, scoped
+ * under `.fks-dock`, so the dock matches the FKS terminal tokens
+ * (--bg0/--b1/--t1/--accent …) from `src/styles/tokens.css`. No `!important`
+ * needed: `.fks-dock .dockview-theme-dark` out-specifies dockview's own
+ * `.dockview-theme-dark` rule.
+ */
+
+.fks-dock .dockview-theme-dark {
+    /* Surfaces */
+    --dv-group-view-background-color: var(--bg0);
+    --dv-tabs-and-actions-container-background-color: var(--bg1);
+    --dv-tabs-container-scrollbar-color: var(--bg3);
+    --dv-scrollbar-background-color: var(--bg3);
+
+    /* Active tab (visible panel of the focused group) */
+    --dv-activegroup-visiblepanel-tab-background-color: var(--bg2);
+    --dv-activegroup-visiblepanel-tab-color: var(--t1);
+    /* Hidden tabs in the active group */
+    --dv-activegroup-hiddenpanel-tab-background-color: var(--bg1);
+    --dv-activegroup-hiddenpanel-tab-color: var(--t3);
+    /* Inactive group tabs */
+    --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg1);
+    --dv-inactivegroup-visiblepanel-tab-color: var(--t2);
+    --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg1);
+    --dv-inactivegroup-hiddenpanel-tab-color: var(--t3);
+
+    /* Borders / dividers */
+    --dv-separator-border: var(--b2);
+    --dv-tab-divider-color: var(--b1);
+    --dv-paneview-header-border-color: var(--b2);
+
+    /* Sashes (splitters) + focus outline */
+    --dv-active-sash-color: var(--accent);
+    --dv-sash-color: transparent;
+    --dv-paneview-active-outline-color: var(--accent);
+
+    /* Drag-to-dock overlay */
+    --dv-drag-over-background-color: rgba(91, 110, 245, 0.18);
+    --dv-drag-over-border-color: var(--accent);
+    --dv-drag-over-border: 1px dashed var(--accent);
+
+    /* Floating groups */
+    --dv-floating-titlebar-background-color: var(--bg1);
+    --dv-floating-group-border: 1px solid var(--b2);
+    --dv-floating-box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+
+    /* Context menu */
+    --dv-context-menu-background-color: var(--bg2);
+    --dv-context-menu-color: var(--t1);
+    --dv-icon-hover-background-color: var(--bg3);
+
+    /* Metrics */
+    --dv-tabs-and-actions-container-height: 30px;
+    --dv-tabs-and-actions-container-font-size: 11px;
+    --dv-tab-font-size: 11px;
+    --dv-border-radius: 4px;
+    --dv-tab-border-radius: 4px;
+}
+
+/* Tab typography: match the terminal mono/system stack + tighten padding. */
+.fks-dock .dockview-theme-dark .dv-tab {
+    font-family: inherit;
+    letter-spacing: 0.01em;
+}
+
+/* Watermark (empty dock) text colour. */
+.fks-dock .dockview-theme-dark .dv-watermark {
+    color: var(--t3);
+}
