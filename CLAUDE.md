@@ -126,6 +126,16 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. Bars come from 
   behind the execution gate. The `/bots` spawn form can inject stored keys
   into a spawned bot's env via the `secrets` checkboxes (spawner decrypts at
   spawn time; fks #162).
+- **Notification channels are submit-only too.** The `/settings`
+  "Notifications" section manages Discord webhooks: each channel POSTs
+  `{name, kind, url, events}` to `/api/settings/notifications`; the adapter
+  forwards to the spawner's `POST /notifications`, which stores it in Postgres
+  (`ruby_db.notification_channels`) with the **webhook URL encrypted at rest**
+  (same cipher as exchange keys — a webhook URL is a bearer capability). The
+  URL is **never returned**: `GET /api/settings/notifications` lists only
+  name/kind/events. `events: []` = catch-all. No Test button — the spawner has
+  no notification test route, and actually SENDING (spawn/stop/live-flip →
+  Discord) is a spawner-side follow-up; this repo only manages the channels.
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the
