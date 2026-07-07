@@ -10,6 +10,7 @@ import {
   reshapePerformance,
   reshapeRiskConfig,
   resampleCandles,
+  resolveCandleTable,
   sanitizeInterval,
   sanitizeSymbol,
   signalStatus,
@@ -302,15 +303,22 @@ async function queryCandles(
   days: number,
   lim: number,
   beforeIso?: string,
+  table: "candles_crypto" | "candles_futures" = "candles_crypto",
+  exact = false,
 ): Promise<CandleRow[]> {
   // With `beforeIso` (history pagination) the days window anchors to that
   // cutoff instead of now(), so scrolling far back keeps returning rows.
   const timeCond = beforeIso
     ? `timestamp < '${beforeIso}' AND timestamp >= dateadd('d', -${days}, cast('${beforeIso}' as timestamp))`
     : `timestamp >= dateadd('d', -${days}, now())`;
+  // Futures symbols are stored fully venue-tagged, so match exactly; crypto
+  // symbols tolerate the `/`- and `-`-quoted variants.
+  const symCond = exact
+    ? `symbol = '${sym}'`
+    : `(symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%')`;
   const sql =
-    `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM candles_crypto ` +
-    `WHERE (symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%') ` +
+    `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM ${table} ` +
+    `WHERE ${symCond} ` +
     `AND interval = '${iv}' AND ${timeCond} ` +
     `ORDER BY timestamp DESC LIMIT ${lim}`;
   try {
@@ -325,9 +333,9 @@ async function queryCandles(
 }
 
 async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<CandleRow[]> {
-  // Strip anything that isn't a symbol char — these go straight into a SQL string
-  // literal, so this is also the injection guard.
-  const sym = sanitizeSymbol(symbolRaw, 32);
+  // Route venue-tagged symbols (rithmic:MESU6) to candles_futures; both paths
+  // sanitize into the SQL literal, so this is also the injection guard.
+  const { table, sym, exact } = resolveCandleTable(symbolRaw);
   if (!sym) return [];
   const p = event.url.searchParams;
   const iv = sanitizeInterval(p.get("interval"));
@@ -343,7 +351,7 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
       ? new Date(beforeMs).toISOString()
       : undefined;
 
-  let rows = await queryCandles(sym, iv, days, lim, beforeIso);
+  let rows = await queryCandles(sym, iv, days, lim, beforeIso, table, exact);
 
   // B3: if nothing is stored natively at this interval, synthesize it by
   // resampling 1m bars. Only fires when the direct query came back empty, so it
@@ -356,6 +364,8 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
       days,
       Math.min(5000, Math.ceil((sec / 60) * lim)),
       beforeIso,
+      table,
+      exact,
     );
     if (oneMin.length > 0) rows = resampleCandles(oneMin, sec);
   }
@@ -565,6 +575,44 @@ async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
     });
   } catch {
     return json({ db_enabled: false, exchanges: [] });
+  }
+}
+
+// GET /api/capabilities → which credential-gated platform features are active.
+// The roadmap's capability gate: features light up only when the backing creds
+// exist. Today: `rithmic` (futures feed + positions) is enabled when a
+// "rithmic" broker credential is stored. Derived from the spawner secret store.
+async function capabilities(event: RequestEvent): Promise<Response> {
+  let stored: string[] = [];
+  try {
+    const headers = upstreamHeaders(event.request.headers);
+    const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
+    if (r.ok) {
+      const j: any = await r.json();
+      stored = (Array.isArray(j?.exchanges) ? j.exchanges : []).map((e: any) =>
+        String(e?.exchange ?? "").toLowerCase(),
+      );
+    }
+  } catch {
+    /* spawner unreachable → everything gated off, honestly */
+  }
+  return json({ rithmic: stored.includes("rithmic") });
+}
+
+// GET /api/futures/symbols → distinct venue-tagged symbols present in
+// candles_futures, for the /futures chart picker. Empty until the Rithmic
+// connector runs and fills the table (or the table doesn't exist yet).
+async function futuresSymbols(): Promise<Response> {
+  const sql = "SELECT DISTINCT symbol FROM candles_futures ORDER BY symbol LIMIT 200";
+  try {
+    const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
+      headers: { accept: "application/json" },
+    });
+    const j: any = await r.json();
+    const symbols = Array.isArray(j?.dataset) ? j.dataset.map((row: any[]) => row[0]) : [];
+    return json({ symbols });
+  } catch {
+    return json({ symbols: [] });
   }
 }
 
@@ -855,6 +903,12 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   // /exchanges page → the crypto bots' /status documents (spot portfolio +
   // futures funding paper). Each side degrades to null independently so the
   // page renders whatever is reachable (e.g. only the spot bot running).
+  if (pathname === "/api/capabilities") {
+    return capabilities(event);
+  }
+  if (pathname === "/api/futures/symbols") {
+    return futuresSymbols();
+  }
   if (pathname === "/api/exchanges/status") {
     const [spot, funding] = await Promise.all([
       janusJson(event, CRYPTO_SPOT_URL, "/status"),

@@ -218,3 +218,27 @@ export function resampleCandles(rows: CandleRow[], bucketSec: number): CandleRow
   if (cur) out.push(cur);
   return out;
 }
+
+/**
+ * Route a chart symbol to its QuestDB table. A venue-tagged symbol like
+ * `rithmic:MESU6` → `candles_futures` (Rithmic connector output, same shape as
+ * candles_crypto), matched EXACTLY; a bare `BTCUSDT` → `candles_crypto`. The
+ * `:` is stripped by sanitizeSymbol, so we split before sanitizing. Both parts
+ * are sanitized into the SQL literal (injection guard).
+ */
+export function resolveCandleTable(symbolRaw: string): {
+  table: "candles_crypto" | "candles_futures";
+  sym: string;
+  exact: boolean;
+} {
+  const raw = symbolRaw ?? "";
+  const colon = raw.indexOf(":");
+  if (colon > 0) {
+    const venue = raw.slice(0, colon).replace(/[^A-Za-z0-9_-]/g, "").toLowerCase();
+    const rest = raw.slice(colon + 1).replace(/[^A-Za-z0-9._/-]/g, "");
+    if (venue && rest) {
+      return { table: "candles_futures", sym: `${venue}:${rest}`.slice(0, 40), exact: true };
+    }
+  }
+  return { table: "candles_crypto", sym: sanitizeSymbol(symbolRaw, 32), exact: false };
+}
