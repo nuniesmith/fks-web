@@ -592,9 +592,10 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
 // behind X-Internal-Token; the list endpoint reports only name/kind/events
 // (never the URL). Mirrors the exchange-keys adapter above.
 //
-// BOUNDARY: this is the management adapter only — actually SENDING to Discord
-// is a spawner-side (consumer) follow-up, not wired in either repo yet. The
-// spawner exposes no test route, so the /settings UI has no "Test" button here.
+// BOUNDARY: this is the management adapter — plus a Test route (below) that
+// asks the spawner to fire a channel's webhook once (fks #181). Actually SENDING
+// on real events (spawn/stop/live-flip → Discord) is still a spawner-side
+// (consumer) follow-up, not wired in either repo yet.
 function sanitizeChannelName(raw: unknown): string {
   const s = (typeof raw === "string" ? raw : "").trim();
   return /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(s) ? s : "";
@@ -693,6 +694,50 @@ async function notificationsDelete(event: RequestEvent, nameRaw: string): Promis
     return json({ ok: j?.ok === true, name, db_enabled: j?.db_enabled !== false });
   } catch {
     return json({ ok: false, message: "Notification storage service unreachable" }, 502);
+  }
+}
+
+// POST /api/settings/notifications/:name/test → spawner POST
+// /notifications/:name/test. Fires the channel's stored webhook with a synthetic
+// event so the operator can confirm delivery without spawning a bot. The webhook
+// URL never touches the browser — the spawner decrypts it, sends, and reports
+// only the outcome. Spawner contract: 200 {ok:true} (2xx from Discord), 200
+// {ok:false,status} (webhook rejected), 404 (no such channel), 503
+// {db_enabled:false} (no DB). Reshaped here to the {ok,message} the /settings
+// feedback line renders — mirrors the venue-ping Test.
+async function notificationsTest(event: RequestEvent, nameRaw: string): Promise<Response> {
+  const name = sanitizeChannelName(decodeURIComponent(nameRaw));
+  if (!name) {
+    return json({ ok: false, message: "A valid channel name is required" }, 400);
+  }
+  // Every definitive outcome comes back HTTP 200 with {ok,message} so the
+  // /settings feedback line can render it (the api client throws on non-2xx and
+  // would swallow the message) — same shape the venue-ping Test returns.
+  try {
+    const headers = upstreamHeaders(event.request.headers);
+    const r = await fetch(`${SPAWNER_URL}/notifications/${encodeURIComponent(name)}/test`, {
+      method: "POST",
+      headers,
+    });
+    if (r.status === 503) {
+      return json({ ok: false, message: "Notification storage (spawner DB) is not configured" });
+    }
+    if (r.status === 404) {
+      return json({ ok: false, message: `No such channel '${name}'` });
+    }
+    const j: any = await r.json().catch(() => ({}));
+    if (r.ok && j?.ok === true) {
+      return json({ ok: true, name, message: "Test message sent" });
+    }
+    // Webhook reached but non-2xx (spawner returns 200 {ok:false,status}).
+    const status = j?.status;
+    return json({
+      ok: false,
+      name,
+      message: status != null ? `Webhook rejected the test (HTTP ${status})` : "Test send failed",
+    });
+  } catch {
+    return json({ ok: false, message: "Notification service unreachable" });
   }
 }
 
@@ -887,6 +932,10 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
   // submits only; list reports name/kind/events, never the webhook URL).
   if (pathname === "/api/settings/notifications") {
     return event.request.method === "POST" ? notificationsPost(event) : notificationsList(event);
+  }
+  const notificationTestMatch = /^\/api\/settings\/notifications\/(.+)\/test$/.exec(pathname);
+  if (notificationTestMatch && event.request.method === "POST") {
+    return notificationsTest(event, notificationTestMatch[1]);
   }
   const notificationDeleteMatch = /^\/api\/settings\/notifications\/(.+)$/.exec(pathname);
   if (notificationDeleteMatch && event.request.method === "DELETE") {
