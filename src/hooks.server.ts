@@ -961,6 +961,27 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
     return json(INDICATOR_CATALOG);
   }
 
+  // ── Rust indicators-ta catalog + compute (janus) ────────────────────────────
+  // The chart merges janus's Rust indicator catalog into its Indicators dropdown
+  // so indicators newly added to the indicators-ta crate auto-appear. Catalog
+  // degrades to an empty list when janus is unreachable → the chart keeps its
+  // existing TS indicator set (no regression). janus contract:
+  //   GET /api/indicators/catalog → { count, indicators:[{id,display_name,
+  //     category,params:[{name,kind,default,min,max}]}] }
+  //   GET /api/indicators/compute?symbol=&indicator=&interval=&<params> →
+  //     { symbol, interval, indicator, series:{ <key>:[{time,value}] }, count }
+  if (pathname === "/api/janus/indicators/catalog") {
+    const j = await janusJson(event, JANUS_URL, "/api/indicators/catalog");
+    const indicators = Array.isArray(j?.indicators) ? j.indicators : [];
+    return json({ count: indicators.length, indicators });
+  }
+  if (pathname === "/api/janus/indicators/compute") {
+    // Forward the query verbatim (symbol/indicator/interval + tunable params).
+    // A 4xx/502 on failure is surfaced to the caller, which renders "no data"
+    // for that one pane — the rest of the chart is unaffected.
+    return forward(event, JANUS_URL, `/api/indicators/compute${search}`);
+  }
+
   // ── /charts indicators → computed in-adapter from QuestDB candles ───────────
   const indMatch = /^\/api\/chart\/([^/]+)\/indicators$/.exec(pathname);
   if (indMatch) {
