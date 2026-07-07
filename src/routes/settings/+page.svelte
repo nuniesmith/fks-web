@@ -389,6 +389,7 @@
   let channelSaving = $state(false);
   let channelPendingDelete = $state<string | null>(null);
   let channelDeleting = $state<string | null>(null);
+  let channelTesting = $state<string | null>(null); // one in-flight test at a time
   let channelFeedback = $state('');
   let channelFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
 
@@ -491,6 +492,34 @@
       clearFeedbackAfter(v => channelFeedback = v, 5000);
     } finally {
       channelDeleting = null;
+    }
+  }
+
+  // Fire a synthetic event at the channel's stored webhook so the operator can
+  // confirm delivery. The URL never returns to the browser — the spawner sends
+  // and reports only the outcome. One in-flight at a time (mirrors testVenue).
+  async function testChannel(name: string) {
+    if (channelTesting !== null) return;
+    channelTesting = name;
+    channelFeedback = '';
+    try {
+      const res = await api.post<{ ok?: boolean; message?: string }>(
+        `/api/settings/notifications/${encodeURIComponent(name)}/test`,
+        {}
+      );
+      if (res?.ok) {
+        channelFeedback = `✓ ${res.message ?? 'Test message sent'}`;
+        channelFeedbackVariant = 'green';
+      } else {
+        channelFeedback = `✗ ${res?.message ?? 'Test send failed'}`;
+        channelFeedbackVariant = 'red';
+      }
+    } catch (err: any) {
+      channelFeedback = `✗ ${err.message ?? 'Test failed'}`;
+      channelFeedbackVariant = 'red';
+    } finally {
+      channelTesting = null;
+      clearFeedbackAfter(v => channelFeedback = v, 5000);
     }
   }
 
@@ -817,9 +846,10 @@
 
     <!-- ── Panel: Notifications ───────────────────────────────────── -->
     <!-- Operator-configured Discord webhooks stored in the spawner (encrypted
-         at rest, never read back). Submit-only, like the credential form. No
-         Test button: the spawner exposes no notification test route yet, and
-         actually SENDING is a consumer-side follow-up. -->
+         at rest, never read back). Submit-only, like the credential form. Each
+         row has a Test button that POSTs to the spawner's test route (fks #181),
+         which decrypts the stored webhook, sends a synthetic event, and reports
+         only the outcome — the URL never returns to the browser. -->
     <Panel title="Notifications">
       {#if channelList !== null && !channelDbEnabled}
         <div class="status-display key-status">
@@ -849,6 +879,13 @@
               <span class="cred-updated">updated {ch.updated_at}</span>
             {/if}
             <span class="cred-actions">
+              <button
+                class="btn-ghost"
+                onclick={() => testChannel(ch.name)}
+                disabled={channelTesting !== null}
+              >
+                {channelTesting === ch.name ? '⏳ Testing…' : '🔔 Test'}
+              </button>
               <button class="btn-ghost" onclick={() => startChannelUpdate(ch)}>Update</button>
               <button
                 class="btn-ghost btn-delete"

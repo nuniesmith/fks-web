@@ -133,9 +133,14 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. Bars come from 
   (`ruby_db.notification_channels`) with the **webhook URL encrypted at rest**
   (same cipher as exchange keys — a webhook URL is a bearer capability). The
   URL is **never returned**: `GET /api/settings/notifications` lists only
-  name/kind/events. `events: []` = catch-all. No Test button — the spawner has
-  no notification test route, and actually SENDING (spawn/stop/live-flip →
-  Discord) is a spawner-side follow-up; this repo only manages the channels.
+  name/kind/events. `events: []` = catch-all. Each channel row has a **Test**
+  button that POSTs `/api/settings/notifications/:name/test`; the adapter
+  forwards to the spawner's `POST /notifications/:name/test` (fks #181), which
+  decrypts the stored webhook, sends a synthetic event, and reports only the
+  outcome ({ok:true} sent · {ok:false,status} webhook non-2xx · 404 no channel ·
+  503 no DB) — the URL never returns to the browser. Actually SENDING on real
+  events (spawn/stop/live-flip → Discord) is still a spawner-side follow-up;
+  this repo only manages + test-fires the channels.
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the
