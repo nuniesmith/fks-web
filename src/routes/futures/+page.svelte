@@ -19,6 +19,7 @@
   import { api } from '$api/client';
   import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
+  import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
   $effect(() => {
@@ -38,6 +39,19 @@
   let futuresSymbols = $state<string[]>([]);
   let selectedFuture = $state<string | null>(null);
 
+  // Read-only positions book (fks #183). Polled only once Rithmic is enabled;
+  // the adapter returns an honest empty/disconnected view when the connector
+  // isn't running (it's `rithmic` profile-gated), so this never errors.
+  const positions = createPoll<RithmicPositionsView>('/api/rithmic/positions', 15_000);
+  $effect(() => {
+    if (!rithmicEnabled) return;
+    positions.start();
+    return () => positions.stop();
+  });
+  let posView = $derived($positions ?? null);
+  let openPositions = $derived(posView?.positions ?? []);
+  let acctSummary = $derived(posView?.account_summary ?? null);
+
   onMount(async () => {
     try {
       const caps = await api.get<{ rithmic?: boolean }>('/api/capabilities');
@@ -49,6 +63,12 @@
       if (futuresSymbols.length) selectedFuture = futuresSymbols[0];
     } catch { /* none yet */ }
   });
+
+  function posDirVariant(p: RithmicPosition): 'green' | 'red' | 'default' {
+    if (p.net_quantity > 0) return 'green';
+    if (p.net_quantity < 0) return 'red';
+    return 'default';
+  }
 
   /** Trading types not integrated yet — rendered as placeholder cards. */
   const PLANNED_TYPES = [
@@ -134,6 +154,62 @@
       {/if}
     {/if}
   </Panel>
+
+  <!-- ── Rithmic positions (read-only, capability-gated) ─────────────── -->
+  {#if rithmicEnabled}
+    <Panel title="Rithmic Positions">
+      {#snippet header()}
+        <Badge variant={posView?.connected ? 'green' : 'default'}>
+          {posView?.connected ? 'read-only' : 'connector idle'}
+        </Badge>
+      {/snippet}
+      {#if acctSummary}
+        <div class="stat-row">
+          <StatCard
+            label="Open PnL"
+            value={fmtDollar(acctSummary.open_pnl)}
+            color={acctSummary.open_pnl >= 0 ? 'green' : 'red'}
+          />
+          <StatCard
+            label="Day PnL"
+            value={fmtDollar(acctSummary.day_pnl)}
+            color={acctSummary.day_pnl >= 0 ? 'green' : 'red'}
+          />
+          <StatCard label="Account balance" value={fmtDollar(acctSummary.account_balance)} />
+        </div>
+      {/if}
+      {#if openPositions.length > 0}
+        <table class="holdings">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Dir</th><th>Net</th><th>Avg open</th>
+              <th>Open PnL</th><th>Day PnL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each openPositions as p (p.symbol)}
+              <tr>
+                <td>{p.symbol.replace('rithmic:', '')}</td>
+                <td><Badge variant={posDirVariant(p)}>{p.direction.toUpperCase()}</Badge></td>
+                <td>{fmtInt(p.net_quantity)}</td>
+                <td>{fmtFixed(p.avg_open_price, 2)}</td>
+                <td class:pos={p.open_pnl >= 0} class:neg={p.open_pnl < 0}>{fmtDollar(p.open_pnl)}</td>
+                <td class:pos={p.day_pnl >= 0} class:neg={p.day_pnl < 0}>{fmtDollar(p.day_pnl)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <EmptyState
+          icon="📃"
+          title={posView?.connected ? 'No open positions' : 'Positions reader idle'}
+          hint={posView?.connected
+            ? 'The connector is up and reporting a flat book. Positions appear here as they open.'
+            : 'Start the rithmic-connector with RITHMIC_ACCOUNT_ID / FCM_ID / IB_ID set to stream read-only positions. Never autonomous orders.'}
+        />
+      {/if}
+    </Panel>
+  {/if}
 
   <!-- ── Crypto futures (live today via the funding bot) ────────────── -->
   {#if funding}
