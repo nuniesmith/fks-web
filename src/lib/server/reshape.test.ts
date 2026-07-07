@@ -8,6 +8,7 @@ import {
   reshapePerformance,
   reshapeRiskConfig,
   resampleCandles,
+  resolveCandleTable,
   sanitizeInterval,
   sanitizeSymbol,
   signalStatus,
@@ -316,5 +317,29 @@ describe("resampleCandles", () => {
   it("returns [] for empty input or a non-positive bucket", () => {
     expect(resampleCandles([], 300)).toEqual([]);
     expect(resampleCandles([m(0, 1, 1, 1, 1, 1)], 0)).toEqual([]);
+  });
+});
+
+describe("resolveCandleTable", () => {
+  it("routes bare symbols to candles_crypto (non-exact match)", () => {
+    const r = resolveCandleTable("BTCUSDT");
+    expect(r.table).toBe("candles_crypto");
+    expect(r.sym).toBe("BTCUSDT");
+    expect(r.exact).toBe(false);
+  });
+  it("routes venue-tagged symbols to candles_futures (exact match)", () => {
+    const r = resolveCandleTable("rithmic:MESU6");
+    expect(r.table).toBe("candles_futures");
+    expect(r.sym).toBe("rithmic:MESU6");
+    expect(r.exact).toBe(true);
+  });
+  it("sanitizes both halves of a tagged symbol (injection guard)", () => {
+    const r = resolveCandleTable("rith'mic:MES';DROP");
+    expect(r.table).toBe("candles_futures");
+    expect(r.sym).not.toContain("'");
+    expect(r.sym).not.toContain(";");
+  });
+  it("falls back to crypto when the tag is malformed", () => {
+    expect(resolveCandleTable(":MES").table).toBe("candles_crypto");
   });
 });

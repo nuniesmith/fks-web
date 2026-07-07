@@ -9,11 +9,14 @@
    * Data: GET /api/exchanges/status (same poll as /exchanges); this page
    * reads the `funding` document.
    */
+  import { onMount } from 'svelte';
   import Panel from '$lib/components/ui/Panel.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import MiniChart from '$lib/components/ui/MiniChart.svelte';
   import { createPoll } from '$lib/stores/poll';
+  import { api } from '$api/client';
   import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
 
@@ -25,6 +28,27 @@
 
   let funding = $derived($status?.funding ?? null);
   let fundingVenues = $derived(funding?.exchanges ?? []);
+
+  // ── Rithmic capability gate + futures charts ──────────────────────────────
+  // The connector (fks #182) writes candles_futures with venue-tagged symbols
+  // (rithmic:MESU6). The Rithmic section lights up only when a broker
+  // credential exists (capabilities.rithmic); the chart fills once the
+  // connector runs — honest empty states until then.
+  let rithmicEnabled = $state(false);
+  let futuresSymbols = $state<string[]>([]);
+  let selectedFuture = $state<string | null>(null);
+
+  onMount(async () => {
+    try {
+      const caps = await api.get<{ rithmic?: boolean }>('/api/capabilities');
+      rithmicEnabled = caps?.rithmic === true;
+    } catch { /* gated off */ }
+    try {
+      const res = await api.get<{ symbols?: string[] }>('/api/futures/symbols');
+      futuresSymbols = res?.symbols ?? [];
+      if (futuresSymbols.length) selectedFuture = futuresSymbols[0];
+    } catch { /* none yet */ }
+  });
 
   /** Trading types not integrated yet — rendered as placeholder cards. */
   const PLANNED_TYPES = [
@@ -76,6 +100,40 @@
     <a class="detail-link" href="/exchanges">backing accounts</a> — each pairs a
     venue with a data source.
   </p>
+
+  <!-- ── Rithmic futures (capability-gated) ─────────────────────────── -->
+  <Panel title="Rithmic Futures">
+    {#snippet header()}
+      <Badge variant={rithmicEnabled ? 'green' : 'default'}>
+        {rithmicEnabled ? 'connected' : 'not configured'}
+      </Badge>
+    {/snippet}
+    {#if !rithmicEnabled}
+      <EmptyState
+        icon="🎛"
+        title="Rithmic not configured"
+        hint="Add Rithmic broker credentials in Settings to enable the futures feed. Read-only: positions, order history, and DOM/book data — never autonomous orders."
+      />
+    {:else if futuresSymbols.length === 0}
+      <EmptyState
+        icon="📡"
+        title="Rithmic connected — no futures data yet"
+        hint="Start the rithmic-connector (rithmic compose profile) with your credentials to fill candles_futures. Symbols appear here once bars arrive."
+      />
+    {:else}
+      <div class="fut-picker">
+        {#each futuresSymbols as s (s)}
+          <button class="btn-ghost" class:active={selectedFuture === s}
+            onclick={() => (selectedFuture = s)}>{s.replace('rithmic:', '')}</button>
+        {/each}
+      </div>
+      {#if selectedFuture}
+        <div class="fut-chart">
+          <MiniChart symbol={selectedFuture} interval="1m" />
+        </div>
+      {/if}
+    {/if}
+  </Panel>
 
   <!-- ── Crypto futures (live today via the funding bot) ────────────── -->
   {#if funding}
@@ -161,6 +219,15 @@
 </div>
 
 <style>
+  .fut-picker {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .fut-chart {
+    height: 320px;
+  }
   .futures-page {
     display: flex;
     flex-direction: column;
