@@ -8,6 +8,12 @@
      * layout is persisted to localStorage on every change and restored on
      * mount, so an operator's arrangement survives reloads.
      *
+     * Named layouts can additionally be saved SERVER-SIDE (spawner `ui_layouts`
+     * via `/api/spawner/ui/layouts`) so they follow the operator across
+     * browsers/devices — the "Layouts" toolbar group (Save… / Saved ▾). This
+     * degrades quietly when the spawner DB is absent (the menu just shows "none
+     * saved"); localStorage stays the per-device autosave.
+     *
      * This route is purely additive — every existing route-per-page surface is
      * untouched and keeps working.
      */
@@ -21,7 +27,10 @@
         serializeLayout,
         deserializeLayout,
         allPanelsKnown,
+        wrapLayout,
+        isStoredLayout,
     } from "$lib/panels/serialize";
+    import { api } from "$api/client";
 
     interface DockHost {
         addPanel(panelId: string, params?: Record<string, unknown>): string | undefined;
@@ -86,6 +95,95 @@
             /* ignore */
         }
     }
+
+    // ── Server-side named layouts (spawner ui_layouts, via /api/spawner/*) ─────
+    // Unlike the per-device localStorage autosave above, these follow the
+    // operator across browsers/devices. Degrades quietly when the spawner DB is
+    // absent (db_enabled:false → the menu just shows "none saved").
+    interface LayoutSummary {
+        name: string;
+        updated_at: string;
+    }
+    let savedLayouts = $state<LayoutSummary[]>([]);
+    let layoutMenuOpen = $state(false);
+    let layoutBusy = $state(false);
+    let layoutMsg = $state<string | null>(null);
+
+    async function refreshSavedLayouts() {
+        try {
+            const res = await api.get<{ layouts?: LayoutSummary[] }>("/api/spawner/ui/layouts");
+            savedLayouts = Array.isArray(res?.layouts) ? res.layouts : [];
+        } catch {
+            savedLayouts = [];
+        }
+    }
+
+    function flash(msg: string) {
+        layoutMsg = msg;
+        setTimeout(() => (layoutMsg = null), 2500);
+    }
+
+    async function saveLayoutAs() {
+        const raw = host?.toJSON();
+        if (!raw) return;
+        const name = window.prompt("Save layout as:")?.trim();
+        if (!name) return;
+        layoutBusy = true;
+        try {
+            // Store the same versioned envelope the localStorage path uses, so
+            // load can validate + restore it identically.
+            await api.post("/api/spawner/ui/layouts", { name, layout: wrapLayout(raw) });
+            flash(`Saved "${name}"`);
+            await refreshSavedLayouts();
+        } catch {
+            flash("Save failed (is the spawner DB up?)");
+        } finally {
+            layoutBusy = false;
+        }
+    }
+
+    async function loadSavedLayout(name: string) {
+        layoutMenuOpen = false;
+        layoutBusy = true;
+        try {
+            const res = await api.get<{ layout?: unknown }>(
+                `/api/spawner/ui/layouts/${encodeURIComponent(name)}`,
+            );
+            const env = res?.layout;
+            if (!isStoredLayout(env)) {
+                flash("Saved layout is unreadable");
+                return;
+            }
+            if (!allPanelsKnown(env.layout)) {
+                flash("Layout references removed panels");
+                return;
+            }
+            if (host?.loadLayout(env.layout)) {
+                persist(env.layout); // mirror into localStorage as the active layout
+                flash(`Loaded "${name}"`);
+            }
+        } catch {
+            flash("Load failed");
+        } finally {
+            layoutBusy = false;
+        }
+    }
+
+    async function deleteSavedLayout(name: string, e: MouseEvent) {
+        e.stopPropagation();
+        if (!window.confirm(`Delete saved layout "${name}"?`)) return;
+        try {
+            await api.delete(`/api/spawner/ui/layouts/${encodeURIComponent(name)}`);
+            await refreshSavedLayouts();
+        } catch {
+            flash("Delete failed");
+        }
+    }
+
+    function toggleLayoutMenu() {
+        layoutMenuOpen = !layoutMenuOpen;
+        if (layoutMenuOpen) refreshSavedLayouts();
+    }
 </script>
 
 <div class="workspace">
@@ -146,15 +244,71 @@
                 {/each}
             </div>
 
+            <!-- Server-side saved layouts (follow the operator across devices) -->
+            <div class="preset-group">
+                <span class="lbl">Layouts</span>
+                <button
+                    class="btn"
+                    title="Save the current layout server-side under a name"
+                    disabled={layoutBusy}
+                    onclick={saveLayoutAs}
+                >
+                    Save…
+                </button>
+                <div class="menu-wrap">
+                    <button
+                        class="btn"
+                        aria-expanded={layoutMenuOpen}
+                        onclick={toggleLayoutMenu}
+                    >
+                        Saved ▾
+                    </button>
+                    {#if layoutMenuOpen}
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div class="menu layouts-menu" role="menu" tabindex="-1">
+                            {#if savedLayouts.length === 0}
+                                <div class="menu-empty">No saved layouts yet.</div>
+                            {:else}
+                                {#each savedLayouts as l (l.name)}
+                                    <button
+                                        class="menu-item layout-row"
+                                        role="menuitem"
+                                        onclick={() => loadSavedLayout(l.name)}
+                                    >
+                                        <span class="mi-title">{l.name}</span>
+                                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                        <span
+                                            class="layout-del"
+                                            title="Delete this saved layout"
+                                            role="button"
+                                            tabindex="0"
+                                            onclick={(e) => deleteSavedLayout(l.name, e)}
+                                        >×</span>
+                                    </button>
+                                {/each}
+                            {/if}
+                        </div>
+                    {/if}
+                </div>
+                {#if layoutMsg}<span class="layout-msg">{layoutMsg}</span>{/if}
+            </div>
+
             <button class="btn ghost" onclick={resetLayout}>Reset</button>
         </div>
     </header>
 
-    <!-- Click-away catcher for the add menu -->
-    {#if addMenuOpen}
+    <!-- Click-away catcher for the open menus -->
+    {#if addMenuOpen || layoutMenuOpen}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="scrim" onclick={() => (addMenuOpen = false)}></div>
+        <div
+            class="scrim"
+            onclick={() => {
+                addMenuOpen = false;
+                layoutMenuOpen = false;
+            }}
+        ></div>
     {/if}
 
     <div class="ws-body">
@@ -308,6 +462,41 @@
         position: fixed;
         inset: 0;
         z-index: 20;
+    }
+
+    .layouts-menu {
+        min-width: 200px;
+        right: 0;
+        left: auto;
+    }
+    .menu-empty {
+        font-size: 11px;
+        color: var(--t3);
+        padding: 8px;
+    }
+    .layout-row {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto;
+        align-items: center;
+    }
+    .layout-del {
+        font-size: 13px;
+        color: var(--t3);
+        padding: 0 4px;
+        border-radius: 3px;
+    }
+    .layout-del:hover {
+        color: var(--red, #ea3943);
+        background: var(--bg1);
+    }
+    .layout-msg {
+        font-size: 10px;
+        color: var(--t2);
+        white-space: nowrap;
+    }
+    .btn:disabled {
+        opacity: 0.5;
+        cursor: default;
     }
 
     .ws-body {
