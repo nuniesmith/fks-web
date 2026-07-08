@@ -76,6 +76,13 @@ async function forward(
     method,
     headers: upstreamHeaders(event.request.headers),
   };
+  // Bound the request so a hung upstream can't wedge the proxy — EXCEPT for SSE
+  // (EventSource sends `accept: text/event-stream`), which is a long-lived
+  // stream that a timeout would sever mid-flight. AbortSignal.timeout throws a
+  // TimeoutError caught below → 502, same as any other upstream failure.
+  const wantsStream =
+    event.request.headers.get("accept")?.includes("text/event-stream") ?? false;
+  if (!wantsStream) init.signal = AbortSignal.timeout(15_000);
   if (method !== "GET" && method !== "HEAD") {
     init.body = await event.request.arrayBuffer();
     init.duplex = "half";
@@ -146,7 +153,11 @@ const json = (body: unknown, status = 200): Response =>
 // Read a janus JSON endpoint, tolerating failure (returns {} on any error).
 async function janusJson(event: RequestEvent, base: string, path: string): Promise<any> {
   try {
-    const r = await fetch(base + path, { headers: upstreamHeaders(event.request.headers) });
+    const r = await fetch(base + path, {
+      headers: upstreamHeaders(event.request.headers),
+      // Bound the read so a hung janus can't wedge the panel that awaits it.
+      signal: AbortSignal.timeout(8_000),
+    });
     return await r.json();
   } catch {
     return {};
