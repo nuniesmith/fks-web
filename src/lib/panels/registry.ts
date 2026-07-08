@@ -147,25 +147,23 @@ export const PANELS = {
         description: "Key PnL / win-rate / Sharpe stats from /api/performance.",
     },
 
-    // ── Placeholders: registered so the dock is complete; real extraction
-    //    (roadmap Phase A) lands page by page. They still add/drag/persist. ──
     janusAi: {
         id: "janusAi",
         title: "Janus AI",
         category: "Markets",
-        load: () => import("./components/PlaceholderPanel.svelte"),
-        defaultParams: { label: "Janus AI", route: "/janus-ai" },
-        status: "placeholder",
-        description: "Janus model / regime view (placeholder).",
+        load: () => import("./components/JanusAiPanel.svelte"),
+        defaultParams: { intervalMs: 10000 },
+        status: "real",
+        description: "Live janus status + market regime from /api/janus/state.",
     },
     docs: {
         id: "docs",
         title: "Docs",
         category: "Notes",
-        load: () => import("./components/PlaceholderPanel.svelte"),
-        defaultParams: { label: "Docs", route: "/docs" },
-        status: "placeholder",
-        description: "In-app documentation (placeholder).",
+        load: () => import("./components/DocsPanel.svelte"),
+        defaultParams: { src: "/docs-viewer/" },
+        status: "real",
+        description: "In-app documentation (embedded MkDocs site).",
     },
 } as const satisfies Record<string, PanelDef>;
 

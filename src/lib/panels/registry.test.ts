@@ -31,11 +31,14 @@ describe("panel registry", () => {
         expect(new Set(ids).size).toBe(ids.length);
     });
 
-    it("ships at least 4 real panels + at least 1 placeholder", () => {
+    it("ships a full set of real panels (all placeholders now extracted)", () => {
         const real = listPanels().filter((p) => p.status === "real");
         const stub = listPanels().filter((p) => p.status === "placeholder");
-        expect(real.length).toBeGreaterThanOrEqual(4);
-        expect(stub.length).toBeGreaterThanOrEqual(1);
+        // Every registered panel now renders real data. The `placeholder`
+        // status remains a valid option for future not-yet-built panels.
+        expect(real.length).toBeGreaterThanOrEqual(6);
+        expect(real.length).toBe(listPanels().length);
+        expect(stub.length).toBe(0);
     });
 
     it("getPanel resolves known ids and rejects unknown ones", () => {
