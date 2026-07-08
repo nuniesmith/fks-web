@@ -30,21 +30,28 @@ export function isPublic(pathname: string): boolean {
   return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
-// Hop-by-hop / connection-specific headers that must not be forwarded to (or
-// streamed back from) an upstream — forwarding them can corrupt message framing
-// or smuggle requests.
+// Headers not forwarded to (or streamed back from) an upstream:
+//   - hop-by-hop / connection-specific ones (forwarding them can corrupt
+//     message framing or smuggle requests);
+//   - the browser's `cookie` — the internal upstreams (spawner / janus /
+//     Prometheus / QuestDB) authenticate via `X-Internal-Token`, never the
+//     SvelteKit `fks_session` cookie, so forwarding it only leaks a browser
+//     credential across the trust boundary. (`cookie` is request-only; the
+//     response's `set-cookie` is a different header and is unaffected.)
 const HOP = new Set([
   "host",
   "connection",
   "content-length",
   "transfer-encoding",
   "keep-alive",
+  "cookie",
 ]);
 
 /**
- * Copy `src` minus hop-by-hop headers — used for both the upstream request and
- * the response streamed back. Everything else (the `X-Internal-Token`, cookies,
- * `content-type`, …) is preserved.
+ * Copy `src` minus the non-forwarded headers above — used for both the upstream
+ * request and the response streamed back. `X-Internal-Token` (nginx sets it on
+ * every proxied request via `proxy_set_header`, overwriting any client value),
+ * `content-type`, … are preserved.
  */
 export function upstreamHeaders(src: Headers): Headers {
   const h = new Headers();

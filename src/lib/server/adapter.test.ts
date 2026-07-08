@@ -62,12 +62,14 @@ describe("upstreamHeaders", () => {
       "content-length",
       "transfer-encoding",
       "keep-alive",
+      // The browser cookie is NOT forwarded across the trust boundary — internal
+      // upstreams authenticate via X-Internal-Token, never the session cookie.
+      "cookie",
     ]) {
       expect(out.has(stripped)).toBe(false);
     }
-    // The internal-auth token, cookies and content type must survive.
+    // The internal-auth token and content type must survive.
     expect(out.get("x-internal-token")).toBe("secret-token");
-    expect(out.get("cookie")).toBe("fks_session=abc");
     expect(out.get("content-type")).toBe("application/json");
   });
 });
