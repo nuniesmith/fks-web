@@ -2,7 +2,7 @@
 
 > **Repo (future):** `github.com/nuniesmith/fks-web`
 > **Today's path:** `fks/src/web/`
-> **Last synced:** 2026-07-04
+> **Last synced:** 2026-07-09
 
 ---
 
@@ -49,7 +49,10 @@
 > **SHIPPED (differently than designed below).** `/bots` is live as a
 > **spawner**-backed control page — spawn form with preset images + per-exchange
 > secrets-injection checkboxes, saved-config templates (save/restore incl. the
-> `secrets` list), per-bot CPU/mem + uptime, an SSE log viewer, and run history —
+> `secrets` list), per-bot CPU/mem + uptime, an SSE log viewer, run history, and
+> a durable per-bot net-worth history chart (#39 — `NetWorthHistoryPanel`, one
+> lightweight-charts line per bot from the spawner's db-gated `/net-worth`
+> endpoint via `/api/spawner/net-worth`) —
 > talking to the spawner's `/api/spawner/*` + `/api/bots/*`, not the
 > `/api/bots/{id}/metrics` wizard sketched below. The 5-step-wizard /
 > module-pipeline / sim→live-promotion design (SVK-19b/e/f) was **not** built;
