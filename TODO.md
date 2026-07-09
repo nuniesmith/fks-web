@@ -1,7 +1,7 @@
 # fks-web — TODO
 
 > **Repo (future):** `github.com/nuniesmith/fks-web`
-> **Today's path:** `fks-full/src/web/`
+> **Today's path:** `fks/src/web/`
 > **Last synced:** 2026-07-04
 
 ---

@@ -1,7 +1,7 @@
 # fks-web — Claude Code Project Instructions
 
 > **Repo (future):** `github.com/nuniesmith/fks-web`
-> **Today's path:** `fks-full/src/web/`
+> **Today's path:** `fks/src/web/`
 > Will become its own repo; deployed as `nuniesmith/fks:webui` via the
 > Node Dockerfile pattern.
 
