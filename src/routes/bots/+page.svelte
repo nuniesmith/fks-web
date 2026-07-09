@@ -25,6 +25,7 @@
     import Badge from "$components/ui/Badge.svelte";
     import Skeleton from "$components/ui/Skeleton.svelte";
     import ProgressBar from "$components/ui/ProgressBar.svelte";
+    import NetWorthHistoryPanel from "$components/bots/NetWorthHistoryPanel.svelte";
     import { fmtDateTime, fmtInt } from "$lib/utils/format";
     import type {
         BotConfig,
@@ -713,6 +714,8 @@
                 </div>
             {/if}
         </Panel>
+
+        <NetWorthHistoryPanel />
     </div>
 
     <!-- Right column: containers + logs -->

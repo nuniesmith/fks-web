@@ -20,6 +20,7 @@
  *   DELETE /api/spawner/container/<id>    → /container/<id>
  *   GET    /api/spawner/container/<id>/logs            → SSE
  *   GET    /api/spawner/runs?limit=N      → /runs (db feature only)
+ *   GET    /api/spawner/net-worth        → /net-worth (db feature only)
  *
  * The vite dev server proxies `/api/spawner` → `http://fks_bot_spawner:8090/`
  * with the same rewrite as the production nginx config.
@@ -31,6 +32,7 @@ import type {
   ContainerInfo,
   ContainersResponse,
   HealthResponse,
+  NetWorthSnapshot,
   RunsResponse,
   SaveConfigRequest,
   SpawnRequest,
@@ -69,6 +71,21 @@ export const spawner = {
    * the flag before showing a "no data" message instead of an error.
    */
   runs: (limit = 50) => api.get<RunsResponse>(`${BASE}/runs?limit=${limit}`),
+
+  /**
+   * Durable net-worth history from the `net_worth_snapshots` table (db
+   * feature). Returns a flat array ordered by ts (oldest → newest); an empty
+   * array when Postgres isn't configured or nothing has been sampled yet.
+   * `botId` filters to one bot; `limit` caps the most-recent rows returned
+   * (spawner default 500, hard cap 5000).
+   */
+  netWorth: (opts: { botId?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.botId) q.set("bot_id", opts.botId);
+    if (opts.limit != null) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return api.get<NetWorthSnapshot[]>(`${BASE}/net-worth${qs ? `?${qs}` : ""}`);
+  },
 
   // ── Saved spawn configs (db feature) ───────────────────────────────────
 
