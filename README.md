@@ -16,7 +16,7 @@ src/
 │   ├── charts/          # Full charting (candles_crypto via /bars + /sse/data) + charts/grid
 │   ├── signals/         # Live janus signals feed (/api/signals/latest)
 │   ├── exchanges/       # Crypto-bot balances + net worth (+ exchanges/[exchange] per-venue detail)
-│   ├── bots/            # Spawner control — spawn form (+ secrets checkboxes), saved configs, SSE logs, run history
+│   ├── bots/            # Spawner control — spawn form (+ secrets checkboxes), saved configs, SSE logs, run history, net-worth history
 │   ├── performance/     # PnL / performance metrics
 │   ├── journal/         # Trade log, analytics, daily notes
 │   ├── monitoring/      # Prometheus proxy, alert feed, PromQL runner
