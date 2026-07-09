@@ -135,6 +135,25 @@ export interface RunsResponse {
   db_enabled: boolean;
 }
 
+// ─── Net-worth history (db feature) ──────────────────────────────────────
+
+/**
+ * One row from the spawner's `GET /net-worth` (durable `net_worth_snapshots`
+ * table in ruby_db, appended by the spawner sampler). Rows come back ordered
+ * by `ts`, oldest → newest. `venue` is null for a bot-level total (spans
+ * venues). The endpoint returns a flat array — an empty array means either
+ * no database is configured or nothing has been sampled yet.
+ */
+export interface NetWorthSnapshot {
+  bot_id: string;
+  /** ISO-8601 timestamp the reading was taken (DB clock). */
+  ts: string;
+  /** Total account value at `ts`, denominated in `currency`. */
+  net_worth: number;
+  currency: string;
+  venue: string | null;
+}
+
 // ─── Saved spawn configs (db feature) ────────────────────────────────────
 
 /** Request body for `POST /configs` — a named, reusable spawn template. */
