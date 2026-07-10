@@ -85,6 +85,9 @@
                     key: "6",
                     href: "/janus-ai",
                 },
+                // Edge portfolio — registered edges + backtest runs/results
+                // (spawner db feature via /api/spawner/edges).
+                { id: "edges", label: "Edges", href: "/edges" },
                 { id: "docs", label: "Docs", shiftKey: "1", href: "/docs" },
             ],
         },

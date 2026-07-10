@@ -208,6 +208,134 @@ export interface ExchangeKeysStatusResponse {
   exchanges: StoredExchangeCredential[];
 }
 
+// ─── Edge registry (db feature) ──────────────────────────────────────────
+
+/** How the edge decides — adaptive (janus-driven) vs a fixed rule. */
+export type EdgeType = "adaptive" | "rule";
+
+/** Lifecycle stage of an edge in the portfolio. */
+export type EdgeStatus = "research" | "paper" | "live" | "retired";
+
+/** One edge from `GET /edges` — a registered, backtestable trading edge. */
+export interface Edge {
+  edge_id: string;
+  display_name: string;
+  edge_type: EdgeType;
+  /** Symbols the edge trades. Empty ⇒ applies to all assets. */
+  asset_scope: string[];
+  status: EdgeStatus;
+  /**
+   * Docker image `POST /edges/:id/backtest` spawns. `null` ⇒ the edge has no
+   * runnable backtest yet (the endpoint 400s) — disable the Run button.
+   */
+  backtest_image: string | null;
+  /** Free-form provenance of how/when the edge was validated. */
+  validation_record: string | null;
+  notes: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /edges` wrapper. When `db_enabled=false` the array is empty. */
+export interface EdgesResponse {
+  edges: Edge[];
+  db_enabled: boolean;
+  total: number;
+}
+
+/** Lifecycle of one backtest run. */
+export type BacktestRunStatus = "running" | "completed" | "failed";
+
+/**
+ * Per-asset headline stats block (`results.assets.{SYMBOL}.base`).
+ * bps figures are per-trade averages; the decomposition is
+ * `avg_net_bps = price + funding − cost`.
+ */
+export interface BacktestAssetBase {
+  trades: number;
+  /** Fraction 0–1. */
+  win_rate: number;
+  avg_net_bps: number;
+  price_bps_per_trade: number;
+  funding_bps_per_trade: number;
+  cost_bps_per_trade: number;
+  total_return_pct?: number;
+  ann_return_pct?: number;
+  max_dd_pct: number;
+}
+
+/**
+ * One entry of `results.assets` — either `{skipped: reason}` or a
+ * `{base: {...}, grid_positive_fraction, ...}` stats object.
+ */
+export interface BacktestAssetResult {
+  skipped?: string;
+  base?: BacktestAssetBase;
+  /** Fraction 0–1 of the parameter grid with positive expectancy. */
+  grid_positive_fraction?: number;
+  [key: string]: unknown;
+}
+
+/** The `results` JSON persisted on a finished backtest run. */
+export interface BacktestResults {
+  assets?: Record<string, BacktestAssetResult>;
+  /** Provenance: which harness produced the numbers (honesty label). */
+  harness?: string;
+  /** Provenance: the effective parameter set, as a string (honesty label). */
+  params_effective?: string;
+  /** Populated on failed runs. */
+  error?: string;
+  [key: string]: unknown;
+}
+
+/** One row from `GET /edges/:id/backtests`. */
+export interface EdgeBacktestRun {
+  id: string;
+  edge_id: string;
+  container_id: string | null;
+  status: BacktestRunStatus;
+  params: Record<string, unknown> | null;
+  /** Null while the run is still in flight. */
+  results: BacktestResults | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+/** `GET /edges/:id/backtests?limit=N` wrapper. */
+export interface EdgeBacktestsResponse {
+  runs: EdgeBacktestRun[];
+  total?: number;
+  db_enabled?: boolean;
+}
+
+/** `POST /edges/:id/backtest` 202 body — the launched run. */
+export interface StartBacktestResponse {
+  run_id: string;
+  container_id?: string | null;
+  [key: string]: unknown;
+}
+
+/** Request body for `POST /edges` (UPSERT keyed by `edge_id`). */
+export interface UpsertEdgeRequest {
+  edge_id: string;
+  display_name: string;
+  edge_type: EdgeType | string;
+  asset_scope?: string[];
+  status?: EdgeStatus | string;
+  backtest_image?: string | null;
+  validation_record?: string | null;
+  notes?: string | null;
+  active?: boolean;
+}
+
+/** `POST /edges` ack. */
+export interface UpsertEdgeResponse {
+  ok?: boolean;
+  edge_id?: string;
+  [key: string]: unknown;
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────
 
 /** Error envelope used by all 4xx/5xx responses. */
