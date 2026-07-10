@@ -21,6 +21,10 @@
  *   GET    /api/spawner/container/<id>/logs            → SSE
  *   GET    /api/spawner/runs?limit=N      → /runs (db feature only)
  *   GET    /api/spawner/net-worth        → /net-worth (db feature only)
+ *   GET    /api/spawner/edges            → /edges (db feature only)
+ *   GET    /api/spawner/edges/<id>/backtests?limit=N → /edges/<id>/backtests
+ *   POST   /api/spawner/edges/<id>/backtest          → 202 (launch run)
+ *   POST   /api/spawner/edges            → /edges (UPSERT by edge_id)
  *
  * The vite dev server proxies `/api/spawner` → `http://fks_bot_spawner:8090/`
  * with the same rewrite as the production nginx config.
@@ -31,12 +35,17 @@ import type {
   ConfigsResponse,
   ContainerInfo,
   ContainersResponse,
+  EdgeBacktestsResponse,
+  EdgesResponse,
   HealthResponse,
   NetWorthSnapshot,
   RunsResponse,
   SaveConfigRequest,
   SpawnRequest,
   SpawnResponse,
+  StartBacktestResponse,
+  UpsertEdgeRequest,
+  UpsertEdgeResponse,
 } from "$lib/types/spawner";
 
 /** Base path — matches the nginx + vite proxy passthrough rewrites. */
@@ -101,6 +110,35 @@ export const spawner = {
     api.delete<{ ok: boolean; name?: string }>(
       `${BASE}/configs/${encodeURIComponent(name)}`,
     ),
+
+  // ── Edge registry (db feature) ─────────────────────────────────────────
+
+  /**
+   * The edge portfolio. `db_enabled: false` (empty array) when the spawner
+   * has no Postgres configured — show an honest empty state, not an error.
+   */
+  edges: () => api.get<EdgesResponse>(`${BASE}/edges`),
+
+  /** Backtest-run history for one edge, newest first. */
+  edgeBacktests: (id: string, limit = 20) =>
+    api.get<EdgeBacktestsResponse>(
+      `${BASE}/edges/${encodeURIComponent(id)}/backtests?limit=${limit}`,
+    ),
+
+  /**
+   * Launch a backtest container for an edge (HTTP 202). The spawner rejects
+   * with 400 when the edge has no `backtest_image`. `params` (optional) is
+   * passed through to the harness, e.g. `{days: 60, symbols: [...]}`.
+   */
+  runBacktest: (id: string, params?: Record<string, unknown>) =>
+    api.post<StartBacktestResponse>(
+      `${BASE}/edges/${encodeURIComponent(id)}/backtest`,
+      params ? { params } : {},
+    ),
+
+  /** UPSERT an edge definition (keyed by `edge_id`). */
+  upsertEdge: (req: UpsertEdgeRequest) =>
+    api.post<UpsertEdgeResponse>(`${BASE}/edges`, req),
 
   // ── SSE log stream ─────────────────────────────────────────────────────
 
