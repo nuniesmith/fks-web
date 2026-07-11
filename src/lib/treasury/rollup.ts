@@ -61,3 +61,66 @@ export function carryForwardTotal<T extends number>(
   }
   return out;
 }
+
+/**
+ * The subset of a net-worth snapshot row `groupSnapshots` needs. Structural
+ * (rather than importing NetWorthSnapshot) so this module stays free of
+ * $lib/types and trivially testable.
+ */
+export interface SnapshotRowLike {
+  bot_id: string;
+  /** ISO-8601 timestamp. */
+  ts: string;
+  net_worth: number;
+  currency: string;
+}
+
+/** One account's cleaned net-worth series, ready for plotting / roll-up. */
+export interface AccountSeries {
+  /** The snapshot rows' bot_id — the logical account id. */
+  accountId: string;
+  /** Last (most recent) value of the series. */
+  latest: number;
+  /** Denomination, from the group's most recent raw row ('USD' fallback). */
+  currency: string;
+  /** Ascending by time (UTC seconds), de-duped per whole second. */
+  points: RollupPoint[];
+}
+
+/**
+ * Group flat `GET /net-worth` rows into one ascending, de-duped series per
+ * account (factored out of the /bots NetWorthHistoryPanel so /treasury can
+ * share it). A timestamp collision on the same whole second keeps the latest
+ * value — lightweight-charts rejects non-increasing times, and ascending +
+ * de-duped is also the precondition `carryForwardTotal` relies on. Rows with
+ * a non-finite value or unparseable timestamp are dropped; accounts left with
+ * no valid points are omitted. Output is sorted by accountId. Pure — no
+ * chart / DOM / fetch.
+ */
+export function groupSnapshots(rows: readonly SnapshotRowLike[]): AccountSeries[] {
+  const groups = new Map<string, SnapshotRowLike[]>();
+  for (const r of rows) {
+    const arr = groups.get(r.bot_id);
+    if (arr) arr.push(r);
+    else groups.set(r.bot_id, [r]);
+  }
+  const out: AccountSeries[] = [];
+  for (const [accountId, rs] of groups) {
+    const bySecond = new Map<number, number>();
+    for (const r of rs) {
+      const t = Math.floor(new Date(r.ts).getTime() / 1000);
+      if (Number.isFinite(t) && Number.isFinite(r.net_worth)) bySecond.set(t, r.net_worth);
+    }
+    const points = [...bySecond.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, value]) => ({ time, value }));
+    if (points.length === 0) continue;
+    out.push({
+      accountId,
+      latest: points[points.length - 1].value,
+      currency: rs[rs.length - 1].currency || 'USD',
+      points,
+    });
+  }
+  return out.sort((a, b) => a.accountId.localeCompare(b.accountId));
+}

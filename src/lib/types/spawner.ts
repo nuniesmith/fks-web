@@ -154,6 +154,178 @@ export interface NetWorthSnapshot {
   venue: string | null;
 }
 
+/**
+ * Request body for `POST /net-worth` — ONE hand-entered net-worth snapshot
+ * (persisted with `source='manual'`). This is how balances without a watcher
+ * node of their own (prop payout accounts, a bank balance, a hardware-wallet
+ * total) get into the series. Records a reading only — can never move funds.
+ */
+export interface ManualNetWorthRequest {
+  /** Logical account id (lands in the `bot_id` column so it joins /profit). */
+  account_id: string;
+  /** Value in `currency`. Must be finite. */
+  net_worth: number;
+  /** Defaults to USD server-side. */
+  currency?: string;
+  /** Optional venue/source tag (e.g. "apex", "chase-bank", "ledger"). */
+  venue?: string | null;
+}
+
+/** `POST /net-worth` ack (201). 400 = validation, 503 = no database. */
+export interface ManualNetWorthResponse {
+  ok: boolean;
+  account_id?: string;
+  net_worth?: number;
+  currency?: string;
+  source?: string;
+  db_enabled?: boolean;
+  error?: string;
+}
+
+// ─── Treasury: transfers ledger + accounts registry + /profit (db feature) ─
+
+/** Allowlisted `transfers.kind` values (mirrors the SQL CHECK constraint). */
+export type TransferKind = "deposit" | "withdrawal" | "payout" | "sweep";
+
+/** Who wrote the ledger row: operator entry vs a bot-detected balance jump. */
+export type TransferSource = "manual" | "bot_detected";
+
+/**
+ * One row from `GET /transfers` (flat array, ordered oldest → newest like
+ * /net-worth). SIGN CONVENTION: `amount` is signed from the account's point
+ * of view — positive = money INTO the account (deposit), negative = money
+ * OUT (withdrawal). Empty array = no database configured or no rows yet.
+ */
+export interface TransferRow {
+  id: number;
+  account_id: string;
+  /** ISO-8601 timestamp of the flow. */
+  ts: string;
+  /** Signed flow: positive = in, negative = out. */
+  amount: number;
+  currency: string;
+  kind: TransferKind | string;
+  source: TransferSource | string;
+  note: string | null;
+}
+
+/**
+ * Request body for `POST /transfers` — append one signed cash-flow row so
+ * net-worth drift decomposes into deposits vs trading profit (GET /profit).
+ * `ts` (RFC3339) backdates an entry the operator records after the fact;
+ * omitted = the DB stamps NOW(). `source` defaults to "manual" server-side.
+ */
+export interface RecordTransferRequest {
+  account_id: string;
+  /** Signed: positive = deposit in, negative = withdrawal out. Non-zero. */
+  amount: number;
+  kind: TransferKind | string;
+  /** Defaults to USD server-side. */
+  currency?: string;
+  ts?: string;
+  note?: string;
+  source?: TransferSource | string;
+}
+
+/** `POST /transfers` ack (201). 400 = validation, 503 = no database. */
+export interface RecordTransferResponse {
+  ok: boolean;
+  id?: number;
+  account_id?: string;
+  kind?: string;
+  amount?: number;
+  db_enabled?: boolean;
+  error?: string;
+}
+
+/**
+ * `GET /profit?account_id=&since=` — one account's net-worth drift
+ * decomposed into external cash flows vs what it actually EARNED:
+ *
+ *     delta       = end_net_worth − start_net_worth
+ *     net_inflows = deposits_in − withdrawals_out
+ *     profit      = delta − net_inflows
+ *
+ * The window is bounded by the FIRST and LAST net_worth_snapshots rows in
+ * range. With no database, or no snapshots in the window, every figure is
+ * null — never an invented zero baseline.
+ */
+export interface ProfitResponse {
+  account_id: string;
+  /** Echo of the requested window start (null = full history). */
+  since: string | null;
+  db_enabled: boolean;
+  start_ts: string | null;
+  end_ts: string | null;
+  start_net_worth: number | null;
+  end_net_worth: number | null;
+  delta: number | null;
+  deposits_in: number | null;
+  withdrawals_out: number | null;
+  net_inflows: number | null;
+  profit: number | null;
+  /** Number of ledger rows inside the window. */
+  transfers: number;
+}
+
+/**
+ * One row from `GET /accounts` — the multi-account treasury topology's
+ * source of truth. Topology + policy metadata only: the registry holds NO
+ * credentials by design (keys live in the encrypted exchange_secrets store).
+ */
+export interface TreasuryAccount {
+  /** Logical account identity (fks.bot_id for bot-traded accounts). */
+  account_id: string;
+  display_name: string | null;
+  /** 0 = cold-BTC backbone, 1 = personal-crypto, 2 = rithmic-main, 3 = prop-copy-target. */
+  tier: number;
+  /** Coarse class: personal-crypto | paper | prop | cold-storage | … */
+  account_class: string;
+  venue: string | null;
+  /** watch | bot-trade | human-trade-source | copy-target. */
+  role: string;
+  /** Prop firm the account belongs to (null for non-prop accounts). */
+  firm: string | null;
+  /** manual-mirror (human confirms every mirrored fill) | auto-fill. */
+  compliance_flag: string;
+  risk_caps: Record<string, unknown>;
+  sizing: Record<string, unknown>;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /accounts` wrapper (active accounts first). */
+export interface AccountsResponse {
+  accounts: TreasuryAccount[];
+  total: number;
+  db_enabled: boolean;
+}
+
+/** Request body for `POST /accounts` (UPSERT keyed by `account_id`). */
+export interface UpsertAccountRequest {
+  account_id: string;
+  display_name?: string | null;
+  tier: number;
+  account_class: string;
+  venue?: string | null;
+  role: string;
+  firm?: string | null;
+  compliance_flag?: string;
+  risk_caps?: Record<string, unknown>;
+  sizing?: Record<string, unknown>;
+  active?: boolean;
+}
+
+/** `POST /accounts` ack. 400 = validation, 503 = no database. */
+export interface UpsertAccountResponse {
+  ok?: boolean;
+  account_id?: string;
+  created?: boolean;
+  db_enabled?: boolean;
+  error?: string;
+}
+
 // ─── Saved spawn configs (db feature) ────────────────────────────────────
 
 /** Request body for `POST /configs` — a named, reusable spawn template. */
