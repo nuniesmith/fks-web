@@ -67,6 +67,15 @@
                     href: "/signals",
                 },
                 { id: "performance", label: "Perf", key: "5", href: "/performance" },
+                // Money home page — real net worth, profit vs deposits, the
+                // paycheck-DCA transfer ledger + accounts registry (spawner db
+                // feature via /api/spawner/{net-worth,transfers,profit,accounts}).
+                {
+                    id: "treasury",
+                    label: "Treasury",
+                    dot: "var(--amber)",
+                    href: "/treasury",
+                },
                 // Backing accounts (spot venues + hardware wallet) — the backbone.
                 { id: "exchanges", label: "Exchanges", href: "/exchanges" },
                 // Trading types on top of the backing accounts (crypto futures live,

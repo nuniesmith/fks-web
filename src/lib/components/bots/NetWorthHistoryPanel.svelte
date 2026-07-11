@@ -34,7 +34,7 @@
     CLASS_ORDER,
     type AccountClass,
   } from '$lib/treasury/accountClass';
-  import { carryForwardTotal } from '$lib/treasury/rollup';
+  import { carryForwardTotal, groupSnapshots } from '$lib/treasury/rollup';
 
   // One plotted line per bot, plus the latest value for the legend.
   interface BotSeries {
@@ -100,41 +100,20 @@
   let drawSeq = 0;
 
   /**
-   * Group flat snapshot rows into one ascending, de-duped series per bot.
-   * lightweight-charts rejects non-increasing times, so a collision on the same
-   * whole second keeps the latest value. Ascending + de-duped is also the
-   * precondition carryForwardTotal relies on. Pure — no chart / DOM access.
+   * Dress the shared per-account grouping ($lib/treasury/rollup.ts —
+   * ascending, same-second de-duped, the precondition carryForwardTotal
+   * relies on) with this panel's presentation: account class + a palette
+   * colour per bot (assigned in sorted order).
    */
   function groupByBot(rows: NetWorthSnapshot[]): BotSeries[] {
-    const groups = new Map<string, NetWorthSnapshot[]>();
-    for (const r of rows) {
-      const arr = groups.get(r.bot_id);
-      if (arr) arr.push(r);
-      else groups.set(r.bot_id, [r]);
-    }
-    const out: BotSeries[] = [];
-    let i = 0;
-    for (const [botId, rs] of groups) {
-      const bySecond = new Map<number, number>();
-      for (const r of rs) {
-        const t = Math.floor(new Date(r.ts).getTime() / 1000);
-        if (Number.isFinite(t) && Number.isFinite(r.net_worth)) bySecond.set(t, r.net_worth);
-      }
-      const points = [...bySecond.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([time, value]) => ({ time: time as UTCTimestamp, value }));
-      if (points.length === 0) continue;
-      out.push({
-        botId,
-        accountClass: classifyBot(botId),
-        color: PALETTE[i % PALETTE.length],
-        latest: points[points.length - 1].value,
-        currency: rs[rs.length - 1].currency || 'USD',
-        points,
-      });
-      i++;
-    }
-    return out.sort((a, b) => a.botId.localeCompare(b.botId));
+    return groupSnapshots(rows).map((s, i) => ({
+      botId: s.accountId,
+      accountClass: classifyBot(s.accountId),
+      color: PALETTE[i % PALETTE.length],
+      latest: s.latest,
+      currency: s.currency,
+      points: s.points as { time: UTCTimestamp; value: number }[],
+    }));
   }
 
   async function ensureChart() {

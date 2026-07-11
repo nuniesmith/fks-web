@@ -21,6 +21,12 @@
  *   GET    /api/spawner/container/<id>/logs            → SSE
  *   GET    /api/spawner/runs?limit=N      → /runs (db feature only)
  *   GET    /api/spawner/net-worth        → /net-worth (db feature only)
+ *   POST   /api/spawner/net-worth        → /net-worth (manual snapshot)
+ *   GET    /api/spawner/transfers        → /transfers (db feature only)
+ *   POST   /api/spawner/transfers        → /transfers (record a cash flow)
+ *   GET    /api/spawner/profit           → /profit?account_id=&since=
+ *   GET    /api/spawner/accounts         → /accounts (db feature only)
+ *   POST   /api/spawner/accounts         → /accounts (UPSERT by account_id)
  *   GET    /api/spawner/edges            → /edges (db feature only)
  *   GET    /api/spawner/edges/<id>/backtests?limit=N → /edges/<id>/backtests
  *   POST   /api/spawner/edges/<id>/backtest          → 202 (launch run)
@@ -31,6 +37,7 @@
  */
 import { api } from "./client";
 import type {
+  AccountsResponse,
   ActionResponse,
   ConfigsResponse,
   ContainerInfo,
@@ -38,12 +45,20 @@ import type {
   EdgeBacktestsResponse,
   EdgesResponse,
   HealthResponse,
+  ManualNetWorthRequest,
+  ManualNetWorthResponse,
   NetWorthSnapshot,
+  ProfitResponse,
+  RecordTransferRequest,
+  RecordTransferResponse,
   RunsResponse,
   SaveConfigRequest,
   SpawnRequest,
   SpawnResponse,
   StartBacktestResponse,
+  TransferRow,
+  UpsertAccountRequest,
+  UpsertAccountResponse,
   UpsertEdgeRequest,
   UpsertEdgeResponse,
 } from "$lib/types/spawner";
@@ -95,6 +110,62 @@ export const spawner = {
     const qs = q.toString();
     return api.get<NetWorthSnapshot[]>(`${BASE}/net-worth${qs ? `?${qs}` : ""}`);
   },
+
+  /**
+   * Record ONE hand-entered net-worth snapshot (`source='manual'`) for an
+   * account without a watcher node of its own (prop payouts, bank balance,
+   * hardware wallet). 400 = validation, 503 = no spawner database.
+   */
+  recordNetWorth: (req: ManualNetWorthRequest) =>
+    api.post<ManualNetWorthResponse>(`${BASE}/net-worth`, req),
+
+  // ── Treasury: transfers ledger + accounts registry + /profit (db) ──────
+
+  /**
+   * A window of the transfers ledger, flat array ordered oldest → newest
+   * (like netWorth). `accountId` filters to one account; `limit` caps the
+   * most-recent rows (spawner default 500, hard cap 5000). Empty array when
+   * Postgres isn't configured — show an honest empty state, not an error.
+   */
+  transfers: (opts: { accountId?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.accountId) q.set("account_id", opts.accountId);
+    if (opts.limit != null) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return api.get<TransferRow[]>(`${BASE}/transfers${qs ? `?${qs}` : ""}`);
+  },
+
+  /**
+   * Append one signed cash-flow row (positive = deposit in, negative =
+   * withdrawal out) so /profit can decompose net-worth drift into deposits
+   * vs trading profit. The write is awaited server-side — a 201 means the
+   * ledger row persisted. 400 = validation, 503 = no spawner database.
+   */
+  recordTransfer: (req: RecordTransferRequest) =>
+    api.post<RecordTransferResponse>(`${BASE}/transfers`, req),
+
+  /**
+   * Decompose one account's net-worth drift into deposits vs trading profit
+   * over `since`..now (`since` omitted/null = the account's full history).
+   * Figures come back null — never an invented zero — when no snapshots
+   * fall inside the window or no database is configured (`db_enabled`).
+   */
+  profit: (accountId: string, since?: string | null) => {
+    const q = new URLSearchParams({ account_id: accountId });
+    if (since) q.set("since", since);
+    return api.get<ProfitResponse>(`${BASE}/profit?${q.toString()}`);
+  },
+
+  /**
+   * The accounts registry (multi-account treasury topology), active accounts
+   * first. Carries NO credentials by design. `db_enabled: false` (empty
+   * array) when the spawner has no Postgres configured.
+   */
+  accounts: () => api.get<AccountsResponse>(`${BASE}/accounts`),
+
+  /** UPSERT a registry account (keyed by `account_id`). */
+  upsertAccount: (req: UpsertAccountRequest) =>
+    api.post<UpsertAccountResponse>(`${BASE}/accounts`, req),
 
   // ── Saved spawn configs (db feature) ───────────────────────────────────
 
