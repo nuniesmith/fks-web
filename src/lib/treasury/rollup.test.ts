@@ -57,3 +57,60 @@ describe('carryForwardTotal', () => {
     ]);
   });
 });
+
+// ─── groupSnapshots (the /net-worth → per-account series extraction) ────────
+
+import { groupSnapshots, type SnapshotRowLike } from './rollup';
+
+const row = (
+  bot_id: string,
+  ts: string,
+  net_worth: number,
+  currency = 'USD',
+): SnapshotRowLike => ({ bot_id, ts, net_worth, currency });
+
+describe('groupSnapshots', () => {
+  it('returns [] for no rows', () => {
+    expect(groupSnapshots([])).toEqual([]);
+  });
+
+  it('groups per account, ascending by time, sorted by accountId', () => {
+    const out = groupSnapshots([
+      row('b', '2026-07-02T00:00:10Z', 20),
+      row('a', '2026-07-02T00:00:05Z', 100),
+      row('b', '2026-07-02T00:00:00Z', 10),
+    ]);
+    expect(out.map((s) => s.accountId)).toEqual(['a', 'b']);
+    expect(out[1].points.map((p) => p.value)).toEqual([10, 20]);
+    expect(out[1].points[0].time).toBeLessThan(out[1].points[1].time);
+    expect(out[1].latest).toBe(20);
+  });
+
+  it('de-dupes same-second collisions keeping the LATEST value', () => {
+    const out = groupSnapshots([
+      row('a', '2026-07-02T00:00:00.100Z', 1),
+      row('a', '2026-07-02T00:00:00.900Z', 2),
+    ]);
+    expect(out[0].points).toHaveLength(1);
+    expect(out[0].points[0].value).toBe(2);
+  });
+
+  it('drops non-finite values and unparseable timestamps; omits emptied accounts', () => {
+    const out = groupSnapshots([
+      row('a', 'not-a-time', 5),
+      row('a', '2026-07-02T00:00:00Z', Number.NaN),
+      row('ok', '2026-07-02T00:00:00Z', 7),
+    ]);
+    expect(out.map((s) => s.accountId)).toEqual(['ok']);
+  });
+
+  it("takes currency from the group's most recent raw row, with USD fallback", () => {
+    const out = groupSnapshots([
+      row('a', '2026-07-02T00:00:00Z', 1, 'EUR'),
+      row('a', '2026-07-02T00:01:00Z', 2, 'CAD'),
+      row('b', '2026-07-02T00:00:00Z', 3, ''),
+    ]);
+    expect(out[0].currency).toBe('CAD');
+    expect(out[1].currency).toBe('USD');
+  });
+});
