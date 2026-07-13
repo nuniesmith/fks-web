@@ -124,3 +124,68 @@ export function groupSnapshots(rows: readonly SnapshotRowLike[]): AccountSeries[
   }
   return out.sort((a, b) => a.accountId.localeCompare(b.accountId));
 }
+
+// ─── Staleness (dead-account carry-forward guard) ───────────────────────────
+
+/**
+ * How long an account's newest snapshot may age before its carried-forward
+ * balance stops reading as CURRENT money in the headline total.
+ *
+ * `carryForwardTotal` deliberately holds each account's last-known value flat
+ * (the ramp-in / restart-gap fix), which means an account whose watcher is
+ * decommissioned — or whose funds are moved out without a final ~0 snapshot —
+ * keeps contributing its final value to "Real net worth" forever, silently
+ * overstating it (audit 2026-07-11). We don't drop the value (we can't prove
+ * the money moved, and dropping a merely-restarted bot would UNDERSTATE), but
+ * we surface it as stale so the figure stops silently reading as fresh.
+ *
+ * Mirrors the advisor's `ACCOUNT_STALE_HOURS` (fks-state
+ * crates/advisor/src/model.rs): 6h is loose enough that a routine restart
+ * doesn't flag, tight enough that a dead account's carried balance is caught.
+ */
+export const ACCOUNT_STALE_SECONDS = 6 * 3600;
+
+/** One carried-forward account whose most recent snapshot has gone stale. */
+export interface StaleAccount {
+  accountId: string;
+  /** Its last-known value — still summed into the carry-forward total. */
+  value: number;
+  /** Whole seconds since its most recent snapshot. */
+  ageSeconds: number;
+}
+
+/**
+ * The subset of `series` whose newest snapshot is older than `maxAgeSeconds`
+ * before `nowSeconds`. These accounts are still carried into
+ * `carryForwardTotal`, so the headline must surface them explicitly rather
+ * than presenting a dead account's frozen balance as live net worth. Sorted
+ * oldest-first (the worst offender leads). Empty series are skipped. Pure —
+ * `nowSeconds` is injectable so the rule stays deterministically testable.
+ */
+export function staleAccounts(
+  series: readonly AccountSeries[],
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+  maxAgeSeconds: number = ACCOUNT_STALE_SECONDS,
+): StaleAccount[] {
+  const out: StaleAccount[] = [];
+  for (const s of series) {
+    const last = s.points[s.points.length - 1];
+    if (!last) continue;
+    const ageSeconds = nowSeconds - last.time;
+    if (ageSeconds > maxAgeSeconds) {
+      out.push({ accountId: s.accountId, value: s.latest, ageSeconds });
+    }
+  }
+  return out.sort((a, b) => b.ageSeconds - a.ageSeconds);
+}
+
+/**
+ * Human age for a stale annotation: "8h" under 48h, "3d" beyond — the web
+ * mirror of the advisor's `account_age_note` wording. `seconds` is expected to
+ * already exceed `ACCOUNT_STALE_SECONDS` (≥ 6h), so sub-hour output never
+ * shows; negative (clock-skew) ages clamp to "0h".
+ */
+export function formatStaleAge(seconds: number): string {
+  const hours = Math.max(0, seconds) / 3600;
+  return hours < 48 ? `${Math.round(hours)}h` : `${Math.round(hours / 24)}d`;
+}

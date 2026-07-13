@@ -114,3 +114,77 @@ describe('groupSnapshots', () => {
     expect(out[1].currency).toBe('USD');
   });
 });
+
+// ─── staleAccounts / formatStaleAge (dead-account carry-forward guard) ──────
+
+import {
+  staleAccounts,
+  formatStaleAge,
+  ACCOUNT_STALE_SECONDS,
+  type AccountSeries,
+} from './rollup';
+
+const H = 3600;
+/** An AccountSeries whose newest snapshot sits `ageSec` before `now`. */
+const acct = (accountId: string, latest: number, ageSec: number, now: number): AccountSeries => ({
+  accountId,
+  latest,
+  currency: 'USD',
+  points: [
+    { time: now - ageSec - H, value: latest - 1 },
+    { time: now - ageSec, value: latest },
+  ],
+});
+
+describe('staleAccounts', () => {
+  const now = 1_800_000_000;
+
+  it('flags only accounts past the staleness threshold', () => {
+    // Fresh crypto-spot (1h) stays out; a decommissioned watcher (3d) is caught
+    // even though carry-forward still sums its frozen balance.
+    const out = staleAccounts(
+      [acct('crypto-spot', 200, 1 * H, now), acct('dead-watch', 5000, 72 * H, now)],
+      now,
+    );
+    expect(out.map((s) => s.accountId)).toEqual(['dead-watch']);
+    expect(out[0].value).toBe(5000);
+    expect(out[0].ageSeconds).toBe(72 * H);
+  });
+
+  it('treats exactly ACCOUNT_STALE_SECONDS as fresh (strict >), one second past as stale', () => {
+    expect(staleAccounts([acct('a', 10, ACCOUNT_STALE_SECONDS, now)], now)).toEqual([]);
+    const out = staleAccounts([acct('a', 10, ACCOUNT_STALE_SECONDS + 1, now)], now);
+    expect(out).toHaveLength(1);
+  });
+
+  it('defaults the threshold to 6h', () => {
+    expect(ACCOUNT_STALE_SECONDS).toBe(6 * H);
+  });
+
+  it('sorts oldest-first so the worst offender leads', () => {
+    const out = staleAccounts(
+      [acct('mild', 1, 8 * H, now), acct('worst', 2, 100 * H, now), acct('mid', 3, 30 * H, now)],
+      now,
+    );
+    expect(out.map((s) => s.accountId)).toEqual(['worst', 'mid', 'mild']);
+  });
+
+  it('skips accounts with no points and honours a custom maxAge', () => {
+    const empty: AccountSeries = { accountId: 'empty', latest: 0, currency: 'USD', points: [] };
+    const out = staleAccounts([empty, acct('a', 10, 90 * 60, now)], now, 60 * 60);
+    expect(out.map((s) => s.accountId)).toEqual(['a']); // 90min > custom 60min
+  });
+});
+
+describe('formatStaleAge', () => {
+  it('renders hours under 48h and days beyond, mirroring the advisor wording', () => {
+    expect(formatStaleAge(8 * H)).toBe('8h');
+    expect(formatStaleAge(47 * H)).toBe('47h');
+    expect(formatStaleAge(72 * H)).toBe('3d');
+    expect(formatStaleAge(6.4 * H)).toBe('6h'); // rounds to the nearest hour
+  });
+
+  it('clamps negative (clock-skew) ages to 0h', () => {
+    expect(formatStaleAge(-100)).toBe('0h');
+  });
+});

@@ -14,7 +14,12 @@
   import Panel from '$components/ui/Panel.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
-  import { carryForwardTotal, type AccountSeries } from '$lib/treasury/rollup';
+  import {
+    carryForwardTotal,
+    staleAccounts,
+    formatStaleAge,
+    type AccountSeries,
+  } from '$lib/treasury/rollup';
   import { fmtMoney } from '$lib/treasury/cards';
 
   let { series, paperIds, loading, error, onRefresh } = $props<{
@@ -38,6 +43,12 @@
   let currency = $derived(inputs[0]?.currency ?? 'USD');
   let hasPaper = $derived((series as AccountSeries[]).some((s) => paperIds.has(s.accountId)));
   let hasData = $derived(series.length > 0);
+
+  // Accounts whose newest snapshot is stale: carry-forward keeps their frozen
+  // balance in the total forever, so flag how much of the headline is stale
+  // (and the oldest offender's age) instead of reading it as live money.
+  let stale = $derived(staleAccounts(inputs));
+  let staleValue = $derived(stale.reduce((sum, a) => sum + a.value, 0));
 
   // ── Sparkline (lightweight-charts, static — no scroll/scale traps on phone) ─
 
@@ -136,6 +147,12 @@
           {#if hasPaper && !includePaper}· paper excluded{/if}
         </span>
       {/if}
+      {#if stale.length > 0}
+        <span class="stale" title={stale.map((s) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}>
+          ⚠ includes {fmtMoney(staleValue, currency)} from {stale.length} stale
+          account{stale.length === 1 ? '' : 's'} — oldest as of {formatStaleAge(stale[0].ageSeconds)} ago
+        </span>
+      {/if}
     </div>
 
     <div class="spark-wrap">
@@ -192,6 +209,11 @@
   .sub {
     font-size: 10px;
     color: var(--t3);
+  }
+  .stale {
+    font-size: 10px;
+    color: var(--amber, #f0a500);
+    cursor: help;
   }
   .spark-wrap {
     position: relative;
