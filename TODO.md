@@ -1,8 +1,7 @@
 # fks-web — TODO
 
-> **Repo (future):** `github.com/nuniesmith/fks-web`
-> **Today's path:** `fks/src/web/`
-> **Last synced:** 2026-07-09
+> **Repo:** `github.com/nuniesmith/fks-web` (standalone — split out of `fks/src/web/`)
+> **Last synced:** 2026-07-13
 
 ---
 
@@ -25,8 +24,8 @@
 - [ ] Verify strip cells update independently
 - [ ] Verify SSE reconnect + toast notifications
 - [ ] Verify responsive collapse at 1024px breakpoint
-- [ ] Verify redirects: `/dom`, `/posint`, `/paper-trading`, `/trainer` → terminal tabs
-- [ ] Verify standalone routes: `/dom/standalone`, `/posint/standalone`, `/paper-trading/standalone`, `/trainer/standalone`
+- ~~Verify redirects: `/dom`, `/posint`, `/paper-trading`, `/trainer` → terminal tabs~~ **obsolete** — those fks_ruby-era routes were removed (archived under `archive/legacy-fks-ruby/`)
+- ~~Verify standalone routes: `/dom/standalone`, `/posint/standalone`, `/paper-trading/standalone`, `/trainer/standalone`~~ **obsolete** — same removal
 - [ ] End-to-end browser test — dashboard loads, API responds, SSE streams, paper trading works
 
 ---
@@ -34,7 +33,15 @@
 ## P1 — New Workspaces
 
 ### SVK-18: Futures Workspace — `/futures`
-> Depends on FMERGE-A/B/C (Ruby + nginx side done first)
+> **PARTIALLY SHIPPED (differently than designed below).** `/futures` is live
+> as a trading-types page: a **Rithmic capability gate**, `candles_futures`
+> charting, and a **read-only Rithmic positions panel** (#33/#34 — via
+> `/api/rithmic/positions`; degrades to `connected:false` while the
+> `rithmic` compose profile is down / creds are unpaid). The worker-cards /
+> CNN-risk / Grok-reports design below was **not** built — the backends it
+> assumed (Ruby workers API, CNN scorer) are gone; keep or drop as future
+> ideas against janus equivalents.
+> ~~Depends on FMERGE-A/B/C (Ruby + nginx side done first)~~
 
 - [ ] **SVK-18a:** Left pane — worker cards panel (5s poll): `GET /api/workers/status`, state badge, action buttons (Start/Stop/Restart)
 - [ ] **SVK-18b:** Left pane — live signals feed (3s poll): `GET /api/signals/recent`, direction badge, CNN risk score color-coded
@@ -132,6 +139,20 @@
 
 ## Completed (reference)
 
+- ✅ `/treasury` money home page (#41/#43): real net worth with carry-forward
+  TOTAL + account-class grouping, profit vs deposits (`/profit`), and the
+  phone-friendly record-a-transfer form over the spawner treasury endpoints
+- ✅ Treasury stale-account guard (#44): carry-forward accounts whose newest
+  snapshot exceeds `ACCOUNT_STALE_SECONDS` (6h) flag the headline with an
+  amber "includes … from N stale accounts" annotation (never silently reduced)
+- ✅ `/edges` edge-factory UI (#42): edge portfolio, backtest runs, results view
+- ✅ `/workspace` dockable panel layouts (dockview-core) — last placeholder dock
+  panels extracted into real ones (#35)
+- ✅ Server-side saved layouts (#36): named dock layouts persist in the
+  spawner's `ui_layouts` (via `/api/spawner/ui/layouts`) and follow the
+  operator across devices
+- ✅ Adapter hardening: request timeouts on proxy fetches, SSE-aware (#37);
+  browser cookie stripped at the trust boundary (#38)
 - ✅ SVK-1 through SVK-17 (all 19 workspaces, all components, all stores)
 - ✅ Panel.svelte refactor (header snippet, badge, noPad, fill) + full migration across 14 pages
 - ✅ All 20 pages with per-page `<title>` tags

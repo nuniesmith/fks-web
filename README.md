@@ -2,7 +2,7 @@
 
 **SvelteKit terminal-themed trading dashboard — source code only.**
 
-This repo contains the FKS WebUI: a 19-workspace SvelteKit 5 application with a terminal aesthetic, real-time SSE data feeds, TradingView Lightweight Charts, and a complete trading cockpit. Infrastructure (Docker, compose, CI/CD) lives in [fks](https://github.com/nuniesmith/fks).
+This repo contains the FKS WebUI: a 17-workspace SvelteKit 5 application with a terminal aesthetic, real-time SSE data feeds, TradingView Lightweight Charts, and a complete trading cockpit. Infrastructure (Docker, compose, CI/CD) lives in [fks](https://github.com/nuniesmith/fks).
 
 ---
 
@@ -13,9 +13,13 @@ src/
 ├── routes/              # workspace pages (SvelteKit file-based routing) — janus-wired
 │   ├── +page.svelte     # Overview — market table, signals, P&L strip
 │   ├── trading/         # Manual trading — chart, order entry, risk calc, signals
-│   ├── charts/          # Full charting (candles_crypto via /bars + /sse/data) + charts/grid
+│   ├── charts/          # Full charting (candles via /bars + /sse/bars) + charts/grid
 │   ├── signals/         # Live janus signals feed (/api/signals/latest)
 │   ├── exchanges/       # Crypto-bot balances + net worth (+ exchanges/[exchange] per-venue detail)
+│   ├── treasury/        # Money home — net worth (carry-forward + stale-account flag), profit vs deposits, transfer entry
+│   ├── futures/         # Trading types — Rithmic capability gate, candles_futures charts, read-only positions
+│   ├── edges/           # Edge factory — edge portfolio, backtest runs, results view
+│   ├── workspace/       # Dockable panel layouts (dockview-core) + named layouts saved server-side
 │   ├── bots/            # Spawner control — spawn form (+ secrets checkboxes), saved configs, SSE logs, run history, net-worth history
 │   ├── performance/     # PnL / performance metrics
 │   ├── journal/         # Trade log, analytics, daily notes
@@ -52,13 +56,13 @@ Terminal-themed: dark background, monospace fonts, cyan/green accent palette. Al
 
 ```bash
 npm install
-npm run dev          # Dev server on :5173 with API proxy to fks_ruby:8000
+npm run dev          # Dev server on :5173 (backend calls go through hooks.server.ts)
 npm run build        # Production build
 npm run preview      # Preview production build
 npm run test:e2e     # Playwright E2E tests (~55 tests)
 ```
 
-**API proxy** (configured in `vite.config.ts`): `/api`, `/sse`, `/bars`, `/factory`, `/kraken`, `/health` → `fks_ruby:8000`.
+**Backend adapter** (`src/hooks.server.ts` — no vite proxies, the hook is the seam in dev and prod): `/api`, `/sse`, `/bars`, `/factory`, `/kraken`, `/fapi` are mapped to janus / the spawner / Prometheus / QuestDB (override upstreams via `*_INTERNAL_URL` env vars for dev outside Docker; unmapped paths degrade gracefully).
 
 ## Key patterns
 
@@ -90,6 +94,7 @@ Deployed via [fks](https://github.com/nuniesmith/fks). The Dockerfile clones thi
 
 ## Stats
 
-- ~14 workspace routes, all janus / Prometheus / QuestDB-wired (the pre-split
-  fks_ruby-era routes were removed; dashboard is served via `hooks.server.ts`)
+- 17 workspace routes, all janus / Prometheus / QuestDB / spawner-wired (the
+  pre-split fks_ruby-era routes were removed; the backend seam is
+  `hooks.server.ts`)
 - `npm run check` clean (0/0); vitest unit tests + Playwright E2E
