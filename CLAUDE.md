@@ -1,16 +1,18 @@
 # fks-web — Claude Code Project Instructions
 
-> **Repo (future):** `github.com/nuniesmith/fks-web`
-> **Today's path:** `fks/src/web/`
-> Will become its own repo; deployed as `nuniesmith/fks:webui` via the
-> Node Dockerfile pattern.
+> **Repo:** `github.com/nuniesmith/fks-web` (standalone — split out of
+> `fks/src/web/`). Deployed as `nuniesmith/fks:webui` by the **fks** repo's
+> Node Dockerfile, which git-clones this repo at build time (pinned via
+> `WEB_COMMIT`); infra (compose, nginx, CI/CD) stays in fks.
 
 ## What this is
 
 SvelteKit 5 frontend for the FKS platform. Single-page terminal UI with:
 top status strip, multi-group tab bar, route-per-feature workspace pane,
-bottom status bar. Talks to Ruby (`/api/*`, `/sse/*`), Janus (`/api/*`),
-and the spawner (`/api/spawner/*`, `/api/bots/*`).
+bottom status bar. All backend calls are same-origin and flow through the
+`hooks.server.ts` adapter — the single backend seam — which maps them to
+janus (`/api/*`, `/sse/*`), the spawner (`/api/spawner/*`, `/api/bots/*`),
+Prometheus (`/api/metrics/*`), and QuestDB (`/bars`, chart candles).
 
 ## Stack
 
@@ -26,7 +28,7 @@ and the spawner (`/api/spawner/*`, `/api/bots/*`).
 ## Build & test
 
 ```bash
-cd src/web
+# from the repo root
 
 # Dev server (hot reload)
 npm run dev                # http://localhost:5173
@@ -50,16 +52,16 @@ npm run preview            # serve the production bundle locally
 ## Repository layout
 
 ```
-src/web/
+fks-web/
 ├── package.json
 ├── svelte.config.js
-├── vite.config.ts            # dev proxies → fks_ruby, fks_bot_spawner, …
+├── vite.config.ts            # deliberately proxy-free — hooks.server.ts is the seam
 ├── playwright.config.ts
 ├── src/
 │   ├── app.html
 │   ├── app.css
 │   ├── app.d.ts
-│   ├── hooks.server.ts
+│   ├── hooks.server.ts       # backend adapter: janus / spawner / Prometheus / QuestDB
 │   ├── lib/
 │   │   ├── api/              # typed fetch wrappers (client.ts, spawner.ts, …)
 │   │   ├── types/            # shared TS types per domain (spawner.ts, charts, …)
@@ -98,19 +100,18 @@ src/web/
 2. Reach for `Panel`, `Badge`, `Skeleton`, `StatCard` from `$components/ui/`.
 3. If it needs an API client, add `src/lib/api/<feature>.ts` (typed wrapper) + `src/lib/types/<feature>.ts` (mirror of backend types).
 4. Add the tab to `src/lib/components/shell/TabBar.svelte` in the right group (Markets / Trading / Analysis / System / per-workspace).
-5. If it talks to a new backend, add the proxy to `vite.config.ts` (dev) and the equivalent location block to `infrastructure/config/nginx/conf.d/dev.conf` (prod).
+5. If it talks to a new backend, add the mapping to the `hooks.server.ts` adapter (`src/lib/server/adapter.ts` routing + an `*_INTERNAL_URL` env override) — there is deliberately no vite proxy; the hook is the seam in both dev and prod. nginx config lives in the fks repo.
 
 ### Add a new SSE-driven feature
 Pattern: `routes/bots/+page.svelte` log viewer. `EventSource` opened lazily, `bind:this` on the container, `$effect` triggers scroll-to-tail when followed, `onscroll` handler flips follow state, optional "Jump to latest" button when paused.
 
 ### Add a chart
-Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. Bars come from Ruby via `/bars/{symbol}` (REST), updates via WebSocket on `/sse/data/{symbol}`.
+Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars come from QuestDB via the hook's `/bars/{symbol}` mapping (REST); live updates arrive on `/sse/bars/{symbol}` (janus tail when `JANUS_BARS_SSE_URL` is set — a graceful idle stub otherwise).
 
-## Pre-split gotchas
+## Gotchas
 
-- **`vite.config.ts` proxies** point at internal hostnames (`fks_ruby`, `fks_bot_spawner`, `fks_janus`) that only resolve inside the Docker network. After the split, the new repo's `vite.config.ts` will need a localhost-friendly default for dev outside Docker.
-- **`PUBLIC_API_URL`** is currently used as the dev proxy target. Production talks to nginx via relative URLs.
-- **Auth.** Today the WebUI sits behind nginx + Tailscale; nginx injects `X-Internal-Token` on every proxied request. The Svelte side carries no auth. Don't add browser-side credential handling — Tailscale + a single shared token is the policy.
+- **No vite dev proxies — the `hooks.server.ts` adapter is the seam in both dev and prod.** Upstream defaults are in-container Docker-network hostnames (`fks_janus`, `fks_bot_spawner`, `fks_prometheus`, `fks_questdb`); override each via its `*_INTERNAL_URL` env var for dev outside Docker. Adding a `server.proxy` to `vite.config.ts` would shadow the hook and break that path.
+- **Auth.** Two layers. (1) Pages: a server-side login gate in `hooks.server.ts` / `routes/login` (`WEBUI_PASSWORD_HASH` + `WEBUI_SESSION_SECRET`, HTTP-only `fks_session` cookie; dev bypass when unset) — backend `/api`/`/sse` calls are proxied, never auth-redirected. (2) Upstreams: nginx injects `X-Internal-Token` on every proxied request and the adapter preserves it (while stripping the browser `cookie` at the trust boundary). Don't add browser-side credential handling — Tailscale + the shared internal token is the policy.
 - **Exchange API keys are submit-only (server-side storage).** The `/settings`
   form covers Kraken, KuCoin (+ passphrase), and Crypto.com; each card POSTs
   `{api_key, api_secret[, api_passphrase]}` to the generic
@@ -158,12 +159,29 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   poll / SSE stores + the api client.
 - **Pages wired:** charts (full indicator set + presets/persistence, crosshair
   readout, log scale), `/bots` (spawn presets + secrets-injection checkboxes,
-  saved configs, per-bot CPU/mem + uptime, SSE log viewer, run history),
+  saved configs, per-bot CPU/mem + uptime, SSE log viewer, run history, durable
+  per-bot net-worth history chart from the spawner's `/net-worth`),
   signals (live janus feed via `/api/signals/latest`), performance, janus-ai,
   settings (risk controls + Kraken/KuCoin/Crypto.com API-key entry),
   monitoring, `/exchanges` + `/exchanges/[exchange]` (crypto-bot balances, net
   worth, holdings vs targets, recent rebalance trades — reads the bots'
   `/status` servers via `CRYPTO_SPOT/FUNDING_INTERNAL_URL`) — all with
   consistent `EmptyState` empty/error states.
-- Phase-by-phase detail lives in
-  [`docs/architecture/WEBUI_BUILDOUT_PLAN.md`](../../docs/architecture/WEBUI_BUILDOUT_PLAN.md).
+- **`/treasury`** (#41/#43/#44): the money home page — real net worth
+  (carry-forward TOTAL + account-class grouping), profit vs deposits, and a
+  phone-friendly record-a-transfer form over the spawner's `/transfers` /
+  `/accounts` / `/profit`; stale carry-forward accounts (newest snapshot older
+  than `ACCOUNT_STALE_SECONDS` = 6h) get an amber "includes … from N stale
+  accounts" annotation on the headline (never silently reduced).
+- **`/edges`** (#42): edge-factory UI — the edge portfolio (registry), backtest
+  runs + results views over the spawner's `/edges` endpoints.
+- **`/workspace`** (#35/#36): dockable/snappable panel layouts (dockview-core)
+  with real panels (no placeholders); named layouts persist locally and
+  server-side (spawner `ui_layouts` via `/api/spawner/ui/layouts`) so they
+  follow the operator across devices.
+- **`/futures`** (#33/#34): trading-types page with a Rithmic capability gate,
+  `candles_futures` charting, and a read-only Rithmic positions panel via
+  `/api/rithmic/positions` (degrades to `connected:false` when the connector
+  profile is down).
+- Phase-by-phase buildout detail lives in the **fks** repo at
+  `docs/architecture/WEBUI_BUILDOUT_PLAN.md`.
