@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isBackend, isPublic, routeRequest, upstreamHeaders } from "./adapter";
+import {
+  type AuthState,
+  type SessionInfo,
+  isBackend,
+  isPublic,
+  originAllowed,
+  outageRoute,
+  routeRequest,
+  upstreamHeaders,
+} from "./adapter";
 
 describe("isBackend", () => {
   it("matches the proxied backend prefixes", () => {
@@ -24,13 +33,7 @@ describe("isBackend", () => {
 
 describe("isPublic", () => {
   it("treats login/logout pages and health probes as public", () => {
-    for (const p of [
-      "/login",
-      "/login/oauth",
-      "/logout",
-      "/api/health",
-      "/healthz",
-    ]) {
+    for (const p of ["/login", "/login/oauth", "/logout", "/api/health", "/healthz"]) {
       expect(isPublic(p)).toBe(true);
     }
   });
@@ -43,15 +46,18 @@ describe("isPublic", () => {
 });
 
 describe("upstreamHeaders", () => {
-  it("strips hop-by-hop headers and preserves the rest (case-insensitive)", () => {
+  it("strips hop-by-hop AND boundary credentials, preserving the rest", () => {
     const src = new Headers();
     src.set("Host", "evil.example");
     src.set("Connection", "keep-alive");
     src.set("Content-Length", "10");
     src.set("Transfer-Encoding", "chunked");
     src.set("Keep-Alive", "timeout=5");
-    src.set("X-Internal-Token", "secret-token");
     src.set("Cookie", "fks_session=abc");
+    // A client MUST NOT be able to smuggle a boundary credential through: the
+    // adapter mints these itself on the outbound side.
+    src.set("X-Internal-Token", "client-forged-token");
+    src.set("Authorization", "Bearer client-forged");
     src.set("Content-Type", "application/json");
 
     const out = upstreamHeaders(src);
@@ -62,48 +68,125 @@ describe("upstreamHeaders", () => {
       "content-length",
       "transfer-encoding",
       "keep-alive",
-      // The browser cookie is NOT forwarded across the trust boundary — internal
-      // upstreams authenticate via X-Internal-Token, never the session cookie.
       "cookie",
+      "x-internal-token",
+      "authorization",
     ]) {
       expect(out.has(stripped)).toBe(false);
     }
-    // The internal-auth token and content type must survive.
-    expect(out.get("x-internal-token")).toBe("secret-token");
     expect(out.get("content-type")).toBe("application/json");
   });
 });
 
-describe("routeRequest", () => {
-  const SECRET = "s3cret";
+// ── routeRequest matrix ──────────────────────────────────────────────────────
 
-  it("proxies backend paths regardless of auth — never redirects an API/SSE call", () => {
-    expect(routeRequest("/api/signals", "", SECRET, "")).toEqual({ kind: "backend" });
-    // even with a wrong session, a backend call is proxied (a 302 would corrupt it)
-    expect(routeRequest("/sse/bars/BTC", "", SECRET, "wrong")).toEqual({ kind: "backend" });
+const disabled: AuthState = { mode: "disabled" };
+const bootstrap: AuthState = { mode: "bootstrap" };
+const noSession: AuthState = { mode: "enabled", session: null };
+const good: SessionInfo = { userId: 1, username: "admin", role: "admin", mustChange: false };
+const mustChange: SessionInfo = { ...good, mustChange: true };
+const enabled = (s: SessionInfo | null): AuthState => ({ mode: "enabled", session: s });
+
+describe("routeRequest — health probes are always open", () => {
+  it("proxies /api/health unauthenticated in every mode", () => {
+    for (const a of [bootstrap, noSession, enabled(mustChange)]) {
+      expect(routeRequest("/api/health", "", "GET", a)).toEqual({ kind: "backend" });
+    }
   });
-
-  it("passes public pages without a session", () => {
-    expect(routeRequest("/login", "", SECRET, "")).toEqual({ kind: "pass" });
-    expect(routeRequest("/healthz", "", SECRET, "")).toEqual({ kind: "pass" });
+  it("passes /healthz page unauthenticated", () => {
+    expect(routeRequest("/healthz", "", "GET", noSession)).toEqual({ kind: "pass" });
   });
+});
 
-  it("dev-bypasses every page when no secret is configured", () => {
-    expect(routeRequest("/settings", "", "", "")).toEqual({ kind: "pass" });
+describe("routeRequest — disabled (explicit opt-in bypass)", () => {
+  it("passes pages and proxies backend without a session", () => {
+    expect(routeRequest("/settings", "", "GET", disabled)).toEqual({ kind: "pass" });
+    expect(routeRequest("/api/spawner/x", "", "POST", disabled)).toEqual({ kind: "backend" });
   });
+});
 
-  it("passes a protected page with the matching session cookie", () => {
-    expect(routeRequest("/settings", "", SECRET, SECRET)).toEqual({ kind: "pass" });
+describe("routeRequest — bootstrap (no users yet, fail closed on writes)", () => {
+  it("lets GET reads through but 401s mutations", () => {
+    expect(routeRequest("/api/signals", "", "GET", bootstrap)).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/x", "", "POST", bootstrap)).toEqual({ kind: "unauthorized" });
   });
+  it("funnels pages to /setup", () => {
+    expect(routeRequest("/charts", "", "GET", bootstrap)).toEqual({ kind: "redirect", location: "/setup" });
+    expect(routeRequest("/setup", "", "GET", bootstrap)).toEqual({ kind: "pass" });
+  });
+});
 
-  it("redirects a protected page with a missing/wrong session, preserving the URL", () => {
-    expect(routeRequest("/settings", "?tab=keys", SECRET, "")).toEqual({
+describe("routeRequest — enabled, no session (fail closed)", () => {
+  it("401s ALL backend calls incl. GET/SSE (reads leak balances/keys/signals)", () => {
+    expect(routeRequest("/api/signals", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest("/sse/bars/BTC", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest("/api/spawner/x", "", "POST", noSession)).toEqual({ kind: "unauthorized" });
+  });
+  it("redirects pages to /login preserving the URL", () => {
+    expect(routeRequest("/settings", "?tab=keys", "GET", noSession)).toEqual({
       kind: "redirect",
       location: "/login?next=%2Fsettings%3Ftab%3Dkeys",
     });
-    expect(routeRequest("/charts", "", SECRET, "nope")).toEqual({
-      kind: "redirect",
-      location: "/login?next=%2Fcharts",
-    });
+  });
+});
+
+describe("routeRequest — enabled, mustChange (confined to /setup)", () => {
+  it("403s backend mutations, allows GET reads", () => {
+    expect(routeRequest("/api/spawner/x", "", "POST", enabled(mustChange))).toEqual({ kind: "forbidden" });
+    expect(routeRequest("/api/spawner/x", "", "PUT", enabled(mustChange))).toEqual({ kind: "forbidden" });
+    expect(routeRequest("/api/signals", "", "GET", enabled(mustChange))).toEqual({ kind: "backend" });
+  });
+  it("redirects app pages to /setup but lets /setup render", () => {
+    expect(routeRequest("/charts", "", "GET", enabled(mustChange))).toEqual({ kind: "redirect", location: "/setup" });
+    expect(routeRequest("/setup", "", "GET", enabled(mustChange))).toEqual({ kind: "pass" });
+  });
+});
+
+describe("routeRequest — enabled, full session", () => {
+  it("proxies backend (any method) and passes pages", () => {
+    expect(routeRequest("/api/spawner/x", "", "POST", enabled(good))).toEqual({ kind: "backend" });
+    expect(routeRequest("/settings", "", "GET", enabled(good))).toEqual({ kind: "pass" });
+  });
+  it("bounces a completed /setup back to the app", () => {
+    expect(routeRequest("/setup", "", "GET", enabled(good))).toEqual({ kind: "redirect", location: "/" });
+  });
+});
+
+describe("outageRoute — fail closed but keep login renderable on a store outage", () => {
+  it("keeps health probes open (monitoring survives)", () => {
+    expect(outageRoute("/api/health")).toBe("open-backend");
+    expect(outageRoute("/healthz")).toBe("open-page");
+  });
+
+  // REGRESSION: a persistent store outage (or a least-privilege deploy that
+  // can't self-migrate) previously 503'd EVERY page including /login, bricking
+  // the whole browser recovery path. The login/logout pages must render so the
+  // operator sees a UI + retry surface (the login action still fails closed).
+  it("renders login/logout pages during an outage instead of 503", () => {
+    expect(outageRoute("/login")).toBe("open-page");
+    expect(outageRoute("/logout")).toBe("open-page");
+  });
+
+  it("still fails closed for everything that needs auth", () => {
+    expect(outageRoute("/settings")).toBe("deny-page");
+    expect(outageRoute("/")).toBe("deny-page");
+    expect(outageRoute("/api/spawner/bots/kill")).toBe("deny-backend");
+    expect(outageRoute("/api/signals")).toBe("deny-backend");
+    expect(outageRoute("/sse/bars/BTC")).toBe("deny-backend");
+  });
+});
+
+describe("originAllowed — CSRF guard on state-changing backend calls", () => {
+  it("always allows GET/HEAD regardless of origin", () => {
+    expect(originAllowed("GET", "https://evil.example", "fks.local")).toBe(true);
+    expect(originAllowed("HEAD", null, "fks.local")).toBe(true);
+  });
+  it("allows a same-host Origin and a missing Origin (native/server client)", () => {
+    expect(originAllowed("POST", "https://fks.local", "fks.local")).toBe(true);
+    expect(originAllowed("POST", null, "fks.local")).toBe(true);
+  });
+  it("rejects a cross-site Origin and a malformed one", () => {
+    expect(originAllowed("POST", "https://evil.example", "fks.local")).toBe(false);
+    expect(originAllowed("POST", "not-a-url", "fks.local")).toBe(false);
   });
 });

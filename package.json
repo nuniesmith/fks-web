@@ -18,6 +18,7 @@
     "@sveltejs/adapter-node": "^5.0.0",
     "@sveltejs/kit": "^2.0.0",
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@types/node": "^22.20.1",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.5.0",
@@ -27,6 +28,7 @@
   "dependencies": {
     "dockview-core": "^7.0.2",
     "lightweight-charts": "^4.2.0",
+    "postgres": "^3.4.9",
     "umap-js": "^1.4.0"
   }
 }
