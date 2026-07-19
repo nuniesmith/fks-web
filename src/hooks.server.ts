@@ -42,6 +42,26 @@ import { routeRequest, upstreamHeaders } from "$lib/server/adapter";
 const SPAWNER_URL = env.SPAWNER_INTERNAL_URL ?? "http://fks_bot_spawner:8090";
 const JANUS_URL = env.JANUS_INTERNAL_URL ?? "http://fks_janus:8080"; // janus-api
 const JANUS_FORWARD_URL = env.JANUS_FORWARD_INTERNAL_URL ?? "http://fks_janus:8180"; // forward (brain/risk)
+// Bearer token janus now requires on every mutating (non-GET) route of both
+// its surfaces (janus-auth). The SvelteKit server attaches it to its janus
+// proxy calls so the /settings risk-config PUT (→ forward) and the "Janus
+// Optimizer" /api/config PUT (→ janus-api) keep working once the token is set.
+// Empty default = no header attached, which matches janus's own fail-closed
+// posture (mutations 503 until BOTH janus and the webui carry the token).
+// Server-side only — never exposed to the browser. See fks docker-compose.yml.
+const JANUS_API_TOKEN = env.JANUS_API_TOKEN ?? "";
+function isJanusBase(base: string): boolean {
+  return base === JANUS_URL || base === JANUS_FORWARD_URL;
+}
+/** Attach the janus bearer to a janus-bound request's headers (no-op when the
+ *  token is unset or the base isn't janus). Overrides any inbound Authorization
+ *  so a browser can't smuggle its own. */
+function withJanusAuth(base: string, headers: Headers): Headers {
+  if (JANUS_API_TOKEN && isJanusBase(base)) {
+    headers.set("authorization", `Bearer ${JANUS_API_TOKEN}`);
+  }
+  return headers;
+}
 const PROMETHEUS_URL = env.PROMETHEUS_INTERNAL_URL ?? "http://fks_prometheus:9090"; // /monitoring
 const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /charts OHLC (HTTP query API)
 // Crypto bot status servers (/exchanges page). Defaults are the Phase-2
@@ -74,7 +94,9 @@ async function forward(
   const method = event.request.method;
   const init: RequestInit & { duplex?: "half" } = {
     method,
-    headers: upstreamHeaders(event.request.headers),
+    // janus-bound mutating calls (e.g. /api/config PUT) need the bearer; a no-op
+    // for GETs, non-janus bases, or when the token is unset.
+    headers: withJanusAuth(base, upstreamHeaders(event.request.headers)),
   };
   // Bound the request so a hung upstream can't wedge the proxy — EXCEPT for SSE
   // (EventSource sends `accept: text/event-stream`), which is a long-lived
@@ -487,7 +509,10 @@ async function riskConfigPost(event: RequestEvent): Promise<Response> {
   }
   const payload = toRiskConfigPayload(body);
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withJanusAuth(
+      JANUS_FORWARD_URL,
+      upstreamHeaders(event.request.headers),
+    );
     headers.set("content-type", "application/json");
     const r = await fetch(`${JANUS_FORWARD_URL}/api/v1/risk/config`, {
       method: "PUT",
