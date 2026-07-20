@@ -1,0 +1,809 @@
+<script lang="ts">
+  /**
+   * /cockpit — the armed-futures co-pilot (M2). Read dashboard + ONE guarded
+   * mutating control (the kill sentinel). No order entry, no strategy config.
+   *
+   * Data planes (each degrades independently, honest-empty — never fabricated):
+   *   - GET /api/cockpit/state      → funding bot Postgres state of record
+   *     (kill sentinel, open trades, persisted gate rows, session ledger PnL)
+   *   - GET /api/cockpit/telemetry  → Prometheus armed-path series (#18 :9092
+   *     exporter; scraped ONLY for mode="live" bots — zero series while the
+   *     bot is paper is the honest "awaiting arm" state)
+   *   - GET /api/exchanges/status   → the paper twin's /status document
+   *     (unrealized ret% on open paper positions)
+   *
+   * The KILL control POSTs /api/cockpit/kill — session-gated at the hooks
+   * seam, typed-confirmation ("KILL"), explicit instance (killing paper can
+   * never touch live and vice versa — the sentinel is FR_INSTANCE-keyed).
+   * Re-arm is POST /api/cockpit/rearm, equally gated ("REARM").
+   */
+  import Panel from '$lib/components/ui/Panel.svelte';
+  import Badge from '$lib/components/ui/Badge.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import StatCard from '$lib/components/ui/StatCard.svelte';
+  import Modal from '$lib/components/ui/Modal.svelte';
+  import { createPoll } from '$lib/stores/poll';
+  import { api, ApiError } from '$api/client';
+  import {
+    KILL_CONFIRM_PHRASE,
+    REARM_CONFIRM_PHRASE,
+    type CockpitInstance,
+    type GateRowView,
+    type OpenPositionView,
+    type SentinelView,
+    type SessionPnlView,
+  } from '$lib/cockpit/model';
+  import type { ArmedTelemetry } from '$lib/cockpit/promParse';
+  import type { ExchangesStatus } from '$lib/types/exchanges';
+
+  interface InstanceView {
+    sentinel: SentinelView;
+    sentinelUpdatedAt: string | null;
+    positions: OpenPositionView[];
+    gates: GateRowView[];
+    gateBotName: string;
+    session: SessionPnlView;
+  }
+  interface CockpitStateResp {
+    configured: boolean;
+    reason?: string;
+    generated_at?: number;
+    instances?: Record<CockpitInstance, InstanceView>;
+    other_instance_keys?: string[];
+    /** Sentinel rows keyed by an FR_INSTANCE other than paper/live — a bot
+     *  deployed under such a key is NOT reachable by the cockpit's KILL. */
+    other_sentinel_instances?: string[];
+  }
+
+  const statePoll = createPoll<CockpitStateResp>('/api/cockpit/state', 5_000);
+  const telemetry = createPoll<ArmedTelemetry>('/api/cockpit/telemetry', 10_000);
+  const exStatus = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  $effect(() => {
+    statePoll.start();
+    telemetry.start();
+    exStatus.start();
+    return () => {
+      statePoll.stop();
+      telemetry.stop();
+      exStatus.stop();
+    };
+  });
+
+  let selected = $state<CockpitInstance>('paper');
+
+  let cockpit = $derived($statePoll ?? null);
+  let tele = $derived($telemetry ?? null);
+  let inst = $derived(cockpit?.configured ? (cockpit.instances?.[selected] ?? null) : null);
+  let fundingStatus = $derived($exStatus?.funding ?? null);
+
+  /** Evidence a live bot actually exists — telemetry series, live state rows,
+   *  or a live sentinel. Without it the LIVE tab says so instead of implying
+   *  a running live bot. */
+  let liveDetected = $derived(
+    (tele?.scraped ?? false) ||
+      (cockpit?.configured === true &&
+        ((cockpit.instances?.live?.positions?.length ?? 0) > 0 ||
+          (cockpit.instances?.live?.gates?.length ?? 0) > 0 ||
+          cockpit.instances?.live?.sentinel?.state === 'killed')),
+  );
+
+  /** Unrealized ret% per symbol from the paper twin's /status document (the
+   *  live twin's status server is not proxied yet — shown only for paper). */
+  let paperRetBySym = $derived.by(() => {
+    const m: Record<string, number> = {};
+    for (const p of fundingStatus?.positions ?? []) m[p.symbol] = p.ret_pct;
+    return m;
+  });
+
+  // ── Kill / re-arm dialogs ─────────────────────────────────────────────────
+  let dialog = $state<'kill' | 'rearm' | null>(null);
+  let confirmText = $state('');
+  let note = $state('');
+  let submitting = $state(false);
+  let actionResult = $state<{ ok: boolean; text: string } | null>(null);
+
+  function openDialog(kind: 'kill' | 'rearm') {
+    dialog = kind;
+    confirmText = '';
+    note = '';
+    actionResult = null;
+  }
+  function closeDialog() {
+    dialog = null;
+    confirmText = '';
+  }
+  let requiredPhrase = $derived(dialog === 'rearm' ? REARM_CONFIRM_PHRASE : KILL_CONFIRM_PHRASE);
+  let phraseOk = $derived(confirmText === requiredPhrase);
+
+  async function fireAction() {
+    if (!dialog || submitting) return;
+    submitting = true;
+    actionResult = null;
+    const path = dialog === 'kill' ? '/api/cockpit/kill' : '/api/cockpit/rearm';
+    try {
+      const r = await api.post<{ ok: boolean; effect?: string; message?: string }>(path, {
+        instance: selected,
+        confirm: confirmText,
+        note: note.trim() || undefined,
+      });
+      actionResult = { ok: r.ok === true, text: r.effect ?? r.message ?? 'done' };
+      if (r.ok) {
+        confirmText = '';
+        await statePoll.refresh();
+      }
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? `${e.status}: ${typeof e.body === 'string' ? e.body : e.statusText}`
+          : String(e);
+      actionResult = { ok: false, text: `request failed — ${msg}` };
+    } finally {
+      submitting = false;
+    }
+  }
+
+  // ── Formatting ────────────────────────────────────────────────────────────
+  function usdt(n: number): string {
+    const sign = n > 0 ? '+' : '';
+    return `${sign}${n.toFixed(2)} USDT`;
+  }
+  function ago(ms: number): string {
+    const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (s < 90) return `${s}s`;
+    if (s < 5400) return `${Math.round(s / 60)}m`;
+    if (s < 129_600) return `${Math.round(s / 3600)}h`;
+    return `${Math.round(s / 86_400)}d`;
+  }
+  function tsLabel(ms: number | null): string {
+    if (!ms) return '—';
+    return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+  }
+</script>
+
+<svelte:head>
+  <title>Cockpit — FKS Terminal</title>
+</svelte:head>
+
+<div class="cockpit-page">
+  <p class="page-blurb">
+    Armed-futures co-pilot for the KuCoin funding-reversion bot — bot state of
+    record from its Postgres store, armed-path telemetry from Prometheus, and
+    the durable kill sentinel. Read-only except the guarded KILL / RE-ARM.
+  </p>
+
+  <!-- ── Instance selector + mode banner ─────────────────────────────────── -->
+  <div class="mode-row">
+    <div class="inst-tabs" role="tablist" aria-label="Bot instance">
+      {#each ['paper', 'live'] as const as i (i)}
+        <button
+          role="tab"
+          aria-selected={selected === i}
+          class="inst-tab"
+          class:active={selected === i}
+          onclick={() => (selected = i)}
+        >
+          {i.toUpperCase()}
+        </button>
+      {/each}
+    </div>
+    {#if selected === 'paper'}
+      <Badge variant="amber">PAPER — simulated money</Badge>
+      <span class="mode-hint">Gate-A measurement twin. No real orders can exist on this instance.</span>
+    {:else if liveDetected}
+      <Badge variant="red">LIVE — real money</Badge>
+      <span class="mode-hint">Armed instance detected (FR_INSTANCE=live).</span>
+    {:else}
+      <Badge variant="default">LIVE — no live bot detected</Badge>
+      <span class="mode-hint">
+        No live series, state rows, or sentinel yet — awaiting arm. Panels below stay honestly empty.
+      </span>
+    {/if}
+  </div>
+
+  {#if cockpit && !cockpit.configured}
+    <Panel title="Cockpit store">
+      <EmptyState
+        icon="🔌"
+        variant="error"
+        title="Cockpit database not available"
+        hint={cockpit.reason ?? 'unknown reason'}
+      />
+    </Panel>
+  {/if}
+
+  <!-- ── Kill switch ─────────────────────────────────────────────────────── -->
+  <Panel title="Kill switch — durable sentinel ({selected})">
+    <div class="kill-row">
+      <div class="kill-state">
+        {#if !cockpit?.configured}
+          <Badge variant="default">UNKNOWN</Badge>
+          <span class="kill-desc">Sentinel unreadable while the cockpit store is unavailable.</span>
+        {:else if inst?.sentinel.state === 'killed'}
+          <Badge variant="red">KILLED</Badge>
+          <span class="kill-desc">
+            {inst.sentinel.reason ?? 'no reason recorded'}
+            {#if inst.sentinel.trippedAtMs}&nbsp;({tsLabel(inst.sentinel.trippedAtMs)}){/if}
+            — the {selected} bot refuses entries and flattens reduce-only on its next live bar,
+            and stays halted across respawns until re-armed.
+          </span>
+        {:else}
+          <Badge variant="green">CLEAR</Badge>
+          <span class="kill-desc">No kill sentinel set for “{selected}” — normal running.</span>
+        {/if}
+      </div>
+      <div class="kill-actions">
+        {#if inst?.sentinel.state === 'killed'}
+          <button
+            class="btn-rearm"
+            disabled={!cockpit?.configured}
+            onclick={() => openDialog('rearm')}
+          >
+            RE-ARM {selected}…
+          </button>
+        {:else}
+          <button
+            class="btn-kill"
+            disabled={!cockpit?.configured}
+            onclick={() => openDialog('kill')}
+          >
+            KILL {selected}…
+          </button>
+        {/if}
+      </div>
+    </div>
+    <p class="kill-footnote">
+      Setting the sentinel is NOT an instant venue flatten — the bot acts on its next live bar
+      (60m cadence). For an immediate venue-direct flatten, run <code>live-flatten</code> per the
+      kill-switch drill runbook. Instances are independent: killing “paper” can never touch
+      “live” and vice-versa (FR_INSTANCE-keyed sentinel rows). The cockpit targets the literal
+      keys “paper”/“live” — the deploy convention FR_INSTANCE=live must hold for KILL to reach
+      the armed bot.
+    </p>
+    {#if (cockpit?.other_sentinel_instances?.length ?? 0) > 0}
+      <p class="data-flag">
+        ⚠️ Sentinel rows exist under unexpected instance keys:
+        {cockpit?.other_sentinel_instances?.join(', ')} — a bot running under such an FR_INSTANCE
+        is NOT reachable by this cockpit's KILL (which only writes “paper”/“live”).
+      </p>
+    {/if}
+    {#if actionResult && !dialog}
+      <p class="action-result" class:err={!actionResult.ok}>{actionResult.text}</p>
+    {/if}
+  </Panel>
+
+  <!-- ── Session stats ───────────────────────────────────────────────────── -->
+  <!-- Gated on liveDetected for the LIVE tab: an empty live ledger folds to
+       honest zeros, but a green "+0.00 / 0 / 0" row under the "no live bot
+       detected" banner reads like a running, flat bot. Absence of a bot must
+       not look like a breakeven bot. Zero renders neutral, not green. -->
+  {#if inst && (selected !== 'live' || liveDetected)}
+    <div class="stat-row">
+      <StatCard
+        label="Session realized (UTC day)"
+        value={usdt(inst.session.realizedUsdt)}
+        valueColor={inst.session.realizedUsdt > 0
+          ? 'var(--green)'
+          : inst.session.realizedUsdt < 0
+            ? 'var(--red)'
+            : undefined}
+      />
+      <StatCard label="Closes today" value={inst.session.closes} />
+      <StatCard label="Entries today" value={inst.session.entries} />
+      <StatCard
+        label="Kill exits today"
+        value={inst.session.killExits}
+        color={inst.session.killExits > 0 ? 'red' : 'default'}
+      />
+      <StatCard label="Open positions" value={inst.positions.length} />
+      {#if selected === 'live'}
+        <StatCard
+          label="Live notional (telemetry)"
+          value={tele?.scraped && tele.openNotionalUsd !== null
+            ? `$${tele.openNotionalUsd.toFixed(0)}`
+            : '—'}
+        />
+      {/if}
+    </div>
+    {#if inst.session.closesWithoutUsdt > 0}
+      <p class="data-flag">
+        ⚠️ {inst.session.closesWithoutUsdt} close(s) today carry no USDT booking — excluded from
+        the realized sum (flagged, not imputed).
+      </p>
+    {/if}
+  {:else if inst}
+    <p class="mode-hint">
+      Session stats suppressed — no live bot detected (an empty ledger would render as a running,
+      flat bot).
+    </p>
+  {/if}
+
+  <div class="panel-grid">
+    <!-- ── Open positions (state of record) ──────────────────────────────── -->
+    <Panel title="Open positions — funding_open_trades ({selected})">
+      {#if !cockpit?.configured}
+        <EmptyState icon="🔌" title="Store unavailable" hint="Position records unreadable." />
+      {:else if !inst || inst.positions.length === 0}
+        <EmptyState icon="∅" title="No open positions" hint="No persisted open trade for this instance." />
+      {:else}
+        <table class="ck-table">
+          <thead>
+            <tr><th>Symbol</th><th>Side</th><th>Entry px</th><th>Age</th><th>Unrealized</th><th>Close status</th></tr>
+          </thead>
+          <tbody>
+            {#each inst.positions as p (p.symbol)}
+              <tr>
+                <td>{p.symbol}</td>
+                <td class={p.dir > 0 ? 'pos' : 'neg'}>{p.side}</td>
+                <td>{p.entryPx}</td>
+                <td>{ago(p.entryTMs)}</td>
+                <td>
+                  {#if selected === 'paper' && paperRetBySym[p.symbol] !== undefined}
+                    <span class={paperRetBySym[p.symbol] >= 0 ? 'pos' : 'neg'}>
+                      {paperRetBySym[p.symbol].toFixed(2)}%
+                    </span>
+                  {:else}
+                    <span class="muted" title="Unrealized PnL needs the instance's own /status feed — not wired for this instance yet.">n/a</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if p.closing}
+                    <Badge variant="amber">CLOSING ({p.closing.reason}, attempt {p.closing.attempts})</Badge>
+                  {:else}
+                    <Badge variant="default">holding</Badge>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      {#if (cockpit?.other_instance_keys?.length ?? 0) > 0}
+        <p class="data-flag">
+          Keys under other instance prefixes exist: {cockpit?.other_instance_keys?.join(', ')}
+        </p>
+      {/if}
+    </Panel>
+
+    <!-- ── Risk gates (persisted) ────────────────────────────────────────── -->
+    <Panel title="Risk gates — framework_risk_state ({inst?.gateBotName ?? '…'})">
+      {#if !cockpit?.configured}
+        <EmptyState icon="🔌" title="Store unavailable" hint="Gate rows unreadable." />
+      {:else if !inst || inst.gates.length === 0}
+        <EmptyState
+          icon="∅"
+          title="No persisted gate state"
+          hint="No halt/breaker snapshot rows for this instance yet (written on realized trades)."
+        />
+      {:else}
+        <table class="ck-table">
+          <thead>
+            <tr><th>Symbol</th><th>Session halt (−1% eq/day)</th><th>Circuit breaker (4-loss)</th></tr>
+          </thead>
+          <tbody>
+            {#each inst.gates as g (g.symbol)}
+              <tr>
+                <td>{g.symbol}</td>
+                <td>
+                  {#if g.haltedNow}
+                    <Badge variant="red">HALTED</Badge>
+                  {:else if g.haltedPersisted}
+                    <Badge variant="default">cleared by UTC rollover</Badge>
+                  {:else}
+                    <Badge variant="green">clear</Badge>
+                  {/if}
+                </td>
+                <td>
+                  {#if g.breakerActiveNow}
+                    <Badge variant="red">TRIPPED</Badge>
+                  {:else if g.breakerTrippedAtUnix}
+                    <Badge variant="default">cooldown elapsed</Badge>
+                  {:else}
+                    <Badge variant="green">clear</Badge>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </Panel>
+
+    <!-- ── Live armed-path telemetry ─────────────────────────────────────── -->
+    <Panel title="Armed-path telemetry — Prometheus :9092 (live only)">
+      {#if !tele}
+        <EmptyState icon="⏳" title="Loading telemetry…" />
+      {:else if !tele.available}
+        <EmptyState
+          icon="⚠️"
+          variant="error"
+          title="Prometheus unreachable"
+          hint="Telemetry outage — halt/breaker/stop divergence cannot be observed right now."
+        />
+      {:else if !tele.scraped}
+        <EmptyState
+          icon="🛰️"
+          title="No live armed-path series"
+          hint="The :9092 money-path exporter is scraped only for LIVE bots — paper mode / awaiting arm. This is the honest state, not zeros."
+        />
+      {:else}
+        <!-- Per-column: a FAILED query renders an explicit unobserved-error,
+             never the benign "no series" (a failed stop-expected query must
+             not read as "no stop expected" on a live position). -->
+        <div class="tele-grid">
+          <div>
+            <h4>Session halt</h4>
+            {#if tele.failed.includes('halt')}
+              <span class="tele-err">query failed — halt state unobserved</span>
+            {:else}
+              {#each Object.entries(tele.haltBySymbol) as [sym, v] (sym)}
+                <div class="tele-line">
+                  <span>{sym}</span>
+                  {#if v > 0}<Badge variant="red">HALTED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
+          </div>
+          <div>
+            <h4>Circuit breaker</h4>
+            {#if tele.failed.includes('breaker')}
+              <span class="tele-err">query failed — breaker state unobserved</span>
+            {:else}
+              {#each Object.entries(tele.breakerBySymbol) as [sym, v] (sym)}
+                <div class="tele-line">
+                  <span>{sym}</span>
+                  {#if v > 0}<Badge variant="red">TRIPPED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
+          </div>
+          <div>
+            <h4>Resting stop (present / expected)</h4>
+            {#if tele.failed.includes('stopPresent') || tele.failed.includes('stopExpected')}
+              <span class="tele-err">
+                stop telemetry incomplete — divergence cannot be assessed (a live position may be
+                unprotected without showing DIVERGED)
+              </span>
+            {:else}
+              {#each Object.entries(tele.stops) as [sym, s] (sym)}
+                <div class="tele-line">
+                  <span>{sym}: {s.present}/{s.expected}</span>
+                  {#if s.diverged}
+                    <Badge variant="red">DIVERGED — position may be unprotected</Badge>
+                  {:else if s.expected > 0}
+                    <Badge variant="green">protected</Badge>
+                  {:else}
+                    <Badge variant="default">none expected</Badge>
+                  {/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
+          </div>
+        </div>
+        {#if tele.failed.length > 0}
+          <p class="data-flag">
+            ⚠️ Failed telemetry queries: {tele.failed.join(', ')} — treat the affected columns as
+            unobserved, not clear.
+          </p>
+        {/if}
+      {/if}
+    </Panel>
+
+    <!-- ── Order errors ──────────────────────────────────────────────────── -->
+    <Panel title="Order errors by class — fks_bot_order_errors_total (live)">
+      {#if !tele || !tele.available}
+        <EmptyState icon="⚠️" variant={tele ? 'error' : 'default'} title={tele ? 'Prometheus unreachable' : 'Loading…'} />
+      {:else if tele.failed.includes('orderErrors')}
+        <!-- The counter query itself failed — this must NEVER render as the
+             green "zero errors" all-clear (a failed query is not an empty
+             counter). -->
+        <EmptyState
+          icon="⚠️"
+          variant="error"
+          title="Order-error counter unobserved"
+          hint="The fks_bot_order_errors_total query failed while Prometheus otherwise answered — error state cannot be asserted right now (this is NOT a zero-errors all-clear)."
+        />
+      {:else if !tele.scraped}
+        <EmptyState icon="🛰️" title="No live bot scraped" hint="Awaiting arm — error counters exist only on a live instance." />
+      {:else if tele.orderErrors.length === 0}
+        <EmptyState icon="✓" title="No order errors recorded" hint="Counter series present, zero errors." />
+      {:else}
+        <table class="ck-table">
+          <thead><tr><th>Class</th><th>Total</th></tr></thead>
+          <tbody>
+            {#each tele.orderErrors as e (e.cls)}
+              <tr>
+                <td>{e.cls}</td>
+                <td class={e.total > 0 ? 'neg' : ''}>{e.total}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </Panel>
+  </div>
+
+  <p class="deferred-note">
+    Deferred (scope discipline): alert acknowledgement inbox — Prometheus alerts remain read-only
+    on <a href="/monitoring">/monitoring</a>.
+  </p>
+</div>
+
+<!-- ── Typed-confirmation dialog ────────────────────────────────────────── -->
+<Modal
+  open={dialog !== null}
+  title={dialog === 'rearm'
+    ? `Re-arm ${selected.toUpperCase()} — clear the kill sentinel`
+    : `KILL ${selected.toUpperCase()} — trip the durable kill sentinel`}
+  onclose={closeDialog}
+>
+  <div class="dialog-body">
+    {#if dialog === 'kill'}
+      <p>
+        This writes the durable kill sentinel for instance
+        <strong>“{selected}”</strong>{selected === 'live' ? ' — the REAL-MONEY instance' : ' — the paper measurement twin'}.
+        On its next live bar the bot refuses new entries and routes any open trade to a
+        reduce-only <code>kill_exit</code>, then stays halted (across respawns) until re-armed.
+      </p>
+      {#if selected === 'paper'}
+        <p class="warn-line">
+          ⚠️ Killing “paper” halts the Gate-A measurement twin — its window is sacred until ~Aug 1.
+        </p>
+      {/if}
+      <p>
+        It does <strong>not</strong> instantly flatten the venue. If the bot may be hung or you
+        need immediate flatness, run <code>live-flatten</code> (runbook §0).
+      </p>
+    {:else}
+      <p>
+        This clears the kill sentinel for instance <strong>“{selected}”</strong> — the bot may
+        trade again on its next live bar. <strong>Never re-arm with an unreconciled venue</strong>
+        (confirm flat + stops cancelled first, runbook §0 step 4).
+      </p>
+    {/if}
+    <label class="confirm-label">
+      Type <code>{requiredPhrase}</code> to confirm targeting <strong>{selected}</strong>:
+      <input
+        class="confirm-input"
+        type="text"
+        bind:value={confirmText}
+        placeholder={requiredPhrase}
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </label>
+    <label class="confirm-label">
+      Note (optional, recorded on the sentinel):
+      <input class="confirm-input" type="text" bind:value={note} maxlength="200" />
+    </label>
+    {#if actionResult}
+      <p class="action-result" class:err={!actionResult.ok}>{actionResult.text}</p>
+    {/if}
+  </div>
+  {#snippet actions()}
+    <button class="btn-cancel" onclick={closeDialog}>Cancel</button>
+    <button
+      class={dialog === 'rearm' ? 'btn-rearm' : 'btn-kill'}
+      disabled={!phraseOk || submitting}
+      onclick={fireAction}
+    >
+      {submitting ? 'Writing…' : dialog === 'rearm' ? `RE-ARM ${selected}` : `KILL ${selected}`}
+    </button>
+  {/snippet}
+</Modal>
+
+<style>
+  .cockpit-page {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    max-width: 1200px;
+  }
+  .page-blurb {
+    font-size: 12px;
+    color: var(--t2);
+    margin: 0;
+  }
+  .mode-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .inst-tabs {
+    display: inline-flex;
+    border: 1px solid var(--b2);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .inst-tab {
+    background: var(--bg2);
+    color: var(--t2);
+    border: none;
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+  }
+  .inst-tab.active {
+    background: var(--bg3);
+    color: var(--t1);
+  }
+  .mode-hint {
+    font-size: 11px;
+    color: var(--t3);
+  }
+  .kill-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .kill-state {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 240px;
+  }
+  .kill-desc {
+    font-size: 12px;
+    color: var(--t2);
+  }
+  .btn-kill {
+    background: var(--red-dim);
+    color: var(--red);
+    border: 1px solid var(--red-brd);
+    border-radius: var(--r);
+    padding: 8px 18px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .btn-kill:disabled,
+  .btn-rearm:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn-rearm {
+    background: var(--green-dim);
+    color: var(--green);
+    border: 1px solid var(--green-brd);
+    border-radius: var(--r);
+    padding: 8px 18px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .btn-cancel {
+    background: var(--bg3);
+    color: var(--t2);
+    border: 1px solid var(--b2);
+    border-radius: var(--r);
+    padding: 8px 14px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .kill-footnote {
+    font-size: 11px;
+    color: var(--t3);
+    margin: 8px 0 0;
+  }
+  .action-result {
+    font-size: 12px;
+    color: var(--green);
+    margin: 8px 0 0;
+  }
+  .action-result.err {
+    color: var(--red);
+  }
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .data-flag {
+    font-size: 11px;
+    color: var(--amber);
+    margin: 0;
+  }
+  .panel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .ck-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .ck-table th {
+    text-align: left;
+    color: var(--t3);
+    font-weight: 600;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--b2);
+  }
+  .ck-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--b1);
+    color: var(--t1);
+  }
+  .pos {
+    color: var(--green);
+  }
+  .neg {
+    color: var(--red);
+  }
+  .muted {
+    color: var(--t3);
+  }
+  .tele-err {
+    color: var(--red);
+    font-size: 12px;
+  }
+  .tele-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .tele-grid h4 {
+    font-size: 11px;
+    color: var(--t3);
+    margin: 0 0 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .tele-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 12px;
+    padding: 2px 0;
+  }
+  .deferred-note {
+    font-size: 11px;
+    color: var(--t3);
+    margin: 0;
+  }
+  .dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 13px;
+    max-width: 460px;
+  }
+  .dialog-body p {
+    margin: 0;
+  }
+  .warn-line {
+    color: var(--amber);
+  }
+  .confirm-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--t2);
+  }
+  .confirm-input {
+    background: var(--bg1);
+    border: 1px solid var(--b2);
+    border-radius: var(--r);
+    color: var(--t1);
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+</style>
