@@ -128,16 +128,30 @@ unsalted-SHA-256 / cookie==secret gate is deleted — no dual path).
     timeout when `accept: text/event-stream`), so the stream stays open through
     the session-checked path. **Verify bot log streaming still works after
     retiring the block.**
-  - **⚠ dev.conf caveat**: `infrastructure/config/nginx/conf.d/dev.conf` is
-    `listen 80 default_server` and still carries its OWN direct `/api/spawner/`
-    block. Both conf files are baked into the nginx image (`COPY conf.d/`). The
-    review's request-walk treats `fkstrading.xyz.conf` as the production vhost;
-    confirm on the box which server block actually serves the tailnet Host
-    (e.g. `curl -s -H 'Host: <tailnet-host>' …` / check `nginx -T`). If
-    `dev.conf` is the effective `default_server` in prod, retire (or exclude)
-    its direct spawner block too — otherwise H6 is not fully closed. Left
-    untouched here because editing it risks breaking local dev, and it is
-    outside the report's cited evidence (`fkstrading.xyz.conf:293-313`).
+  - **✅ dev.conf — the ACTIVE vhost — now completed (H6 fully closed)**:
+    `infrastructure/config/nginx/conf.d/dev.conf` is `listen 80 default_server`
+    with a catch-all `server_name _`, so the tailnet Host (which matches no
+    explicit `server_name`) is served by THIS vhost — **not**
+    `fkstrading.xyz.conf`, whose HTTPS block never binds without local certs.
+    #217 fixed H6 on the **inactive** `fkstrading.xyz.conf`; the companion `fks`
+    PR *"complete H6 on the active vhost (dev.conf)"* mirrors it here. dev.conf
+    carried **two** direct bypasses — `location /api/bots/` **and**
+    `location /api/spawner/` (each → `fks_bot_spawner:8090` with an nginx-stamped
+    token and zero human auth) — **both retired**, along with the now-orphaned
+    `@spawner_unavailable` fallback, and the same SSE carve-out regex
+    (`location ~ ^/api/spawner/container/[^/]+/logs$` → `fks_webui:3000`,
+    unbuffered + 3600s) added. Both `/api/spawner/*` and `/api/bots/*` now fall
+    through to `location /api/` → the session-checked webui adapter.
+  - **Pre-check that gated the dev.conf retirement**: the webui adapter proxies
+    `/api/spawner/*` as a **real passthrough** (`hooks.server.ts` `routeBackend`
+    → `forward(SPAWNER_URL)`, which re-mints the service token) — verified at
+    `hooks.server.ts:962-966` — and the `/bots` page + `BotsPanel` call
+    `/api/spawner/*` **exclusively** (`src/lib/api/spawner.ts` `BASE =
+    "/api/spawner"`), **never** `/api/bots/*`. The adapter does **not** proxy
+    `/api/bots/*` (it falls to `gracefulEmpty` → an empty stub), but nothing in
+    the webui calls it, so retiring the `/api/bots/` bypass closes a **dead**
+    unauthenticated hole and breaks nothing. Same **DEPLOY ORDER**: apply the
+    dev.conf change only **AFTER** the webui #47 deploy verifies.
 - nginx's blanket `X-Internal-Token` injection becomes redundant for webui-bound
   locations (the adapter strips the inbound copy and re-mints its own) and can be
   removed location-by-location later; harmless in the interim.
