@@ -27,7 +27,8 @@ known credential**.
 |---|---|---|
 | `WEBUI_DATABASE_URL` | **yes** (unless `WEBUI_AUTH=disabled`) | `postgres://fks_webui:${WEBUI_DB_PASSWORD}@fks_postgres:5432/ruby_db` |
 | `INTERNAL_TOKEN` | recommended | service-identity token minted to the spawner. Set `INTERNAL_TOKEN=${NGINX_INTERNAL_TOKEN}` (falls back to `NGINX_INTERNAL_TOKEN` if unset). **Must be non-empty for the /settings key-rotation + notification surfaces**: post-#47 the adapter mints this on every spawner call (secrets/notifications/capabilities + the /bots page); an empty token = spawner 401 (auth-chain H5) |
-| `PROTOCOL_HEADER` + `HOST_HEADER` | **yes, behind nginx** | `x-forwarded-proto` + `host` — adapter-node derives the app origin per-request from the proxy headers nginx sends, so SvelteKit's form-CSRF origin check accepts the login POST from the real tailnet hostname. **Do NOT also set `ORIGIN`** (it overrides these; a static `ORIGIN=http://localhost:3001` 403s the login as cross-site — auth-chain M7) |
+| `HOST_HEADER` | **yes, behind nginx** | `host` — adapter-node takes the app-origin host from nginx's forwarded `Host` ($host = the tailnet hostname), not the internal container name, so SvelteKit's form-CSRF origin check accepts the login POST from the real tailnet hostname |
+| `PROTOCOL_HEADER` | **leave UNSET behind nginx** | **Do NOT set it.** nginx is HTTP-only behind tailscale (`listen 80`; health reports `"ssl":"off"`) and stamps `X-Forwarded-Proto $scheme` = `http` on every webui location, so `PROTOCOL_HEADER=x-forwarded-proto` would feed `http` into `get_origin()` → app origin `http://<host>` ≠ the browser's `https://<host>` → **login POST 403s as cross-site** (auth-chain M1/M7 — the earlier `x-forwarded-proto` wiring re-created this). Unset, `get_origin()` defaults the scheme to `https` (the true external scheme, since tailscale always terminates TLS). Do NOT set `ORIGIN` either — it overrides `HOST_HEADER` and a static `ORIGIN=http://localhost:3001` re-403s the login. Guard: `fks/scripts/testing/verify_webui_csrf_origin.py` |
 | `ADDRESS_HEADER` | recommended, behind nginx | `X-Real-IP` — makes `getClientAddress()` the true client IP so the per-IP login limiter + audit log don't collapse to one global bucket at the nginx container IP (auth-chain M8). Preferred over `WEBUI_TRUST_FORWARDED_FOR` |
 | `WEBUI_BOOTSTRAP_PASSWORD` | optional | if set, the bootstrap admin uses it (NOT printed). If unset, a CSPRNG password is generated and **printed once** to the log |
 | `WEBUI_AUTH` | optional | set to `disabled` for the explicit, loud dev bypass **only**. Anything else = enforce |
@@ -64,8 +65,10 @@ unsalted-SHA-256 / cookie==secret gate is deleted — no dual path).
    > hand-applied) is what guarantees they exist.
 2. **Compose env.** The companion `fks` PR already wires the `fks_webui` service:
    `WEBUI_DATABASE_URL`, `INTERNAL_TOKEN=${NGINX_INTERNAL_TOKEN}`,
-   `PROTOCOL_HEADER=x-forwarded-proto` + `HOST_HEADER=host` (M7, `ORIGIN`
-   removed), `ADDRESS_HEADER=X-Real-IP` (M8); and passes `WEBUI_DB_PASSWORD`
+   `HOST_HEADER=host` with `PROTOCOL_HEADER` and `ORIGIN` deliberately UNSET
+   (M1/M7 — so `get_origin()` resolves `https://<tailnet-host>`, not the
+   nginx-`$scheme`-poisoned `http://…`), `ADDRESS_HEADER=X-Real-IP` (M8); and
+   passes `WEBUI_DB_PASSWORD`
    through to the postgres service for `010`. **Operator action:** set
    `WEBUI_DB_PASSWORD` and `NGINX_INTERNAL_TOKEN` in `fks/.env` (both must be
    non-empty, or the webui fails closed / spawner calls 401 respectively).
@@ -81,6 +84,27 @@ unsalted-SHA-256 / cookie==secret gate is deleted — no dual path).
    **not** `localhost:3001` — the CSRF origin check depends on it): `admin` + the
    bootstrap password → forced `/setup` → choose your own username + a ≥12-char
    password (bootstrap credential retired on save, all other sessions revoked).
+
+   > **M1/M7 gate — do this BEFORE trusting the deploy.** A localhost login masks
+   > the CSRF-origin bug (it only bites when the browser `Origin` is `https://` and
+   > the app origin computes `http://`). Reproduce the *browser's* login POST from
+   > the box, with the real tailnet Host and an `https` Origin, and confirm it is
+   > **not** 403'd as cross-site:
+   > ```
+   > TS_HOST=oryx.tailfef10.ts.net   # the real tailnet hostname
+   > curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+   >   -H "Host: $TS_HOST" \
+   >   -H "Origin: https://$TS_HOST" \
+   >   -H 'Content-Type: application/x-www-form-urlencoded' \
+   >   --data 'username=__probe__&password=__probe__' \
+   >   http://127.0.0.1:80/login
+   > ```
+   > **403 = M1/M7 still broken** (app origin ≠ browser origin — check that the
+   > webui has `PROTOCOL_HEADER`/`ORIGIN` UNSET and `HOST_HEADER=host`). Any other
+   > status (400/401/429 — the action ran and rejected the bogus creds) = the
+   > origin check PASSED and login works on the tailnet HTTPS path. The static
+   > config invariant is also guarded offline by
+   > `fks/scripts/testing/verify_webui_csrf_origin.py`.
 6. **Verify the seams before calling the deploy done** (the runbook previously had
    no verification step): key-status page loads → **one exchange-key save
    round-trip** (exercises H5 — the spawner call now carries the minted token) →
