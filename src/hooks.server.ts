@@ -26,6 +26,12 @@ import {
   upstreamHeaders,
 } from "$lib/server/adapter";
 import { AuthStoreUnavailable, resolveAuthState } from "$lib/server/auth";
+import {
+  cockpitKillPost,
+  cockpitRearmPost,
+  cockpitStateGet,
+  cockpitTelemetryGet,
+} from "$lib/server/cockpit";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Backend proxy  (replaces the old vite/nginx → fks_ruby reverse proxy)
@@ -952,11 +958,40 @@ async function venuePing(venue: string): Promise<Response> {
   }
 }
 
+/** Operator identity for the kill sentinel's audit `reason` — the session's
+ *  username when auth is enabled; explicit markers otherwise (never blank). */
+function operatorName(auth?: AuthState): string {
+  if (!auth) return "unknown";
+  if (auth.mode === "disabled") return "auth-disabled";
+  if (auth.mode === "bootstrap") return "bootstrap";
+  return auth.session?.username ?? "unknown";
+}
+
 // Exported for the internal-token regression test (auth-chain H5): it drives the
 // direct spawner helpers below through this dispatcher to assert each mints the
 // service token. Not a SvelteKit hook export — SvelteKit only reads `handle`.
-export async function proxyBackend(event: RequestEvent): Promise<Response> {
+export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promise<Response> {
   const { pathname, search } = event.url;
+
+  // ── Armed-futures cockpit (M2) ──────────────────────────────────────────────
+  // Reads: funding bot Postgres state (sentinel / open trades / gate rows /
+  // ledger) + the #18 armed-path Prometheus telemetry. ONE mutation: the kill
+  // sentinel (typed-confirmed, instance-explicit). Like every backend route
+  // these are behind the #47 session seam — routeRequest denies them (reads
+  // AND mutations) without a valid session, and the CSRF origin check already
+  // ran. `operator` stamps the audit reason on the sentinel record.
+  if (pathname === "/api/cockpit/state") {
+    return cockpitStateGet();
+  }
+  if (pathname === "/api/cockpit/telemetry") {
+    return cockpitTelemetryGet(PROMETHEUS_URL);
+  }
+  if (pathname === "/api/cockpit/kill" && event.request.method === "POST") {
+    return cockpitKillPost(event.request, operatorName(auth));
+  }
+  if (pathname === "/api/cockpit/rearm" && event.request.method === "POST") {
+    return cockpitRearmPost(event.request, operatorName(auth));
+  }
 
   // ── Spawner — a real, working backend (the /bots page) ──────────────────────
   // /api/spawner/<rest> → spawner /<rest>  (mirrors the old vite/nginx rewrite)
@@ -1306,7 +1341,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   switch (route.kind) {
     case "backend":
-      return proxyBackend(event);
+      return proxyBackend(event, auth);
     case "unauthorized":
       return jsonError(401, { error: "unauthorized" });
     case "forbidden":

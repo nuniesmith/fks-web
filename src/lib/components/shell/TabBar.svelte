@@ -81,6 +81,9 @@
                 // Trading types on top of the backing accounts (crypto futures live,
                 // CME/COMEX planned).
                 { id: "futures", label: "Futures", href: "/futures" },
+                // Armed-futures co-pilot: kill sentinel + risk-rail state for
+                // the funding bot (M2).
+                { id: "cockpit", label: "Cockpit", dot: "var(--red)", href: "/cockpit" },
             ],
         },
         {
