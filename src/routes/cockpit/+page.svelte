@@ -50,6 +50,9 @@
     generated_at?: number;
     instances?: Record<CockpitInstance, InstanceView>;
     other_instance_keys?: string[];
+    /** Sentinel rows keyed by an FR_INSTANCE other than paper/live — a bot
+     *  deployed under such a key is NOT reachable by the cockpit's KILL. */
+    other_sentinel_instances?: string[];
   }
 
   const statePoll = createPoll<CockpitStateResp>('/api/cockpit/state', 5_000);
@@ -252,20 +255,37 @@
       Setting the sentinel is NOT an instant venue flatten — the bot acts on its next live bar
       (60m cadence). For an immediate venue-direct flatten, run <code>live-flatten</code> per the
       kill-switch drill runbook. Instances are independent: killing “paper” can never touch
-      “live” and vice-versa (FR_INSTANCE-keyed sentinel rows).
+      “live” and vice-versa (FR_INSTANCE-keyed sentinel rows). The cockpit targets the literal
+      keys “paper”/“live” — the deploy convention FR_INSTANCE=live must hold for KILL to reach
+      the armed bot.
     </p>
+    {#if (cockpit?.other_sentinel_instances?.length ?? 0) > 0}
+      <p class="data-flag">
+        ⚠️ Sentinel rows exist under unexpected instance keys:
+        {cockpit?.other_sentinel_instances?.join(', ')} — a bot running under such an FR_INSTANCE
+        is NOT reachable by this cockpit's KILL (which only writes “paper”/“live”).
+      </p>
+    {/if}
     {#if actionResult && !dialog}
       <p class="action-result" class:err={!actionResult.ok}>{actionResult.text}</p>
     {/if}
   </Panel>
 
   <!-- ── Session stats ───────────────────────────────────────────────────── -->
-  {#if inst}
+  <!-- Gated on liveDetected for the LIVE tab: an empty live ledger folds to
+       honest zeros, but a green "+0.00 / 0 / 0" row under the "no live bot
+       detected" banner reads like a running, flat bot. Absence of a bot must
+       not look like a breakeven bot. Zero renders neutral, not green. -->
+  {#if inst && (selected !== 'live' || liveDetected)}
     <div class="stat-row">
       <StatCard
         label="Session realized (UTC day)"
         value={usdt(inst.session.realizedUsdt)}
-        valueColor={inst.session.realizedUsdt >= 0 ? 'var(--green)' : 'var(--red)'}
+        valueColor={inst.session.realizedUsdt > 0
+          ? 'var(--green)'
+          : inst.session.realizedUsdt < 0
+            ? 'var(--red)'
+            : undefined}
       />
       <StatCard label="Closes today" value={inst.session.closes} />
       <StatCard label="Entries today" value={inst.session.entries} />
@@ -290,6 +310,11 @@
         the realized sum (flagged, not imputed).
       </p>
     {/if}
+  {:else if inst}
+    <p class="mode-hint">
+      Session stats suppressed — no live bot detected (an empty ledger would render as a running,
+      flat bot).
+    </p>
   {/if}
 
   <div class="panel-grid">
@@ -401,47 +426,71 @@
           hint="The :9092 money-path exporter is scraped only for LIVE bots — paper mode / awaiting arm. This is the honest state, not zeros."
         />
       {:else}
+        <!-- Per-column: a FAILED query renders an explicit unobserved-error,
+             never the benign "no series" (a failed stop-expected query must
+             not read as "no stop expected" on a live position). -->
         <div class="tele-grid">
           <div>
             <h4>Session halt</h4>
-            {#each Object.entries(tele.haltBySymbol) as [sym, v] (sym)}
-              <div class="tele-line">
-                <span>{sym}</span>
-                {#if v > 0}<Badge variant="red">HALTED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
-              </div>
+            {#if tele.failed.includes('halt')}
+              <span class="tele-err">query failed — halt state unobserved</span>
             {:else}
-              <span class="muted">no series</span>
-            {/each}
+              {#each Object.entries(tele.haltBySymbol) as [sym, v] (sym)}
+                <div class="tele-line">
+                  <span>{sym}</span>
+                  {#if v > 0}<Badge variant="red">HALTED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
           </div>
           <div>
             <h4>Circuit breaker</h4>
-            {#each Object.entries(tele.breakerBySymbol) as [sym, v] (sym)}
-              <div class="tele-line">
-                <span>{sym}</span>
-                {#if v > 0}<Badge variant="red">TRIPPED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
-              </div>
+            {#if tele.failed.includes('breaker')}
+              <span class="tele-err">query failed — breaker state unobserved</span>
             {:else}
-              <span class="muted">no series</span>
-            {/each}
+              {#each Object.entries(tele.breakerBySymbol) as [sym, v] (sym)}
+                <div class="tele-line">
+                  <span>{sym}</span>
+                  {#if v > 0}<Badge variant="red">TRIPPED</Badge>{:else}<Badge variant="green">clear</Badge>{/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
           </div>
           <div>
             <h4>Resting stop (present / expected)</h4>
-            {#each Object.entries(tele.stops) as [sym, s] (sym)}
-              <div class="tele-line">
-                <span>{sym}: {s.present}/{s.expected}</span>
-                {#if s.diverged}
-                  <Badge variant="red">DIVERGED — position may be unprotected</Badge>
-                {:else if s.expected > 0}
-                  <Badge variant="green">protected</Badge>
-                {:else}
-                  <Badge variant="default">none expected</Badge>
-                {/if}
-              </div>
+            {#if tele.failed.includes('stopPresent') || tele.failed.includes('stopExpected')}
+              <span class="tele-err">
+                stop telemetry incomplete — divergence cannot be assessed (a live position may be
+                unprotected without showing DIVERGED)
+              </span>
             {:else}
-              <span class="muted">no series</span>
-            {/each}
+              {#each Object.entries(tele.stops) as [sym, s] (sym)}
+                <div class="tele-line">
+                  <span>{sym}: {s.present}/{s.expected}</span>
+                  {#if s.diverged}
+                    <Badge variant="red">DIVERGED — position may be unprotected</Badge>
+                  {:else if s.expected > 0}
+                    <Badge variant="green">protected</Badge>
+                  {:else}
+                    <Badge variant="default">none expected</Badge>
+                  {/if}
+                </div>
+              {:else}
+                <span class="muted">no series</span>
+              {/each}
+            {/if}
           </div>
         </div>
+        {#if tele.failed.length > 0}
+          <p class="data-flag">
+            ⚠️ Failed telemetry queries: {tele.failed.join(', ')} — treat the affected columns as
+            unobserved, not clear.
+          </p>
+        {/if}
       {/if}
     </Panel>
 
@@ -449,6 +498,16 @@
     <Panel title="Order errors by class — fks_bot_order_errors_total (live)">
       {#if !tele || !tele.available}
         <EmptyState icon="⚠️" variant={tele ? 'error' : 'default'} title={tele ? 'Prometheus unreachable' : 'Loading…'} />
+      {:else if tele.failed.includes('orderErrors')}
+        <!-- The counter query itself failed — this must NEVER render as the
+             green "zero errors" all-clear (a failed query is not an empty
+             counter). -->
+        <EmptyState
+          icon="⚠️"
+          variant="error"
+          title="Order-error counter unobserved"
+          hint="The fks_bot_order_errors_total query failed while Prometheus otherwise answered — error state cannot be asserted right now (this is NOT a zero-errors all-clear)."
+        />
       {:else if !tele.scraped}
         <EmptyState icon="🛰️" title="No live bot scraped" hint="Awaiting arm — error counters exist only on a live instance." />
       {:else if tele.orderErrors.length === 0}
@@ -688,6 +747,10 @@
   }
   .muted {
     color: var(--t3);
+  }
+  .tele-err {
+    color: var(--red);
+    font-size: 12px;
   }
   .tele-grid {
     display: grid;

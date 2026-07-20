@@ -71,7 +71,9 @@ export interface CockpitStore {
 
 type Sql = ReturnType<typeof postgres>;
 
-class PgCockpitStore implements CockpitStore {
+/** Exported for the sentinel-encoding regression tests (the kill/re-arm SQL
+ *  shape is money-critical and must be pinned at the wire-encoding level). */
+export class PgCockpitStore implements CockpitStore {
   private sql: Sql;
   /** Positive probe cached forever (tables don't un-exist); negative retried. */
   private known = false;
@@ -131,9 +133,18 @@ class PgCockpitStore implements CockpitStore {
   async clearKill(instance: CockpitInstance): Promise<void> {
     // Re-arm = store JSON `null` (read back as not-killed), NEVER a row
     // delete — mirrors the bot's ClearKill so "postgres owns this key" holds.
+    //
+    // ENCODING PITFALL (do not "simplify" this back to a bind): postgres.js
+    // `sql.json(null)` puts a JS null in the params array and Bind
+    // short-circuits `x === null` to a SQL NULL *before* the jsonb serializer
+    // runs — which violates the column's NOT NULL constraint (23502) and makes
+    // every re-arm 502. The bot's own ClearKill (tokio-postgres,
+    // serde_json::Value::Null) sends the JSONB value `null` — a PRESENT value.
+    // The literal `'null'::jsonb` below is the same wire value the bot writes.
+    // Pinned by cockpitPgStore.test.ts.
     await this.sql`
       INSERT INTO funding_kill_switch (instance, record, updated_at)
-      VALUES (${instance}, ${this.sql.json(null as never)}, now())
+      VALUES (${instance}, 'null'::jsonb, now())
       ON CONFLICT (instance) DO UPDATE SET record = EXCLUDED.record, updated_at = now()`;
   }
 }
@@ -203,11 +214,21 @@ export async function cockpitStateGet(store: CockpitStore | null = getStore()): 
         ];
       }),
     );
+    // FR_INSTANCE coupling guard: the cockpit only ever targets the literal
+    // instances "paper"/"live", but the bot keys its sentinel on the RAW
+    // FR_INSTANCE env value. A sentinel row under any other instance key means
+    // a bot ran with a non-standard FR_INSTANCE — a cockpit KILL "live" would
+    // NOT reach it. Surface those keys instead of silently dropping them.
+    const otherSentinelInstances = sentinels
+      .map((s) => s.instance)
+      .filter((i) => !(INSTANCES as readonly string[]).includes(i))
+      .sort();
     return json({
       configured: true,
       generated_at: now,
       instances: byInstance,
       other_instance_keys: partition.otherKeys,
+      other_sentinel_instances: otherSentinelInstances,
     });
   } catch (e) {
     // DB unreachable ≠ "everything is fine and empty" — surface the outage.

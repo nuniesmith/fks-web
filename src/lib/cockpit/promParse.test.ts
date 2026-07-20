@@ -95,6 +95,55 @@ describe("buildTelemetry — honest-empty discipline", () => {
     expect(t.stops.ETHUSDTM).toEqual({ present: 0, expected: 1, diverged: true });
     expect(t.stops.AVAXUSDTM).toEqual({ present: 1, expected: 1, diverged: false });
   });
+  it("a PARTIAL query failure is distinguishable from an empty result (failed[]), so a failed order-errors query can never render as the green zero-errors all-clear", () => {
+    // Live bot armed with an open position (openPositions answers) while the
+    // order-errors query ALONE fails (timeout / Prometheus status:"error").
+    const t = buildTelemetry({
+      ...EMPTY_PARTS,
+      openPositions: [{ labels: {}, value: 1 }],
+      orderErrors: null,
+    });
+    expect(t.available).toBe(true);
+    expect(t.scraped).toBe(true);
+    // The load-bearing distinction: the query FAILED — it did not answer "no
+    // errors". orderErrors stays empty, but failed[] carries the truth.
+    expect(t.failed).toEqual(["orderErrors"]);
+    expect(t.orderErrors).toEqual([]);
+  });
+
+  it("a failed stop-expected query is flagged — a live position must not silently read 'none expected' (unprotected-reads-benign)", () => {
+    const t = buildTelemetry({
+      ...EMPTY_PARTS,
+      openPositions: [{ labels: {}, value: 1 }],
+      stopPresent: [{ labels: { symbol: "ETHUSDTM" }, value: 0 }],
+      stopExpected: null,
+    });
+    expect(t.scraped).toBe(true);
+    expect(t.failed).toContain("stopExpected");
+    // The map degrades (expected collapses to 0 → diverged false) — which is
+    // exactly why the UI must consult failed[] before trusting `stops`.
+    expect(t.stops.ETHUSDTM).toEqual({ present: 0, expected: 0, diverged: false });
+  });
+
+  it("failed[] lists every failed query (sorted) and is empty when all eight answered", () => {
+    expect(buildTelemetry(EMPTY_PARTS).failed).toEqual([]);
+    const t = buildTelemetry({ ...EMPTY_PARTS, halt: null, breaker: null });
+    expect(t.failed).toEqual(["breaker", "halt"]);
+    // Total outage: everything failed AND available is false.
+    const outage = buildTelemetry({
+      halt: null,
+      breaker: null,
+      stopPresent: null,
+      stopExpected: null,
+      orderErrors: null,
+      openPositions: null,
+      openNotional: null,
+      entryUnix: null,
+    });
+    expect(outage.available).toBe(false);
+    expect(outage.failed).toHaveLength(8);
+  });
+
   it("order errors are surfaced by class, largest first", () => {
     const t = buildTelemetry({
       ...EMPTY_PARTS,

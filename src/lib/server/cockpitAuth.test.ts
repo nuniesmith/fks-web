@@ -46,4 +46,25 @@ describe("cockpit routes behind the auth seam", () => {
     expect(routeRequest(KILL, "", "POST", fullSession)).toEqual({ kind: "backend" });
     expect(routeRequest(STATE, "", "GET", fullSession)).toEqual({ kind: "backend" });
   });
+
+  it("WEBUI_AUTH=disabled still refuses the kill/re-arm mutations — the dev bypass must never arm an unauthenticated live-money halt", () => {
+    // In disabled mode routeRequest passes ALL backend traffic, and the CSRF
+    // origin check accepts requests with no Origin header — so without this
+    // carve-out a bare `curl -XPOST .../api/cockpit/kill` from anything that
+    // can reach the socket would halt (or worse, RE-ARM) real money.
+    const disabled: AuthState = { mode: "disabled" };
+    expect(routeRequest(KILL, "", "POST", disabled)).toEqual({
+      kind: "forbidden",
+      reason: "live_mutation_requires_auth",
+    });
+    expect(routeRequest(REARM, "", "POST", disabled)).toEqual({
+      kind: "forbidden",
+      reason: "live_mutation_requires_auth",
+    });
+    // Reads keep today's disabled-mode behaviour (this is a mutation-only wall).
+    expect(routeRequest(STATE, "", "GET", disabled)).toEqual({ kind: "backend" });
+    expect(routeRequest(TELEMETRY, "", "GET", disabled)).toEqual({ kind: "backend" });
+    // Other backend mutations are unchanged in disabled mode.
+    expect(routeRequest("/api/spawner/x", "", "POST", disabled)).toEqual({ kind: "backend" });
+  });
 });

@@ -25,6 +25,15 @@ The live-futures dashboard + kill switch for the funding-reversion bot
   is paper this is the CORRECT state, and rendering zeros would be the
   fake-success anti-pattern).
 - A store error on any read → HTTP 502, not an empty 200.
+- A SINGLE failed telemetry query (per-query timeout / Prometheus
+  `status:"error"`) is surfaced per-query (`failed[]` in the telemetry
+  payload) and rendered as an explicit "unobserved" error — never collapsed
+  into the benign empty. A failed order-errors query is NOT "zero errors";
+  a failed stop-expected query is NOT "no stop expected" (which would let an
+  unprotected live position read benign).
+- On the LIVE tab with no live bot detected, the session stat row is
+  suppressed (a green `+0.00 / 0 / 0` fold of an empty ledger reads like a
+  running, flat bot).
 
 ## The kill path (the money-critical control)
 
@@ -33,7 +42,13 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 1. **Session-gated** at the hooks seam (#47): `routeRequest` denies every
    backend call — reads and mutations — without a valid, fully-rotated
    session; fail-closed on an auth-store outage; CSRF origin check runs
-   before dispatch. Pinned by `src/lib/server/cockpitAuth.test.ts`.
+   before dispatch. **Even `WEBUI_AUTH=disabled` refuses these two
+   mutations** (403 `live_mutation_requires_auth`): the dev bypass is
+   app-wide, but it must never leave a live-money kill/re-arm reachable by
+   any unauthenticated tailnet client (the CSRF check passes for requests
+   with no `Origin` header, so a bare `curl` would otherwise get through).
+   Cockpit reads still work in disabled mode. Pinned by
+   `src/lib/server/cockpitAuth.test.ts`.
 2. **Typed confirmation**: the body must carry `confirm: "KILL"` (re-arm:
    `"REARM"`) exactly — case-sensitive, untrimmed — and an **explicit**
    `instance: "paper" | "live"` (no default target). Validation runs strictly
@@ -49,10 +64,27 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 
    with `record = {"killed": true, "reason": "webui kill by <user>[: note]", "t": <ms>}`
    (the bot's `kill::kill_record` shape). Re-arm upserts JSON `null` (read
-   back as not-killed), never a row delete.
+   back as not-killed), never a row delete. **Encoding caveat**: the re-arm
+   SQL inlines the literal `'null'::jsonb` — postgres.js `sql.json(null)`
+   binds a wire-level SQL NULL (Bind short-circuits JS `null` before the
+   jsonb serializer runs), which violates the column's `JSONB NOT NULL` and
+   would make every re-arm fail with 23502. The literal is the same wire
+   value the bot's own ClearKill writes (tokio-postgres,
+   `serde_json::Value::Null`). Pinned by
+   `src/lib/server/cockpitPgStore.test.ts`.
 4. **Instance isolation**: the sentinel is `FR_INSTANCE`-keyed; killing
    `paper` can never halt `live` and vice versa. The paper dialog additionally
    warns that killing paper halts the Gate-A measurement twin.
+   **FR_INSTANCE coupling (unenforced by the bot)**: the cockpit writes the
+   LITERAL keys `paper`/`live`, while the bot reads its sentinel under its raw
+   `FR_INSTANCE` env value (default `paper`). The deploy convention
+   `FR_INSTANCE=live` for the armed twin MUST hold — a live bot deployed
+   under any other value (e.g. `kucoin-live`) would never read the cockpit's
+   `live` sentinel row, making KILL a silent no-op against it. The state
+   endpoint surfaces sentinel rows under unexpected instance keys
+   (`other_sentinel_instances`) and the UI flags them next to the kill
+   switch, so such a deployment is visible rather than silently
+   un-killable.
 5. **Honest effect reporting**: the response (and the UI) states that the
    sentinel makes the bot refuse entries + flatten reduce-only **on its next
    live bar** (60m cadence) and stay halted across respawns — it is NOT an

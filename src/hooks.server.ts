@@ -1347,7 +1347,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     case "forbidden":
       return jsonError(403, {
         error: "forbidden",
-        reason: "credential_change_required",
+        reason: route.reason ?? "credential_change_required",
       });
     case "redirect":
       return new Response(null, {

@@ -221,6 +221,26 @@ describe("GET /api/cockpit/state", () => {
     expect(j.instances.live.gates).toEqual([]);
     expect(j.instances.live.session).toMatchObject({ realizedUsdt: -3, killExits: 1 });
   });
+
+  it("surfaces sentinel rows under unexpected FR_INSTANCE keys (a bot deployed as e.g. 'kucoin-live' is NOT reachable by the cockpit's KILL)", async () => {
+    const store = new FakeStore();
+    store.sentinels = [
+      { instance: "live", record: null, updated_at: "x" },
+      { instance: "kucoin-live", record: { killed: true, reason: "r", t: 1 }, updated_at: "y" },
+      { instance: "live-1", record: null, updated_at: "z" },
+    ];
+    const r = await cockpitStateGet(store);
+    const j = (await r.json()) as {
+      instances: Record<string, { sentinel: { state: string } }>;
+      other_sentinel_instances: string[];
+    };
+    // Flagged, never silently dropped — the operator must learn the cockpit's
+    // literal paper/live targeting does not match that deployment.
+    expect(j.other_sentinel_instances).toEqual(["kucoin-live", "live-1"]);
+    // And the unexpected keys never bleed into the paper/live views.
+    expect(j.instances.live.sentinel.state).toBe("clear");
+    expect(j.instances.paper.sentinel.state).toBe("clear");
+  });
 });
 
 describe("GET /api/cockpit/telemetry", () => {

@@ -99,8 +99,25 @@ export type AdapterRoute =
   /** API/backend request without a valid session → 401 JSON (never a 302: a
    *  redirect would corrupt a JSON/SSE consumer). */
   | { kind: "unauthorized" }
-  /** Authenticated but not permitted (mustChange / role) → 403 JSON. */
-  | { kind: "forbidden" };
+  /** Authenticated but not permitted (mustChange / role) → 403 JSON. An
+   *  optional machine-readable `reason` overrides the default
+   *  `credential_change_required` in the 403 body. */
+  | { kind: "forbidden"; reason?: string };
+
+/**
+ * Live-money mutations the `disabled` dev bypass must NOT expose. The
+ * WEBUI_AUTH=disabled opt-out is app-wide, but the cockpit kill/re-arm
+ * sentinel writes halt (or re-arm!) a REAL-MONEY bot — a deploy accidentally
+ * left in disabled mode must not turn tailnet reachability into the only wall
+ * between any unauthenticated client and a live-money halt (the CSRF origin
+ * check passes for requests with no Origin header, so a bare curl reaches
+ * these). Refused with 403 even in disabled mode; every other route keeps
+ * today's disabled-mode behaviour.
+ */
+export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
+  "/api/cockpit/kill",
+  "/api/cockpit/rearm",
+];
 
 function isGetLike(method: string): boolean {
   return method === "GET" || method === "HEAD";
@@ -144,7 +161,12 @@ export function routeRequest(
   if (!backend && isPublic(pathname)) return { kind: "pass" };
 
   // 3. Explicit, opt-in dev bypass. Missing config does NOT land here.
+  //    Even here, live-money cockpit mutations stay refused — the dev bypass
+  //    must never arm an unauthenticated kill/re-arm route.
   if (auth.mode === "disabled") {
+    if (!get && AUTH_DISABLED_BLOCKED_MUTATIONS.includes(pathname)) {
+      return { kind: "forbidden", reason: "live_mutation_requires_auth" };
+    }
     return backend ? { kind: "backend" } : { kind: "pass" };
   }
 

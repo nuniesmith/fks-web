@@ -64,6 +64,13 @@ export interface ArmedTelemetry {
    *  scraped. False = no live bot / dormant exporter → panels must show the
    *  awaiting-arm empty state, never zeros. */
   scraped: boolean;
+  /** Query keys whose instant query FAILED (fetch error / timeout / Prometheus
+   *  status:"error") — as opposed to succeeding with zero series. A failed
+   *  query must render as "unobserved", NEVER collapse into the benign empty:
+   *  a failed order-errors query is not "zero errors", and a failed
+   *  stop-expected query must not read as "no stop expected" on a live
+   *  position. */
+  failed: (keyof TelemetryParts)[];
   /** symbol → `fks_bot_session_halt_active` (1 halted). */
   haltBySymbol: Record<string, number>;
   /** symbol → `fks_bot_circuit_breaker_tripped` (1 tripped). */
@@ -101,6 +108,12 @@ function bySymbol(samples: PromSample[] | null): Record<string, number> {
 /** Assemble the telemetry view from the eight instant queries. */
 export function buildTelemetry(parts: TelemetryParts): ArmedTelemetry {
   const available = Object.values(parts).some((p) => p !== null);
+  // Per-query failure is DISTINCT from per-query empty: null = the query
+  // produced no usable answer (must render unobserved), [] = it answered with
+  // zero series (the honest empty).
+  const failed = (Object.keys(parts) as (keyof TelemetryParts)[])
+    .filter((k) => parts[k] === null)
+    .sort();
   const haltBySymbol = bySymbol(parts.halt);
   const breakerBySymbol = bySymbol(parts.breaker);
   const present = bySymbol(parts.stopPresent);
@@ -132,6 +145,7 @@ export function buildTelemetry(parts: TelemetryParts): ArmedTelemetry {
   return {
     available,
     scraped,
+    failed,
     haltBySymbol,
     breakerBySymbol,
     stops,
