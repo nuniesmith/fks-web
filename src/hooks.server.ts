@@ -70,7 +70,7 @@ function withJanusAuth(base: string, headers: Headers): Headers {
   }
   return headers;
 }
-// Service-identity token for the token-enforcing internal upstreams (the
+// Service-identity token for the token-enforcing internal upstream (the
 // spawner fail-closes on it). The adapter is now the injector (design §4.1a):
 // `upstreamHeaders` strips any client-supplied `x-internal-token` at the seam,
 // and this re-stamps the trusted value on the outbound request only — so the
@@ -78,8 +78,14 @@ function withJanusAuth(base: string, headers: Headers): Headers {
 // Compose passthrough: INTERNAL_TOKEN=${NGINX_INTERNAL_TOKEN}. Never sent to
 // janus (janus authenticates via its own Bearer, above) and never to the browser.
 const INTERNAL_TOKEN = env.INTERNAL_TOKEN ?? env.NGINX_INTERNAL_TOKEN ?? "";
+// Scoped to the spawner base ONLY (L3): the spawner is the sole upstream that
+// enforces the token, so Prometheus/QuestDB/janus-bars never receive it — the
+// token's exposure surface is exactly the one service that checks it. Every
+// direct `fetch(${SPAWNER_URL}…)` helper (secrets + notifications + capabilities)
+// MUST route its headers through here, or #47's strip-set leaves it token-less
+// against an enforcing spawner (auth-chain H5).
 function withInternalToken(base: string, headers: Headers): Headers {
-  if (INTERNAL_TOKEN && !isJanusBase(base)) {
+  if (INTERNAL_TOKEN && base === SPAWNER_URL) {
     headers.set("x-internal-token", INTERNAL_TOKEN);
   }
   return headers;
@@ -585,7 +591,7 @@ async function exchangeKeysPost(event: RequestEvent, exchange?: string): Promise
   const payload: Record<string, string> = { exchange: exch, api_key, api_secret };
   if (passphrase) payload.api_passphrase = passphrase;
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     headers.set("content-type", "application/json");
     const r = await fetch(`${SPAWNER_URL}/secrets`, {
       method: "POST",
@@ -605,7 +611,7 @@ async function exchangeKeysPost(event: RequestEvent, exchange?: string): Promise
 // GET → whether the given exchange has stored credentials (never the secrets).
 async function exchangeKeysStatus(event: RequestEvent, exchange: string): Promise<Response> {
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
     if (!r.ok) return json({ configured: false, db_enabled: false });
     const j: any = await r.json();
@@ -625,7 +631,7 @@ async function exchangeKeysStatus(event: RequestEvent, exchange: string): Promis
 // updated_at only — never the secrets), for the dynamic /settings list.
 async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
     if (!r.ok) return json({ db_enabled: false, exchanges: [] });
     const j: any = await r.json();
@@ -649,7 +655,7 @@ async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
 async function capabilities(event: RequestEvent): Promise<Response> {
   let stored: string[] = [];
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
     if (r.ok) {
       const j: any = await r.json();
@@ -721,7 +727,7 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
     return json({ ok: false, message: "A valid exchange id is required (a-z, 0-9, -, _)" }, 400);
   }
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/secrets/${exch}`, { method: "DELETE", headers });
     if (!r.ok) return json({ ok: false, message: `Delete rejected by spawner (${r.status})` }, 502);
     const j: any = await r.json().catch(() => ({}));
@@ -750,7 +756,7 @@ function sanitizeChannelName(raw: unknown): string {
 // updated_at only — never the URL), for the /settings Notifications section.
 async function notificationsList(event: RequestEvent): Promise<Response> {
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/notifications`, { headers });
     if (!r.ok) return json({ db_enabled: false, channels: [] });
     const j: any = await r.json();
@@ -801,7 +807,7 @@ async function notificationsPost(event: RequestEvent): Promise<Response> {
     : [];
   const payload = { name, kind, url, events };
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     headers.set("content-type", "application/json");
     const r = await fetch(`${SPAWNER_URL}/notifications`, {
       method: "POST",
@@ -829,7 +835,7 @@ async function notificationsDelete(event: RequestEvent, nameRaw: string): Promis
     return json({ ok: false, message: "A valid channel name is required" }, 400);
   }
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/notifications/${encodeURIComponent(name)}`, {
       method: "DELETE",
       headers,
@@ -859,7 +865,7 @@ async function notificationsTest(event: RequestEvent, nameRaw: string): Promise<
   // /settings feedback line can render it (the api client throws on non-2xx and
   // would swallow the message) — same shape the venue-ping Test returns.
   try {
-    const headers = upstreamHeaders(event.request.headers);
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     const r = await fetch(`${SPAWNER_URL}/notifications/${encodeURIComponent(name)}/test`, {
       method: "POST",
       headers,
@@ -946,7 +952,10 @@ async function venuePing(venue: string): Promise<Response> {
   }
 }
 
-async function proxyBackend(event: RequestEvent): Promise<Response> {
+// Exported for the internal-token regression test (auth-chain H5): it drives the
+// direct spawner helpers below through this dispatcher to assert each mints the
+// service token. Not a SvelteKit hook export — SvelteKit only reads `handle`.
+export async function proxyBackend(event: RequestEvent): Promise<Response> {
   const { pathname, search } = event.url;
 
   // ── Spawner — a real, working backend (the /bots page) ──────────────────────

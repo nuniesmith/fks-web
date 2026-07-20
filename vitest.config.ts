@@ -16,6 +16,10 @@ export default defineConfig({
       $api: r("./src/lib/api"),
       $stores: r("./src/lib/stores"),
       $components: r("./src/lib/components"),
+      // SvelteKit's dynamic private env, backed by process.env in tests so a
+      // test can drive the server hook's env-derived constants (see the H5
+      // internal-token regression test).
+      "$env/dynamic/private": r("./src/test-helpers/envDynamicPrivate.ts"),
     },
   },
   test: {
