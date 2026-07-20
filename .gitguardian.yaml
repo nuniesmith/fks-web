@@ -1,0 +1,15 @@
+# GitGuardian configuration — https://docs.gitguardian.com/ggshield-docs/reference/config
+#
+# The auth Phase-1 unit tests use dummy fixture passwords (plain "example-*"
+# placeholders) to exercise the scrypt hasher, the login flow, the forced-
+# credential-change gate, and the lockout/rate-limiter. These are NOT real
+# credentials: no production secret lives in the codebase — secrets are supplied
+# from the environment at runtime, and the DB schema uses psql
+# ":'WEBUI_DB_PASSWORD'" interpolation, never a literal.
+#
+# Scope is deliberately narrow: ONLY the auth test files are excluded from secret
+# scanning (honored by the ggshield CLI). All real source is still scanned.
+version: 2
+secret:
+  ignored-paths:
+    - "src/lib/server/auth/*.test.ts"

@@ -17,7 +17,15 @@ import {
   toRiskConfigPayload,
   wantsArrayResponse,
 } from "$lib/server/reshape";
-import { routeRequest, upstreamHeaders } from "$lib/server/adapter";
+import {
+  type AuthState,
+  isBackend,
+  originAllowed,
+  outageRoute,
+  routeRequest,
+  upstreamHeaders,
+} from "$lib/server/adapter";
+import { AuthStoreUnavailable, resolveAuthState } from "$lib/server/auth";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Backend proxy  (replaces the old vite/nginx → fks_ruby reverse proxy)
@@ -62,6 +70,20 @@ function withJanusAuth(base: string, headers: Headers): Headers {
   }
   return headers;
 }
+// Service-identity token for the token-enforcing internal upstreams (the
+// spawner fail-closes on it). The adapter is now the injector (design §4.1a):
+// `upstreamHeaders` strips any client-supplied `x-internal-token` at the seam,
+// and this re-stamps the trusted value on the outbound request only — so the
+// token means "passed the session-checked adapter", not merely "reached nginx".
+// Compose passthrough: INTERNAL_TOKEN=${NGINX_INTERNAL_TOKEN}. Never sent to
+// janus (janus authenticates via its own Bearer, above) and never to the browser.
+const INTERNAL_TOKEN = env.INTERNAL_TOKEN ?? env.NGINX_INTERNAL_TOKEN ?? "";
+function withInternalToken(base: string, headers: Headers): Headers {
+  if (INTERNAL_TOKEN && !isJanusBase(base)) {
+    headers.set("x-internal-token", INTERNAL_TOKEN);
+  }
+  return headers;
+}
 const PROMETHEUS_URL = env.PROMETHEUS_INTERNAL_URL ?? "http://fks_prometheus:9090"; // /monitoring
 const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /charts OHLC (HTTP query API)
 // Crypto bot status servers (/exchanges page). Defaults are the Phase-2
@@ -95,8 +117,10 @@ async function forward(
   const init: RequestInit & { duplex?: "half" } = {
     method,
     // janus-bound mutating calls (e.g. /api/config PUT) need the bearer; a no-op
-    // for GETs, non-janus bases, or when the token is unset.
-    headers: withJanusAuth(base, upstreamHeaders(event.request.headers)),
+    // for GETs, non-janus bases, or when the token is unset. Non-janus internal
+    // upstreams (the spawner) get the service-identity token, minted here — a
+    // client-supplied copy was already stripped by `upstreamHeaders`.
+    headers: withInternalToken(base, withJanusAuth(base, upstreamHeaders(event.request.headers))),
   };
   // Bound the request so a hung upstream can't wedge the proxy — EXCEPT for SSE
   // (EventSource sends `accept: text/event-stream`), which is a long-lived
@@ -1207,28 +1231,86 @@ async function proxyBackend(event: RequestEvent): Promise<Response> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Auth — pages only; backend (/api, /sse, …) calls are proxied above, never
-// auth-redirected. The routing + auth decision lives in `$lib/server/adapter`
-// (pure + unit-tested); this hook reads env/cookies and runs the side effects.
+// Auth — the single enforcement seam (design §4.0-4.1). Every request resolves
+// an AuthState from the DB-backed session store, then the pure `routeRequest`
+// decides: backend proxy, page pass, login redirect, 401 (backend, no session),
+// or 403 (mustChange). FAIL CLOSED: a missing store or unresolved session denies
+// — mutations never reach an upstream without a valid session. The routing +
+// decision logic lives in `$lib/server/adapter` (pure + unit-tested); this hook
+// performs the I/O and side effects.
 // ════════════════════════════════════════════════════════════════════════════
 
+function jsonError(status: number, body: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
-  const route = routeRequest(
-    event.url.pathname,
-    event.url.search,
-    env.WEBUI_SESSION_SECRET ?? "",
-    event.cookies.get("fks_session") ?? "",
-  );
+  const { pathname, search } = event.url;
+  const method = event.request.method;
+  const backend = isBackend(pathname);
 
-  // Backend (/api, /sse, …) calls are proxied — never auth-redirected (a 302
-  // would corrupt a JSON/SSE consumer).
-  if (route.kind === "backend") return proxyBackend(event);
-
-  // Invalid/missing session — bounce to login, preserving the intended URL.
-  if (route.kind === "redirect") {
-    return new Response(null, { status: 302, headers: { Location: route.location } });
+  // Resolve auth posture; fail CLOSED if the store is unreachable (never open).
+  let auth: AuthState;
+  try {
+    auth = await resolveAuthState(event.cookies.get("fks_session") ?? "");
+  } catch (e) {
+    if (e instanceof AuthStoreUnavailable) {
+      // Fail closed for anything needing auth, but keep health probes working
+      // (monitoring) and the login/logout PAGES renderable (a persistent outage
+      // or a least-privilege deploy that can't self-migrate must not brick the
+      // whole browser path with a bare 503 — the login action still fails closed
+      // while the store is down). See adapter.outageRoute.
+      switch (outageRoute(pathname)) {
+        case "open-backend":
+          return proxyBackend(event);
+        case "open-page":
+          return resolve(event);
+        case "deny-backend":
+          return jsonError(503, { error: "auth_store_unavailable" });
+        case "deny-page":
+          return new Response(
+            "Authentication store unavailable — the dashboard is failing " +
+              "closed. Retry once the database is reachable, or open /login.",
+            { status: 503, headers: { "content-type": "text/plain" } },
+          );
+      }
+    }
+    throw e;
   }
 
-  // "pass": public page, dev bypass (no secret), or a valid session.
-  return resolve(event);
+  // CSRF: a state-changing backend call must not carry a cross-site Origin.
+  if (
+    backend &&
+    !originAllowed(
+      method,
+      event.request.headers.get("origin"),
+      event.request.headers.get("host"),
+    )
+  ) {
+    return jsonError(403, { error: "bad_origin" });
+  }
+
+  const route = routeRequest(pathname, search, method, auth);
+
+  switch (route.kind) {
+    case "backend":
+      return proxyBackend(event);
+    case "unauthorized":
+      return jsonError(401, { error: "unauthorized" });
+    case "forbidden":
+      return jsonError(403, {
+        error: "forbidden",
+        reason: "credential_change_required",
+      });
+    case "redirect":
+      return new Response(null, {
+        status: 302,
+        headers: { Location: route.location },
+      });
+    case "pass":
+      return resolve(event);
+  }
 };
