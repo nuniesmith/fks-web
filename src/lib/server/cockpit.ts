@@ -53,6 +53,8 @@ import {
   type OpenTradeRow,
 } from "$lib/cockpit/model";
 import { buildTelemetry, parseInstantVector, type PromSample } from "$lib/cockpit/promParse";
+import { isLiveMode, type LiveStatusResp } from "$lib/types/cockpit-live";
+import type { BotStatus } from "$lib/types/exchanges";
 
 // ── Store abstraction (injected in tests; Postgres-backed in production) ────
 
@@ -298,6 +300,72 @@ export async function cockpitTelemetryGet(
       entryUnix,
     }),
   );
+}
+
+// ── GET /api/cockpit/live-status ────────────────────────────────────────────
+//
+// The live funding twin's own `/status` document (same shape the paper twin
+// serves at `/api/exchanges/status`), used to render REAL unrealized ret% on
+// the LIVE tab's open positions once the bot is armed. Three-state, honest by
+// construction — see `$lib/types/cockpit-live.ts`:
+//
+//   url === ""             → { configured:false }              (env unset)
+//   fetch fails/timeout    → { configured:true, reachable:false, reason }
+//   non-BotStatus reply    → { configured:true, reachable:false, reason }
+//   BotStatus document     → { configured:true, reachable:true, status,
+//                              mode_mismatch }  (mode_mismatch flags a paper
+//                              twin pointed-at by mistake — paper-as-live trap)
+//
+// Errors are NEVER collapsed to `{}` — the three states must stay
+// distinguishable so the cockpit can tell "not wired" from "armed-but-down".
+export async function cockpitLiveStatusGet(
+  url: string,
+  fetchFn: FetchLike = fetch,
+): Promise<Response> {
+  if (!url) {
+    return json({ configured: false } satisfies LiveStatusResp);
+  }
+  let body: unknown;
+  try {
+    const r = await fetchFn(`${url}/status`, {
+      headers: { accept: "application/json" },
+      // Bound the read (janusJson idiom) so a hung live twin can't wedge the poll.
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!r.ok) {
+      return json({
+        configured: true,
+        reachable: false,
+        reason: `live twin returned HTTP ${r.status}`,
+      } satisfies LiveStatusResp);
+    }
+    body = await r.json();
+  } catch (e) {
+    return json({
+      configured: true,
+      reachable: false,
+      reason: `live twin unreachable: ${(e as Error).message}`,
+    } satisfies LiveStatusResp);
+  }
+  // Validate the reply IS a BotStatus (same `"bot" in j` check the paper twin
+  // uses at /api/exchanges/status) — a non-status reply is a reachability
+  // failure, not a benign empty.
+  if (!body || typeof body !== "object" || !("bot" in body)) {
+    return json({
+      configured: true,
+      reachable: false,
+      reason: "live twin reply is not a BotStatus document",
+    } satisfies LiveStatusResp);
+  }
+  const status = body as BotStatus;
+  return json({
+    configured: true,
+    reachable: true,
+    status,
+    // Guard the paper-as-live trap: if the document's mode is not live-ish the
+    // env was pointed at a PAPER twin — flag it rather than render paper PnL.
+    mode_mismatch: !isLiveMode(status.mode),
+  } satisfies LiveStatusResp);
 }
 
 // ── POST /api/cockpit/kill  +  POST /api/cockpit/rearm ──────────────────────
