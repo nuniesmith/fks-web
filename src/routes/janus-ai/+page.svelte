@@ -962,6 +962,26 @@
     border-left: 1px solid var(--b1);
   }
 
+  /* Narrow viewports: stack the two panes; the page scrolls between them.
+     The left pane (document panels) grows; the right pane (single `fill`
+     signals panel) keeps a real height so it stays usable. */
+  @media (max-width: 900px) {
+    .page {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .pane-left {
+      flex: none;
+      overflow: visible;
+    }
+    .pane-right {
+      flex: none;
+      min-height: 60vh;
+      border-left: none;
+      border-top: 1px solid var(--b1);
+    }
+  }
+
   /* ── Sub Labels ────────────────────────────────────────── */
   .sub-label {
     font-size: 9px;

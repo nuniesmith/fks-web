@@ -918,6 +918,22 @@
         max-height: 45%;
     }
 
+    /* Narrow viewports: stack the two columns; the page owns the scroll.
+       The left column (document) grows; the right column (terminal split
+       with `fill` panels) keeps a real height so its panes stay usable. */
+    @media (max-width: 900px) {
+        .page {
+            grid-template-columns: 1fr;
+            overflow-y: auto;
+        }
+        .left-col {
+            overflow-y: visible;
+        }
+        .right-col {
+            min-height: 65vh;
+        }
+    }
+
     /* ─── Spawn form ───────────────────────────────────────────────────── */
     .spawn-form {
         display: flex;

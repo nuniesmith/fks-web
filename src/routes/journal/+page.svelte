@@ -593,6 +593,27 @@
     overflow-y: auto;
   }
 
+  /* Narrow viewports: stack trade log over analytics; the page scrolls
+     between the two panes. Each keeps a real height so the `fill` Trade Log
+     and Daily Notes panels stay usable. */
+  @media (max-width: 900px) {
+    .page {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .pane-left {
+      flex: none;
+      min-height: 60vh;
+      border-right: none;
+      border-bottom: 1px solid var(--b1);
+    }
+    .pane-right {
+      flex: none;
+      min-width: 0;
+      min-height: 50vh;
+    }
+  }
+
   /* ═══════════════════════════════════════════════════════════════════
      Trade Log inner layout
      ═══════════════════════════════════════════════════════════════════ */
