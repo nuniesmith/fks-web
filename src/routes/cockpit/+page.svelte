@@ -178,6 +178,11 @@
     Armed-futures co-pilot for the KuCoin funding-reversion bot — bot state of
     record from its Postgres store, armed-path telemetry from Prometheus, and
     the durable kill sentinel. Read-only except the guarded KILL / RE-ARM.
+    <span class="blurb-links">
+      <a href="/monitoring">monitoring</a>
+      <span aria-hidden="true">·</span>
+      <a href="/treasury">treasury</a>
+    </span>
   </p>
 
   <!-- ── Instance selector + mode banner ─────────────────────────────────── -->
@@ -629,6 +634,19 @@
     font-size: 12px;
     color: var(--t2);
     margin: 0;
+  }
+  .blurb-links {
+    white-space: nowrap;
+    margin-left: 4px;
+    color: var(--t3);
+  }
+  .blurb-links a {
+    color: var(--t3);
+    text-decoration: none;
+  }
+  .blurb-links a:hover {
+    color: var(--cyan);
+    text-decoration: underline;
   }
   .mode-row {
     display: flex;

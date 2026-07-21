@@ -6,6 +6,11 @@
 
 import type { TreasuryAccount } from '$lib/types/spawner';
 import { classifyBot, isPaper } from '$lib/treasury/accountClass';
+import {
+  carryForwardTotal,
+  groupSnapshots,
+  type SnapshotRowLike,
+} from '$lib/treasury/rollup';
 
 /** Matches Badge.svelte's variant prop. */
 export type BadgeVariant = 'default' | 'green' | 'red' | 'amber' | 'cyan' | 'purple';
@@ -166,4 +171,38 @@ export function paperAccountIds(
     if (paper) out.add(id);
   }
   return out;
+}
+
+// ─── Real net-worth headline figure (shared: /treasury + / overview) ────────
+
+/** The result of the carry-forward "Real net worth" roll-up. */
+export interface RealNetWorth {
+  /** Carry-forward total's most recent value; null when there is no data. */
+  latest: number | null;
+  /** Denomination of the total ('USD' fallback). */
+  currency: string;
+  /** How many REAL (non-paper) accounts contribute to the total. */
+  realCount: number;
+}
+
+/**
+ * The /treasury headline "Real net worth" number, computed straight from raw
+ * `GET /net-worth` rows plus the accounts registry — paper accounts excluded
+ * exactly as `TreasuryHeadline.svelte` does (registry `account_class` wins,
+ * `accountClass.ts` stopgap fallback for unregistered ids). Kept here as ONE
+ * pure function so the `/` overview Money snapshot renders the SAME figure the
+ * headline shows for the same snapshot data (parity, not a re-derivation).
+ * Mirrors the headline's default (paper EXCLUDED — no `include paper` toggle).
+ */
+export function realNetWorthFromRows(
+  rows: readonly SnapshotRowLike[],
+  accounts: readonly TreasuryAccount[],
+): RealNetWorth {
+  const series = groupSnapshots(rows);
+  const ids = new Set(series.map((s) => s.accountId));
+  const paper = paperAccountIds(ids, accounts);
+  const inputs = series.filter((s) => !paper.has(s.accountId));
+  const totalPoints = carryForwardTotal(inputs.map((s) => s.points));
+  const latest = totalPoints.length > 0 ? totalPoints[totalPoints.length - 1].value : null;
+  return { latest, currency: inputs[0]?.currency ?? 'USD', realCount: inputs.length };
 }

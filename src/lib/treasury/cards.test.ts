@@ -6,8 +6,10 @@ import {
   kindVariant,
   moneyTone,
   paperAccountIds,
+  realNetWorthFromRows,
   selectProfitAccounts,
 } from './cards';
+import type { SnapshotRowLike } from './rollup';
 import type { TreasuryAccount } from '$lib/types/spawner';
 
 function account(overrides: Partial<TreasuryAccount> = {}): TreasuryAccount {
@@ -118,5 +120,49 @@ describe('isPaperAccount / paperAccountIds', () => {
     expect(out.has('crypto-funding')).toBe(true); // stopgap: paper
     expect(out.has('crypto-spot')).toBe(false); // stopgap: real
     expect(out.has('new-bot')).toBe(false); // unclassified = treated real
+  });
+});
+
+describe('realNetWorthFromRows (the / overview ⇄ /treasury headline parity fn)', () => {
+  function row(bot_id: string, ts: string, net_worth: number): SnapshotRowLike {
+    return { bot_id, ts, net_worth, currency: 'USD' };
+  }
+
+  it('carries forward each real account and EXCLUDES paper', () => {
+    const rows = [
+      row('real-a', '2026-07-01T00:00:00Z', 1000),
+      row('real-a', '2026-07-03T00:00:00Z', 1500),
+      row('real-b', '2026-07-02T00:00:00Z', 500),
+      row('paper-x', '2026-07-03T00:00:00Z', 9999),
+    ];
+    const accounts = [
+      account({ account_id: 'real-a', account_class: 'personal-crypto' }),
+      account({ account_id: 'real-b', account_class: 'personal-crypto' }),
+      account({ account_id: 'paper-x', account_class: 'paper' }),
+    ];
+    // At the last tick real-a=1500 (carried) + real-b=500 (carried) = 2000;
+    // paper-x's 9999 is excluded — proving the / snapshot mirrors the headline.
+    const res = realNetWorthFromRows(rows, accounts);
+    expect(res.latest).toBe(2000);
+    expect(res.realCount).toBe(2);
+    expect(res.currency).toBe('USD');
+  });
+
+  it('is an honest null (never $0) when there are no rows', () => {
+    const res = realNetWorthFromRows([], []);
+    expect(res.latest).toBeNull();
+    expect(res.realCount).toBe(0);
+    expect(res.currency).toBe('USD');
+  });
+
+  it('excludes unregistered paper via the stopgap table', () => {
+    // crypto-funding is paper per the stopgap even with no registry entry.
+    const rows = [
+      row('crypto-spot', '2026-07-01T00:00:00Z', 300),
+      row('crypto-funding', '2026-07-01T00:00:00Z', 10000),
+    ];
+    const res = realNetWorthFromRows(rows, []);
+    expect(res.latest).toBe(300);
+    expect(res.realCount).toBe(1);
   });
 });
