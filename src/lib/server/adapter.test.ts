@@ -161,6 +161,10 @@ describe("routeRequest — PWA static assets are public pre-login (GET/HEAD)", (
     "/robots.txt",
     "/apple-touch-icon.png",
     "/apple-touch-icon.svg",
+    "/icon-192.png",
+    "/icon-512.png",
+    "/icon-maskable-192.png",
+    "/icon-maskable-512.png",
   ];
 
   it("passes each static asset unauthenticated on GET and HEAD", () => {

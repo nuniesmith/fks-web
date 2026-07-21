@@ -45,6 +45,12 @@ export const PUBLIC_STATIC_EXACT: readonly string[] = [
   "/robots.txt",
   "/apple-touch-icon.png",
   "/apple-touch-icon.svg",
+  // Manifest icon set (M1) — referenced by /manifest.webmanifest; root-level
+  // filenames only (still an explicit allowlist, not an /icons/* wildcard).
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-192.png",
+  "/icon-maskable-512.png",
 ];
 
 /** Whether a path is a pre-login installable-app static asset (GET/HEAD). */

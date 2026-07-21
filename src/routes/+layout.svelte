@@ -45,6 +45,10 @@
         height: 100vh;   /* fallback for browsers without dvh */
         height: 100dvh;  /* phone: excludes dynamic browser chrome */
         overflow: hidden;
+        /* Landscape notch: keep chrome + content clear of the side inset
+           (viewport-fit=cover draws edge-to-edge). env() is 0 on desktop. */
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
     }
     .workspace {
         flex: 1;
