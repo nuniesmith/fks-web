@@ -14,6 +14,7 @@
   import Panel from '$components/ui/Panel.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
   import { fmtMoney, realNetWorthFromRows } from '$lib/treasury/cards';
+  import { formatStaleAge, type StaleAccount } from '$lib/treasury/rollup';
   import type { StripData } from '$lib/types';
   import {
     fmtPrice,
@@ -167,6 +168,11 @@
   let moneyLatest = $state<number | null>(null);
   let moneyCurrency = $state('USD');
   let moneyRealCount = $state(0);
+  // Stale REAL accounts whose frozen carry-forward balance is still summed into
+  // moneyLatest — surfaced with the SAME ⚠ caveat the /treasury headline shows,
+  // so the landing page can't read a possibly-overstated total as live money.
+  let moneyStale = $state<StaleAccount[]>([]);
+  let moneyStaleValue = $state(0);
   let moneyLoading = $state(true);
   let moneyError = $state<string | null>(null);
   // TODO(Phase A): once /api/cockpit/live-status ships, add a red LIVE chip
@@ -187,6 +193,8 @@
       moneyLatest = snap.latest;
       moneyCurrency = snap.currency;
       moneyRealCount = snap.realCount;
+      moneyStale = snap.stale;
+      moneyStaleValue = snap.staleValue;
     } catch (e: unknown) {
       moneyError = e instanceof ApiError ? `${e.status} ${e.statusText}` : String(e);
       console.warn('[overview/money]', e);
@@ -381,6 +389,15 @@
                   No net-worth snapshots yet.
                 {/if}
               </span>
+              {#if moneyStale.length > 0}
+                <span
+                  class="money-stale"
+                  title={moneyStale.map((s) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}
+                >
+                  ⚠ includes {fmtMoney(moneyStaleValue, moneyCurrency)} from {moneyStale.length} stale
+                  account{moneyStale.length === 1 ? '' : 's'} — oldest as of {formatStaleAge(moneyStale[0].ageSeconds)} ago
+                </span>
+              {/if}
               <a class="money-link" href="/treasury">Open treasury →</a>
             </div>
           {/if}
@@ -674,6 +691,12 @@
     font-size: 10px;
     color: var(--t3);
   }
+  /* Same honesty caveat wording/tone as TreasuryHeadline's `.stale`. */
+  .money-stale {
+    font-size: 10px;
+    color: var(--amber, #f0a500);
+    cursor: help;
+  }
   .money-link {
     margin-top: 4px;
     font-size: 11px;
@@ -793,6 +816,16 @@
     .tbl-wrap {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+    }
+    /* On phone the panel is fill=false (grows to content) and the PAGE owns
+       the one vertical scroll, while `.tbl-wrap` becomes the x-scroller — which
+       CSS promotes to overflow:auto on BOTH axes, making it the sticky thead's
+       scroll container. With no internal vertical scroll the header can't
+       usefully pin (it would resolve against tbl-wrap and scroll off with the
+       rows), so drop sticky here and let it flow with the table. Desktop keeps
+       overflow:visible → the thead still pins to the fill panel body. */
+    .tbl th {
+      position: static;
     }
   }
 

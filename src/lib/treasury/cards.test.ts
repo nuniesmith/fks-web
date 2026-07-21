@@ -165,4 +165,53 @@ describe('realNetWorthFromRows (the / overview ⇄ /treasury headline parity fn)
     expect(res.latest).toBe(300);
     expect(res.realCount).toBe(1);
   });
+
+  // ── Staleness parity with TreasuryHeadline (the / snapshot must carry the
+  //    SAME ⚠ caveat, or a possibly-overstated total reads as live money) ──
+  const T0 = Date.parse('2026-07-10T00:00:00Z') / 1000; // deterministic "now"
+
+  it('flags a REAL account whose newest snapshot is stale (>6h old)', () => {
+    // fresh-a reported 1h ago; dead-b's last row is 2 days old but its 500 is
+    // still carried into the total — exactly the overstatement risk.
+    const rows = [
+      row('fresh-a', '2026-07-09T23:00:00Z', 1000),
+      row('dead-b', '2026-07-08T00:00:00Z', 500),
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.latest).toBe(1500); // dead-b still summed in
+    expect(res.stale.map((s) => s.accountId)).toEqual(['dead-b']);
+    expect(res.staleValue).toBe(500);
+  });
+
+  it('never flags paper as stale — paper is excluded before the staleness check', () => {
+    const rows = [
+      row('fresh-a', '2026-07-09T23:00:00Z', 1000),
+      row('paper-x', '2026-07-01T00:00:00Z', 9999), // ancient AND paper
+    ];
+    const accounts = [account({ account_id: 'paper-x', account_class: 'paper' })];
+    const res = realNetWorthFromRows(rows, accounts, T0);
+    expect(res.latest).toBe(1000);
+    expect(res.stale).toEqual([]);
+    expect(res.staleValue).toBe(0);
+  });
+
+  it('reports no stale accounts when every real snapshot is fresh', () => {
+    const rows = [
+      row('fresh-a', '2026-07-09T23:30:00Z', 1000),
+      row('fresh-b', '2026-07-09T22:00:00Z', 500),
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.stale).toEqual([]);
+    expect(res.staleValue).toBe(0);
+  });
+
+  it('orders multiple stale accounts oldest-first (matches the headline lead offender)', () => {
+    const rows = [
+      row('older', '2026-07-06T00:00:00Z', 200), // 4 days
+      row('newer-stale', '2026-07-09T10:00:00Z', 300), // 14h
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.stale.map((s) => s.accountId)).toEqual(['older', 'newer-stale']);
+    expect(res.staleValue).toBe(500);
+  });
 });

@@ -9,7 +9,9 @@ import { classifyBot, isPaper } from '$lib/treasury/accountClass';
 import {
   carryForwardTotal,
   groupSnapshots,
+  staleAccounts,
   type SnapshotRowLike,
+  type StaleAccount,
 } from '$lib/treasury/rollup';
 
 /** Matches Badge.svelte's variant prop. */
@@ -183,6 +185,14 @@ export interface RealNetWorth {
   currency: string;
   /** How many REAL (non-paper) accounts contribute to the total. */
   realCount: number;
+  /**
+   * REAL accounts whose newest snapshot has gone stale — carry-forward keeps
+   * their frozen balance in `latest` forever, so this is the same honesty
+   * caveat `TreasuryHeadline.svelte` surfaces (oldest-first). Empty when none.
+   */
+  stale: StaleAccount[];
+  /** Sum of the stale accounts' carried-forward values (0 when none). */
+  staleValue: number;
 }
 
 /**
@@ -192,11 +202,15 @@ export interface RealNetWorth {
  * `accountClass.ts` stopgap fallback for unregistered ids). Kept here as ONE
  * pure function so the `/` overview Money snapshot renders the SAME figure the
  * headline shows for the same snapshot data (parity, not a re-derivation).
- * Mirrors the headline's default (paper EXCLUDED — no `include paper` toggle).
+ * Mirrors the headline's default (paper EXCLUDED — no `include paper` toggle)
+ * AND its staleness caveat (`staleAccounts(inputs)`), so the / snapshot can't
+ * present a possibly-overstated carried-forward total as fresh money while
+ * /treasury flags it. `nowSeconds` is injectable for deterministic tests.
  */
 export function realNetWorthFromRows(
   rows: readonly SnapshotRowLike[],
   accounts: readonly TreasuryAccount[],
+  nowSeconds: number = Math.floor(Date.now() / 1000),
 ): RealNetWorth {
   const series = groupSnapshots(rows);
   const ids = new Set(series.map((s) => s.accountId));
@@ -204,5 +218,13 @@ export function realNetWorthFromRows(
   const inputs = series.filter((s) => !paper.has(s.accountId));
   const totalPoints = carryForwardTotal(inputs.map((s) => s.points));
   const latest = totalPoints.length > 0 ? totalPoints[totalPoints.length - 1].value : null;
-  return { latest, currency: inputs[0]?.currency ?? 'USD', realCount: inputs.length };
+  const stale = staleAccounts(inputs, nowSeconds);
+  const staleValue = stale.reduce((sum, a) => sum + a.value, 0);
+  return {
+    latest,
+    currency: inputs[0]?.currency ?? 'USD',
+    realCount: inputs.length,
+    stale,
+    staleValue,
+  };
 }
