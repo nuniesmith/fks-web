@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { page } from '$app/stores';
   import { api } from '$api/client';
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
@@ -10,6 +11,14 @@
     isKnownEventKind,
     type NotificationChannel,
   } from '$lib/types/notifications';
+
+  // ─── Role-aware affordances (A5) ────────────────────────────────────
+  // The credential / notification / risk / janus-config saves are all R2
+  // (admin-only mutations) at the seam. Disable those Save controls for a
+  // known non-admin so the UI is honest; null role (auth disabled / no
+  // session) leaves them on — the server is the real gate either way.
+  let role = $derived(($page.data.user?.role as string | undefined) ?? null);
+  let canAdmin = $derived(role == null || role === 'admin');
 
   // ─── Types ──────────────────────────────────────────────────────────
   interface HealthResponse {
@@ -679,6 +688,13 @@
        ════════════════════════════════════════════════════════════════════ -->
   <div class="pane pane-left">
 
+    {#if !canAdmin}
+      <div class="role-banner" role="status">
+        Read-only ({role}) — saving keys, notifications, risk limits and janus
+        config is admin-only. You can view current status but not change it.
+      </div>
+    {/if}
+
     <!-- ── Panel: API Connections ─────────────────────────────────── -->
     <!-- Dynamic credential list backed by the spawner secret store. Starts
          blank; known providers are picked from the dropdown (per-provider
@@ -832,6 +848,7 @@
             class="btn-primary"
             onclick={saveCredential}
             disabled={credSaving ||
+              !canAdmin ||
               (!credProvider && !credExchange.trim()) ||
               !credKey ||
               !credSecret ||
@@ -985,7 +1002,11 @@
           <button
             class="btn-primary"
             onclick={saveNotification}
-            disabled={channelSaving || !channelName.trim() || !channelUrl.trim()}
+            disabled={channelSaving ||
+              !canAdmin ||
+              !channelName.trim() ||
+              !channelUrl.trim() ||
+              (!channelCatchAll && channelEvents.size === 0)}
           >
             {channelSaving ? 'Saving…' : 'Save Channel'}
           </button>
@@ -1042,7 +1063,7 @@
         </div>
       </div>
       <div class="form-actions">
-        <button class="btn-primary" onclick={saveRisk} disabled={riskSaving || riskLoading}>
+        <button class="btn-primary" onclick={saveRisk} disabled={riskSaving || riskLoading || !canAdmin}>
           {riskSaving ? 'Saving…' : riskLoading ? 'Loading…' : 'Save'}
         </button>
         {#if riskFeedback}
@@ -1236,7 +1257,7 @@
           <button
             class="btn-primary"
             onclick={saveJanusConfig}
-            disabled={janusSaving || !janusRedisAvailable}
+            disabled={janusSaving || !janusRedisAvailable || !canAdmin}
             title={janusRedisAvailable ? 'Save config to Redis' : 'Redis unavailable'}
           >
             {janusSaving ? 'Saving…' : 'Save Config'}
@@ -1285,6 +1306,15 @@
     display: flex;
     height: 100%;
     overflow: hidden;
+  }
+
+  .role-banner {
+    font-size: 12px;
+    color: var(--amber, #e0a000);
+    border: 1px solid var(--amber, #e0a000);
+    border-radius: 4px;
+    padding: 6px 10px;
+    line-height: 1.4;
   }
 
   .pane {

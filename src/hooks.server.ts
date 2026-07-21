@@ -1309,6 +1309,11 @@ export const handle: Handle = async ({ event, resolve }) => {
   const method = event.request.method;
   const backend = isBackend(pathname);
 
+  // Default identity — no leak. Overwritten once auth resolves; stays null on
+  // the outage open-page branch (login/logout render with no user). See A3.
+  event.locals.user = null;
+  event.locals.authDisabled = false;
+
   // Resolve auth posture; fail CLOSED if the store is unreachable (never open).
   let auth: AuthState;
   try {
@@ -1337,6 +1342,20 @@ export const handle: Handle = async ({ event, resolve }) => {
     }
     throw e;
   }
+
+  // Expose the resolved identity to page loads (A3). Only a full, real session
+  // yields a user; `disabled` mode is null-but-badged so the strip can say
+  // "auth off". No `mustChange`/bootstrap gating here — that's the seam's job;
+  // this is display-only. Pages read it via +layout.server.ts → $page.data.user.
+  event.locals.user =
+    auth.mode === "enabled" && auth.session
+      ? {
+          username: auth.session.username,
+          role: auth.session.role,
+          mustChange: auth.session.mustChange,
+        }
+      : null;
+  event.locals.authDisabled = auth.mode === "disabled";
 
   // CSRF: a state-changing backend call must not carry a cross-site Origin.
   if (

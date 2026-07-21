@@ -3,7 +3,25 @@
 declare global {
   namespace App {
     // interface Error {}
-    // interface Locals {}
+
+    /** The signed-in identity, exposed to page loads via +layout.server.ts.
+     *  Display-only — the real access gate is `routeRequest` in the hook. */
+    interface SessionUser {
+      username: string;
+      /** admin | operator | viewer (free string; ranked by `roleRank`). */
+      role: string;
+      mustChange: boolean;
+    }
+
+    interface Locals {
+      /** Non-null only for a full session in `mode:"enabled"`; null when
+       *  unauthenticated OR `WEBUI_AUTH=disabled`. */
+      user: SessionUser | null;
+      /** True only under `WEBUI_AUTH=disabled` — lets the UI badge "auth off"
+       *  while `user` stays null (no fabricated identity). */
+      authDisabled: boolean;
+    }
+
     // interface PageData {}
     // interface PageState {}
     // interface Platform {}
