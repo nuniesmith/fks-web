@@ -293,16 +293,22 @@ test.describe("kill flow", () => {
     page,
   }) => {
     let stateHits = 0;
-    // Count state fetches so we can assert the failed kill did NOT trigger the
-    // success-path statePoll.refresh() (a fake-success would refetch immediately).
-    await page.route("**/api/cockpit/state", (route) => {
-      stateHits += 1;
-      route.fulfill({ json: cockpitState() });
-    });
     await installCockpitMocks(page, {
       killStatus: 403,
       killBody: { message: "live_mutation_requires_auth" },
       onKill: () => {},
+    });
+    // Count state fetches so we can assert the failed kill did NOT trigger the
+    // success-path statePoll.refresh() (a fake-success would refetch
+    // immediately). This route is registered AFTER installCockpitMocks ON
+    // PURPOSE: Playwright matches routes in reverse-registration order and stops
+    // at the first handler that fulfills, so the LAST-registered route for a URL
+    // wins. Registered before installCockpitMocks, the fixture's own
+    // **/api/cockpit/state route would shadow this counter and stateHits would
+    // never move — making the guard vacuous.
+    await page.route("**/api/cockpit/state", (route) => {
+      stateHits += 1;
+      route.fulfill({ json: cockpitState() });
     });
     await gotoCockpit(page);
 
@@ -317,10 +323,21 @@ test.describe("kill flow", () => {
     await expect(dialog.getByText(/403/)).toBeVisible();
     await expect(dialog.getByText(/live_mutation_requires_auth/)).toBeVisible();
 
-    // The failed write must NOT clear the confirm input nor refresh state.
+    // The failed write must NOT clear the confirm input …
     await expect(phraseInput(page)).toHaveValue("KILL");
-    // No immediate extra state fetch beyond the ongoing 5s poll cadence.
-    expect(stateHits).toBeLessThanOrEqual(hitsBefore + 1);
+
+    // … nor call the success-path statePoll.refresh(). A regression that fires
+    // refresh() on the error path (moving it out of `if (r.ok)`, or an
+    // unconditional `finally { statePoll.refresh() }`) issues an IMMEDIATE extra
+    // /api/cockpit/state fetch the moment the kill rejects. Settle briefly so
+    // that immediate refetch (network ~sub-second) would have landed — the
+    // window is far shorter than the 5s background poll cadence, so a poll tick
+    // cannot masquerade as the refresh — then assert EXACTLY zero extra hits.
+    // (The former `<= hitsBefore + 1` tolerance was toothless: the success path
+    // adds exactly one refresh, so +1 could not tell a correct 403 handler from
+    // a regressed one that spuriously refreshes on failure.)
+    await page.waitForTimeout(750);
+    expect(stateHits).toBe(hitsBefore);
   });
 
   test("5. re-arm flow → phrase 'REARM' + unreconciled-venue warning", async ({
