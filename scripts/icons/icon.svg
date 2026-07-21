@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- FKS Terminal app icon — master (purpose: any).
+       Full-bleed --bg0 background (iOS masks its own rounded corners, so the
+       source must NOT be pre-rounded). Glyph is the terminal prompt ">_"
+       (prompt chevron + cursor block) in --accent. The home-screen title
+       ("FKS") supplies the letters; the icon supplies the terminal identity. -->
+  <rect width="512" height="512" fill="#07070d"/>
+  <g fill="none" stroke="#5b6ef5" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="140,150 258,256 140,362"/>
+  </g>
+  <rect x="278" y="318" width="118" height="38" rx="14" fill="#5b6ef5"/>
+</svg>
