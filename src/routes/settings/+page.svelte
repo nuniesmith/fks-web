@@ -4,6 +4,12 @@
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Panel from '$components/ui/Panel.svelte';
+  import {
+    NOTIFY_EVENT_KINDS,
+    ALWAYS_DELIVERED_EVENT_IDS,
+    isKnownEventKind,
+    type NotificationChannel,
+  } from '$lib/types/notifications';
 
   // ─── Types ──────────────────────────────────────────────────────────
   interface HealthResponse {
@@ -363,21 +369,12 @@
   // Operator-configured Discord webhooks stored in the spawner (encrypted at
   // rest, never read back — mirrors the credential store above). Submit-only:
   // the browser sends the URL and forgets it.
-  interface NotificationChannel {
-    name: string;
-    kind: string;
-    events: string[];
-    updated_at?: string;
-  }
-  // Known event kinds the notifier follow-up will emit. Empty selection =
-  // catch-all ("send everything").
-  const NOTIFY_EVENTS: { id: string; label: string }[] = [
-    { id: 'spawn', label: 'Bot spawned' },
-    { id: 'stop', label: 'Bot stopped' },
-    { id: 'live_flip', label: 'Paper → live flip' },
-    { id: 'pnl_digest', label: 'PnL digest' },
-    { id: 'error', label: 'Bot error' },
-  ];
+  //
+  // The selectable event kinds (NOTIFY_EVENT_KINDS) are the spawner's real wire
+  // contract, sourced from $lib/types/notifications (the single source of truth
+  // shared with the adapter's POST validation). Empty selection = catch-all
+  // ("send everything"). `bot_crashed` is always-delivered — it bypasses the
+  // filter, so it renders checked+disabled and is force-included on save.
   // null = notification store unreachable (distinct from "no channels yet").
   let channelList = $state<NotificationChannel[] | null>(null);
   let channelDbEnabled = $state(true);
@@ -430,8 +427,13 @@
       clearFeedbackAfter(v => channelFeedback = v, 6000);
       return;
     }
-    // Catch-all ⇒ empty events list; otherwise the selected subset.
-    const events = channelCatchAll ? [] : Array.from(channelEvents);
+    // Catch-all ⇒ empty events list. Otherwise the selected subset PLUS the
+    // always-delivered kinds (bot_crashed): they bypass the filter anyway, and
+    // recording them keeps the stored scope honest — a channel scoped to only
+    // "Bot crashed" stores exactly ["bot_crashed"].
+    const events = channelCatchAll
+      ? []
+      : Array.from(new Set([...channelEvents, ...ALWAYS_DELIVERED_EVENT_IDS]));
     channelSaving = true;
     channelFeedback = '';
     try {
@@ -465,7 +467,13 @@
     channelName = ch.name;
     channelUrl = '';
     channelCatchAll = ch.events.length === 0;
-    channelEvents = new Set(ch.events);
+    // Seed only the operator-selectable kinds: drop always-delivered ids (their
+    // checkbox is disabled and re-added on save) and any legacy/unknown ids
+    // (they have no checkbox — the operator re-ticks the real kinds), so a
+    // re-save can't resubmit a dead id the adapter would 400.
+    channelEvents = new Set(
+      ch.events.filter((e) => isKnownEventKind(e) && !ALWAYS_DELIVERED_EVENT_IDS.includes(e)),
+    );
   }
 
   // Two-step inline confirm: first click arms (auto-disarms after 4s),
@@ -873,7 +881,20 @@
             <span class="cred-name">{ch.name}</span>
             <Badge variant="cyan">{ch.kind === 'discord_webhook' ? 'discord' : ch.kind}</Badge>
             <span class="channel-events mono">
-              {ch.events.length === 0 ? 'all events' : ch.events.join(', ')}
+              {#if ch.events.length === 0}
+                all events
+              {:else}
+                {#each ch.events as ev (ev)}
+                  {#if isKnownEventKind(ev)}
+                    <span class="ev-known">{ev}</span>
+                  {:else}
+                    <!-- Legacy/typo id (e.g. spawn, stop, pnl_digest): matches
+                         no spawner wire kind, so it silently drops everything.
+                         Repair: click Update, re-tick, re-enter the URL, save. -->
+                    <Badge variant="amber">{ev} — will never match</Badge>
+                  {/if}
+                {/each}
+              {/if}
             </span>
             {#if ch.updated_at}
               <span class="cred-updated">updated {ch.updated_at}</span>
@@ -939,28 +960,32 @@
           </label>
           {#if !channelCatchAll}
             <div class="event-grid">
-              {#each NOTIFY_EVENTS as ev (ev.id)}
-                <label class="check-row">
+              {#each NOTIFY_EVENT_KINDS as ev (ev.id)}
+                <label class="check-row" class:always-on={ev.alwaysDelivered}>
                   <input
                     type="checkbox"
-                    checked={channelEvents.has(ev.id)}
+                    checked={ev.alwaysDelivered || channelEvents.has(ev.id)}
+                    disabled={ev.alwaysDelivered}
                     onchange={() => toggleChannelEvent(ev.id)}
                   />
-                  <span>{ev.label}</span>
+                  <span>
+                    {ev.label}
+                    {#if ev.alwaysDelivered}<span class="always-hint">always delivered</span>{/if}
+                  </span>
                 </label>
               {/each}
             </div>
-            <span class="form-hint">Pick at least one event, or re-enable catch-all above.</span>
+            <span class="form-hint">
+              Bot crashed is always delivered (it bypasses the filter). Tick any
+              additional events to include, or re-enable catch-all above.
+            </span>
           {/if}
         </div>
         <div class="form-actions">
           <button
             class="btn-primary"
             onclick={saveNotification}
-            disabled={channelSaving ||
-              !channelName.trim() ||
-              !channelUrl.trim() ||
-              (!channelCatchAll && channelEvents.size === 0)}
+            disabled={channelSaving || !channelName.trim() || !channelUrl.trim()}
           >
             {channelSaving ? 'Saving…' : 'Save Channel'}
           </button>
@@ -972,8 +997,9 @@
         </div>
         <div class="cred-hint">
           Submit-only: the webhook URL is stored encrypted server-side and never
-          returned. Sending notifications is a spawner-side follow-up — this only
-          manages the channels.
+          returned. The spawner delivers the five lifecycle events above to their
+          scoped channels live; a channel scoped to ids it doesn't emit receives
+          nothing (except the always-delivered crash page).
         </div>
       </div>
     </Panel>
@@ -1522,10 +1548,32 @@
   .channel-events {
     font-size: 9px;
     color: var(--t3);
-    max-width: 40%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: 55%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 5px;
+    min-width: 0;
+  }
+
+  .ev-known {
+    color: var(--t2);
+  }
+
+  /* Always-delivered event row: the disabled checkbox reads as "locked on". */
+  .check-row.always-on {
+    cursor: default;
+    color: var(--t3);
+  }
+  .check-row.always-on input {
+    cursor: not-allowed;
+  }
+  .always-hint {
+    margin-left: 4px;
+    font-size: 9px;
+    color: var(--amber);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .check-row {
