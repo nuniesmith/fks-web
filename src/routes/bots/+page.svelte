@@ -675,7 +675,7 @@
             </form>
         </Panel>
 
-        <Panel title="Run History" fill>
+        <Panel title="Run History">
             {#if !$runsPoll}
                 <div class="skel-col">
                     {#each Array(4) as _}
@@ -720,7 +720,7 @@
 
     <!-- Right column: containers + logs -->
     <div class="right-col">
-        <Panel title="Running ({runningCount})">
+        <Panel title="Running ({runningCount})" fill>
             {#snippet header()}
                 <button
                     class="btn small"
@@ -902,6 +902,20 @@
         flex-direction: column;
         gap: 8px;
         min-height: 0;
+    }
+
+    /* Left column is a document: rigid panels (spawn form + run history)
+       grow with content and the column provides the single scroll. */
+    .left-col {
+        overflow-y: auto;
+    }
+
+    /* Right column is a terminal split: the Running list sizes to its
+       content but is capped so a long list scrolls internally (it is a
+       `fill` panel) rather than starving the fill log pane below it. */
+    .right-col > :global(.panel:first-child) {
+        flex: 0 1 auto;
+        max-height: 45%;
     }
 
     /* ─── Spawn form ───────────────────────────────────────────────────── */

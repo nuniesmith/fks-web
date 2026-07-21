@@ -97,10 +97,14 @@ fks-web/
 
 ### Add a new route
 1. Create `src/routes/<feature>/+page.svelte`.
-2. Reach for `Panel`, `Badge`, `Skeleton`, `StatCard` from `$components/ui/`.
-3. If it needs an API client, add `src/lib/api/<feature>.ts` (typed wrapper) + `src/lib/types/<feature>.ts` (mirror of backend types).
-4. Add the tab to `src/lib/components/shell/TabBar.svelte` in the right group (Markets / Trading / Analysis / System / per-workspace).
-5. If it talks to a new backend, add the mapping to the `hooks.server.ts` adapter (`src/lib/server/adapter.ts` routing + an `*_INTERNAL_URL` env override) — there is deliberately no vite proxy; the hook is the seam in both dev and prod. nginx config lives in the fks repo.
+2. **Give the page root exactly ONE scroll story.** The shell (`+layout.svelte .workspace`) hands you an exact-height `overflow:hidden` box — the document itself never scrolls, so a page with no scroll region silently clips everything below the fold. Pick one archetype (both defined in `src/app.css`):
+   - **`.page-scroll`** — *document pages* (cockpit, futures, exchanges, treasury, edges, settings-style): the page scrolls; every `Panel` is rigid and grows with its content. This is the default; reach for it unless you have side-by-side exact-height panes.
+   - **`.page-fixed`** — *terminal-split pages* (charts, trading, journal, workspace): exact-height panes; put exactly ONE `fill` `Panel` per pane and let its body own the inner scroll. Never put a page scrollbar under a chart.
+3. **`Panel` is rigid by default; `fill` is the opt-in.** A plain `<Panel>` grows with its content and pushes its pane/page to scroll (its body does *not* scroll internally). Add `fill` only to the ONE panel per pane that should be height-constrained and own an inner scroll region (sticky in-body `thead`s pin to it for free). Do not stack multiple `fill` panels in a single scroll column, and don't wrap a table in its own `overflow:auto` inside a `fill` panel body — that recreates the nested-scroll "weird scrolling". Charts/canvases (`lightweight-charts`) need a real height (a `min-height` floor when flexed) — they render blank at 0 height.
+4. Reach for `Panel`, `Badge`, `Skeleton`, `StatCard` from `$components/ui/`.
+5. If it needs an API client, add `src/lib/api/<feature>.ts` (typed wrapper) + `src/lib/types/<feature>.ts` (mirror of backend types).
+6. Add the tab to `src/lib/components/shell/TabBar.svelte` in the right group (Markets / Trading / Analysis / System / per-workspace).
+7. If it talks to a new backend, add the mapping to the `hooks.server.ts` adapter (`src/lib/server/adapter.ts` routing + an `*_INTERNAL_URL` env override) — there is deliberately no vite proxy; the hook is the seam in both dev and prod. nginx config lives in the fks repo.
 
 ### Add a new SSE-driven feature
 Pattern: `routes/bots/+page.svelte` log viewer. `EventSource` opened lazily, `bind:this` on the container, `$effect` triggers scroll-to-tail when followed, `onscroll` handler flips follow state, optional "Jump to latest" button when paused.

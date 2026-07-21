@@ -458,7 +458,9 @@
     flex: 6;
     border-right: 1px solid var(--b1);
     min-width: 0;
-    overflow-y: auto;
+    /* Single scroll region: the lone `fill` Market Overview panel owns the
+       scroll (its sticky thead pins to the panel body). No pane-level
+       overflow — that was a redundant second scroller. */
     padding: 8px;
   }
 
@@ -602,8 +604,8 @@
     border: 1px solid var(--b1);
     border-radius: var(--r);
     padding: 8px 10px;
-    max-height: 160px;
-    overflow-y: auto;
+    /* No inner max-height/scroll: the AI Brief grows with its text and the
+       right pane (rigid panels) provides the single scroll. */
   }
 
   /* ═══════════════════════════════════════════════════════════════════

@@ -599,6 +599,11 @@
 
 <style>
   .cockpit-page {
+    /* One scroll region (page archetype) so the below-fold risk-gate,
+       telemetry and order-error panels are reachable on laptop viewports. */
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 12px;

@@ -163,7 +163,7 @@
 
 <div class="page">
     <!-- ─── Signal Staging ──────────────────────────────────────────────── -->
-    <Panel title="Signal Staging Area" fill>
+    <Panel title="Signal Staging Area" fill noPad>
         {#snippet header()}
             <FilterChips
                 options={STATUS_FILTERS}
@@ -402,6 +402,12 @@
         display: flex;
         flex-direction: column;
         gap: 1px;
+        /* Alerts is the secondary (rigid) panel; cap its list so a long feed
+           scrolls internally instead of growing the rigid panel unbounded —
+           which would collapse the primary `fill` Signal Staging panel to 0
+           and push the alert tail off the non-scrolling .page (clipped). */
+        max-height: clamp(160px, 32vh, 420px);
+        overflow: auto;
     }
     .alert-row {
         display: grid;
