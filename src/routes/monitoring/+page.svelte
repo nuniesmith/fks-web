@@ -726,6 +726,9 @@
   .dual-row {
     display: flex;
     gap: 8px;
+    /* Rigid in the scroll pane: keep the two `fill` panels as equal-width
+       columns and let the pane scroll rather than crushing this row. */
+    flex-shrink: 0;
   }
 
   .alert-list {
@@ -905,7 +908,9 @@
     border: 1px solid var(--b2);
     border-radius: var(--r);
     padding: 6px 8px;
-    max-height: 240px;
+    /* Bounded query-results terminal that grows on tall monitors (was a
+       flat 240px strip in a half-empty viewport). */
+    max-height: clamp(240px, 45vh, 560px);
     overflow: auto;
     display: flex;
     flex-direction: column;

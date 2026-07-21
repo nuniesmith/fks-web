@@ -290,7 +290,6 @@
           {:else if trades.length === 0}
             <div class="empty-state">No trades recorded yet.</div>
           {:else}
-            <div class="table-scroll">
             <table class="tbl">
               <thead>
                 <tr>
@@ -341,7 +340,6 @@
                 {/each}
               </tbody>
             </table>
-          </div>
 
           <!-- Selected Trade Detail -->
           {#if selectedTradeId != null}
@@ -627,12 +625,6 @@
   /* ═══════════════════════════════════════════════════════════════════
      Trade Log Table
      ═══════════════════════════════════════════════════════════════════ */
-  .table-scroll {
-    overflow: auto;
-    flex: 1;
-    min-height: 0;
-  }
-
   .tbl {
     width: 100%;
     border-collapse: collapse;

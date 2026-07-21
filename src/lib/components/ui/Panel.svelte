@@ -47,10 +47,14 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    /* Rigid by default: a panel grows with its content and pushes its
+       pane/page to scroll. Only `fill` opts into height-constraint +
+       an inner scroll region. See CLAUDE.md → "Add a new route". */
+    flex-shrink: 0;
   }
   .panel.fill {
-    flex: 1;
+    flex: 1 1 0;
+    min-height: 0;
   }
   .panel-head {
     padding: 6px 10px;
@@ -85,6 +89,13 @@
   .panel-body {
     padding: 8px;
     flex: 1;
+    /* Default: body grows with content; the PAGE/pane owns the scroll. */
+    overflow: visible;
+    min-width: 0;
+  }
+  /* The ONE scroll region: only a `fill` panel's body scrolls internally
+     (sticky in-body headers pin to it for free). */
+  .panel.fill > .panel-body {
     overflow: auto;
     min-height: 0;
   }

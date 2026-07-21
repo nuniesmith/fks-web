@@ -471,6 +471,7 @@
 
 <!-- ─── HEADER ───────────────────────────────────────────────────────── -->
 
+<div class="janus-root">
 <div class="page-header">
   <div class="header-left">
     <span class="title-icon">◆</span>
@@ -818,6 +819,7 @@
   </div>
 
 </div>
+</div><!-- /.janus-root -->
 
 <!-- ─── NEW SESSION MODAL ────────────────────────────────────────────── -->
 
@@ -929,9 +931,16 @@
   }
 
   /* ── Main Layout ───────────────────────────────────────── */
+  .janus-root {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
   .page {
     display: flex;
-    height: calc(100% - 42px);
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
 

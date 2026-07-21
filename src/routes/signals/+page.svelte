@@ -163,7 +163,7 @@
 
 <div class="page">
     <!-- ─── Signal Staging ──────────────────────────────────────────────── -->
-    <Panel title="Signal Staging Area" fill>
+    <Panel title="Signal Staging Area" fill noPad>
         {#snippet header()}
             <FilterChips
                 options={STATUS_FILTERS}

@@ -147,6 +147,11 @@
 
 <style>
   .exchanges-page {
+    /* One scroll region (page archetype) — below-fold venue rows were
+       previously clipped by the overflow:hidden shell. */
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 12px;

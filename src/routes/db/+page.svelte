@@ -1172,7 +1172,9 @@
     gap: 8px;
     min-height: 0;
     flex-shrink: 0;
-    max-height: 220px;
+    /* Responsive cap: grows on tall monitors instead of a fixed 220px
+       strip in a half-empty viewport (floor keeps short screens unchanged). */
+    max-height: clamp(220px, 30vh, 460px);
   }
 
   /* ═══════════════════════════════════════════════════════════════════
@@ -1184,7 +1186,8 @@
     flex-direction: column;
     overflow: hidden;
     flex-shrink: 0;
-    max-height: 300px;
+    /* Responsive cap (see .panel-row) — the sub-panel-body owns the scroll. */
+    max-height: clamp(300px, 42vh, 640px);
   }
 
   .sub-panel-head {
@@ -1294,7 +1297,8 @@
 
   .section-kv {
     padding: 4px 8px;
-    max-height: 180px;
+    /* Responsive cap (see .panel-row). */
+    max-height: clamp(180px, 26vh, 400px);
     overflow: auto;
   }
 

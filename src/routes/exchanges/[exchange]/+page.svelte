@@ -200,6 +200,11 @@
 
 <style>
   .detail-page {
+    /* One scroll region (page archetype) — the rebalance-trades tables at
+       the bottom were previously clipped by the overflow:hidden shell. */
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 12px;

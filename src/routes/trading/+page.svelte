@@ -948,9 +948,8 @@
     min-height: 0;
   }
 
-  .trades-body {
-    overflow: auto;
-  }
+  /* .trades-body intentionally has no rule: the `fill` Open Positions panel
+     body is the single scroll region (its sticky thead pins to it). */
 
   .tbl {
     width: 100%;
@@ -1279,7 +1278,9 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    /* Floor so Live Signals never collapses to a sliver behind the open
+       risk calculator; the right pane scrolls past this instead. */
+    min-height: 180px;
   }
 
   .signals-body {

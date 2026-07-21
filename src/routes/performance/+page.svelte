@@ -144,7 +144,7 @@
   </Panel>
 
   <!-- ─── Trade history ───────────────────────────────────────────────── -->
-  <Panel title="Trade History" fill>
+  <Panel title="Trade History" fill noPad>
     {#snippet header()}
       <span class="poll-badge">{trades.length > 50 ? `50 / ${trades.length}` : trades.length} trades · 10s</span>
     {/snippet}
