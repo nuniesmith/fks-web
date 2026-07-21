@@ -139,6 +139,14 @@
     onRefresh={loadNetWorth}
   />
 
+  <nav class="daily-links" aria-label="Related operator views">
+    <a href="/bots">bots</a>
+    <span aria-hidden="true">·</span>
+    <a href="/exchanges">exchanges</a>
+    <span aria-hidden="true">·</span>
+    <a href="/cockpit">cockpit</a>
+  </nav>
+
   <TransferForm
     accounts={activeAccounts}
     {dbEnabled}
@@ -255,6 +263,23 @@
     color: var(--amber, #f0a500);
     border-bottom: 1px solid var(--b1);
     margin-bottom: 8px;
+  }
+  .daily-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: -2px 2px 0;
+    font-size: 11px;
+    color: var(--t3);
+  }
+  .daily-links a {
+    color: var(--t3);
+    text-decoration: none;
+  }
+  .daily-links a:hover {
+    color: var(--cyan);
+    text-decoration: underline;
   }
   .two-col {
     display: grid;

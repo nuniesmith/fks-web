@@ -1,8 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import { createSSE } from '$stores/sse';
   import { createPoll } from '$stores/poll';
-  import { api } from '$api/client';
+  import { spawner } from '$api/spawner';
+  import { ApiError } from '$api/client';
+  import { focusSymbol } from '$stores/focusSymbol';
   import { POLL_INTERVAL_MS } from '$lib/config';
   import Badge from '$components/ui/Badge.svelte';
   import StatCard from '$components/ui/StatCard.svelte';
@@ -10,6 +13,8 @@
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Panel from '$components/ui/Panel.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
+  import { fmtMoney, realNetWorthFromRows } from '$lib/treasury/cards';
+  import { formatStaleAge, type StaleAccount } from '$lib/treasury/rollup';
   import type { StripData } from '$lib/types';
   import {
     fmtPrice,
@@ -154,26 +159,58 @@
     return 'green';
   }
 
-  // ─── AI Brief ──────────────────────────────────────────────────────
-  let briefing = $state('');
-  let briefingLoading = $state(false);
-  let briefingError = $state('');
+  // ─── Money snapshot ─────────────────────────────────────────────────
+  // Replaces the old "AI Brief" panel (which polled the unmapped
+  // /api/grok/briefing → a permanently-empty panel behind a live-looking
+  // Refresh button). This shows the SAME "Real net worth" figure as the
+  // /treasury headline: the exact spawner /net-worth data + registry, run
+  // through the shared realNetWorthFromRows() roll-up (paper excluded).
+  let moneyLatest = $state<number | null>(null);
+  let moneyCurrency = $state('USD');
+  let moneyRealCount = $state(0);
+  // Stale REAL accounts whose frozen carry-forward balance is still summed into
+  // moneyLatest — surfaced with the SAME ⚠ caveat the /treasury headline shows,
+  // so the landing page can't read a possibly-overstated total as live money.
+  let moneyStale = $state<StaleAccount[]>([]);
+  let moneyStaleValue = $state(0);
+  let moneyLoading = $state(true);
+  let moneyError = $state<string | null>(null);
+  // TODO(Phase A): once /api/cockpit/live-status ships, add a red LIVE chip
+  // here (linking to /cockpit) when the live twin reports an armed bot. That
+  // feed is not built yet, so no chip is rendered — no fake liveness.
 
-  async function fetchBriefing() {
-    briefingLoading = true;
-    briefingError = '';
+  async function loadMoney() {
+    moneyLoading = true;
+    moneyError = null;
     try {
-      const data = await api.get<any>('/api/grok/briefing');
-      briefing = typeof data === 'string'
-        ? data
-        : data?.briefing ?? data?.text ?? data?.content ?? JSON.stringify(data, null, 2);
+      // Same query the /treasury headline uses (limit 5000 = endpoint cap)
+      // and the same accounts registry, so the totals cannot diverge.
+      const [rows, acctRes] = await Promise.all([
+        spawner.netWorth({ limit: 5000 }),
+        spawner.accounts(),
+      ]);
+      const snap = realNetWorthFromRows(rows, acctRes.accounts ?? []);
+      moneyLatest = snap.latest;
+      moneyCurrency = snap.currency;
+      moneyRealCount = snap.realCount;
+      moneyStale = snap.stale;
+      moneyStaleValue = snap.staleValue;
     } catch (e: unknown) {
-      briefingError = e instanceof Error ? e.message : 'Failed to load briefing';
-      console.warn('[overview/briefing]', e);
+      moneyError = e instanceof ApiError ? `${e.status} ${e.statusText}` : String(e);
+      console.warn('[overview/money]', e);
     } finally {
-      briefingLoading = false;
+      moneyLoading = false;
     }
   }
+
+  // ─── Phone layout (single scroll region on small screens) ───────────
+  // On phone the PAGE owns the one vertical scroll, so the Market Overview
+  // panel must NOT be `fill` (a fill panel is height-constrained with its
+  // own inner scroller — that would collapse to ~0px inside the stacked,
+  // page-scrolled column). Desktop keeps fill=true (pixel-unchanged).
+  let isPhone = $state(false);
+  let phoneMq: MediaQueryList | undefined;
+  const onPhoneChange = (e: MediaQueryListEvent) => { isPhone = e.matches; };
 
   // ─── Helpers ────────────────────────────────────────────────────────
   // ─── Helpers imported from $lib/utils/format ────────────────────────
@@ -187,7 +224,10 @@
     tradesStore.start();
     signalsStore.start();
     factoryStore.start();
-    fetchBriefing();
+    void loadMoney();
+    phoneMq = window.matchMedia('(max-width: 760px)');
+    isPhone = phoneMq.matches;
+    phoneMq.addEventListener('change', onPhoneChange);
   });
 
   onDestroy(() => {
@@ -196,7 +236,13 @@
     tradesStore.stop();
     signalsStore.stop();
     factoryStore.stop();
+    phoneMq?.removeEventListener('change', onPhoneChange);
   });
+
+  function openAsset(symbol: string) {
+    focusSymbol.set(symbol);
+    void goto('/trading');
+  }
 </script>
 
 <svelte:head>
@@ -215,12 +261,12 @@
       color="cyan"
     />
     <StatCard
-      label="Day P&L"
+      label="Day P&L (janus)"
       value={fmtDollar(strip?.pnl?.daily)}
       color={(strip?.pnl?.daily ?? 0) >= 0 ? 'green' : 'red'}
     />
     <StatCard
-      label="Equity"
+      label="Equity (janus)"
       value={strip?.equity != null ? '$' + strip.equity.toLocaleString() : '—'}
       color="default"
     />
@@ -252,10 +298,11 @@
 
     <!-- ─── LEFT (60%): Market Overview Table ──────────────────────── -->
     <div class="pane pane-left">
-      <Panel title="Market Overview" badge="30s poll" noPad fill>
+      <Panel title="Market Overview" badge="30s poll" noPad fill={!isPhone}>
           {#if assets.length === 0}
             <Skeleton lines={6} />
           {:else}
+            <div class="tbl-wrap">
             <table class="tbl">
               <thead>
                 <tr>
@@ -274,11 +321,11 @@
                     tabindex="0"
                     role="button"
                     aria-label="View {asset.symbol} in Trading workspace"
-                    onclick={() => { window.location.href = '/trading'; }}
+                    onclick={() => openAsset(asset.symbol)}
                     onkeydown={(e: KeyboardEvent) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        window.location.href = '/trading';
+                        openAsset(asset.symbol);
                       }
                     }}
                   >
@@ -307,6 +354,7 @@
                 {/each}
               </tbody>
             </table>
+            </div>
           {/if}
       </Panel>
     </div>
@@ -314,26 +362,53 @@
     <!-- ─── RIGHT (40%): Quick Panels ─────────────────────────────── -->
     <div class="pane pane-right">
 
-      <!-- Panel 1: AI Brief -->
-      <Panel title="AI Brief">
+      <!-- Panel 1: Money snapshot (real net worth — mirrors /treasury) -->
+      <Panel title="Money">
         {#snippet header()}
-          <button class="btn-refresh" onclick={fetchBriefing} disabled={briefingLoading}>
-            {briefingLoading ? '⟳' : '↻'} Refresh
+          <button class="btn-refresh" onclick={loadMoney} disabled={moneyLoading} aria-label="Refresh net worth">
+            {moneyLoading ? '⟳' : '↻'} Refresh
           </button>
         {/snippet}
-          {#if briefingLoading && !briefing}
-            <Skeleton lines={4} />
-          {:else if briefingError && !briefing}
-            <EmptyState icon="⚠️" title="Couldn't load briefing" variant="error" hint={briefingError} />
-          {:else if briefing}
-            <pre class="briefing-text">{briefing}</pre>
+          {#if moneyLoading && moneyLatest == null && !moneyError}
+            <Skeleton lines={2} />
+          {:else if moneyError}
+            <EmptyState
+              icon="⚠️"
+              title="Couldn't load net worth"
+              variant="error"
+              hint={`GET /api/spawner/net-worth failed (${moneyError}). Check that the spawner is reachable.`}
+            />
           {:else}
-            <EmptyState icon="∅" title="No briefing available" hint="The brain hasn't published a briefing yet." />
+            <div class="money">
+              <span class="money-label">Real net worth</span>
+              <span class="money-value">{fmtMoney(moneyLatest, moneyCurrency)}</span>
+              <span class="money-sub">
+                {#if moneyLatest != null}
+                  across {moneyRealCount} account{moneyRealCount === 1 ? '' : 's'} · paper excluded
+                {:else}
+                  No net-worth snapshots yet.
+                {/if}
+              </span>
+              {#if moneyStale.length > 0}
+                <span
+                  class="money-stale"
+                  title={moneyStale.map((s) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}
+                >
+                  ⚠ includes {fmtMoney(moneyStaleValue, moneyCurrency)} from {moneyStale.length} stale
+                  account{moneyStale.length === 1 ? '' : 's'} — oldest as of {formatStaleAge(moneyStale[0].ageSeconds)} ago
+                </span>
+              {/if}
+              <a class="money-link" href="/treasury">Open treasury →</a>
+            </div>
           {/if}
       </Panel>
 
-      <!-- Panel 2: Active Trades -->
-      <Panel title="Active Trades" badge="5s poll">
+      <!-- Panel 2: Active Trades (janus paper) -->
+      <Panel title="Active Trades (janus paper)" badge="5s poll">
+          <p class="paper-note">
+            janus simulated/paper trades — not real money. Real balances live on
+            <a href="/treasury">treasury</a>, <a href="/exchanges">exchanges</a> & <a href="/cockpit">cockpit</a>.
+          </p>
           {#if trades.length === 0}
             <EmptyState icon="∅" title="No open trades" hint="Open positions will appear here." />
           {:else}
@@ -568,7 +643,7 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════
-     AI Briefing
+     Money snapshot
      ═══════════════════════════════════════════════════════════════════ */
   .btn-refresh {
     all: unset;
@@ -592,20 +667,58 @@
     cursor: not-allowed;
   }
 
-  .briefing-text {
-    font-family: inherit;
+  .money {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 2px;
+  }
+  .money-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--t3);
+  }
+  .money-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--t1);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+  }
+  .money-sub {
+    font-size: 10px;
+    color: var(--t3);
+  }
+  /* Same honesty caveat wording/tone as TreasuryHeadline's `.stale`. */
+  .money-stale {
+    font-size: 10px;
+    color: var(--amber, #f0a500);
+    cursor: help;
+  }
+  .money-link {
+    margin-top: 4px;
     font-size: 11px;
-    line-height: 1.6;
-    color: var(--t2);
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    margin: 0;
-    background: var(--bg0);
-    border: 1px solid var(--b1);
-    border-radius: var(--r);
-    padding: 8px 10px;
-    /* No inner max-height/scroll: the AI Brief grows with its text and the
-       right pane (rigid panels) provides the single scroll. */
+    color: var(--cyan);
+    text-decoration: none;
+    width: fit-content;
+  }
+  .money-link:hover {
+    text-decoration: underline;
+  }
+  .paper-note {
+    margin: 0 0 6px;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--t3);
+  }
+  .paper-note a {
+    color: var(--cyan);
+    text-decoration: none;
+  }
+  .paper-note a:hover {
+    text-decoration: underline;
   }
 
   /* ═══════════════════════════════════════════════════════════════════
@@ -665,5 +778,55 @@
   .muted  { color: var(--t3); }
   .green  { color: var(--green); }
   .red    { color: var(--red); }
+
+  /* Table x-scroll wrapper. Desktop: a plain block (overflow visible), so it
+     is NOT a scroll container and the sticky thead still pins to the `fill`
+     panel body — desktop stays pixel-identical. Phone: it owns the horizontal
+     scroll for the 6-col table (which can't fit 390px) while the PAGE owns the
+     single vertical scroll. */
+  .tbl-wrap {
+    width: 100%;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     Phone (≤760px, the repo breakpoint): stack the two panes and hand the
+     ONE vertical scroll to the page. All rules scoped to this query so the
+     desktop layout is untouched. Market Overview drops `fill` in markup
+     (isPhone) so it grows with its content instead of collapsing.
+     ═══════════════════════════════════════════════════════════════════ */
+  @media (max-width: 760px) {
+    .page {
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .body {
+      flex-direction: column;
+      overflow: visible;
+      min-height: 0;
+    }
+    .pane-left {
+      border-right: none;
+      min-width: 0;
+    }
+    .pane-right {
+      max-width: none;
+      min-width: 0;
+      overflow-y: visible;
+    }
+    .tbl-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    /* On phone the panel is fill=false (grows to content) and the PAGE owns
+       the one vertical scroll, while `.tbl-wrap` becomes the x-scroller — which
+       CSS promotes to overflow:auto on BOTH axes, making it the sticky thead's
+       scroll container. With no internal vertical scroll the header can't
+       usefully pin (it would resolve against tbl-wrap and scroll off with the
+       rows), so drop sticky here and let it flow with the table. Desktop keeps
+       overflow:visible → the thead still pins to the fill panel body. */
+    .tbl th {
+      position: static;
+    }
+  }
 
 </style>

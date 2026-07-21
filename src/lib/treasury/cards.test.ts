@@ -6,8 +6,10 @@ import {
   kindVariant,
   moneyTone,
   paperAccountIds,
+  realNetWorthFromRows,
   selectProfitAccounts,
 } from './cards';
+import type { SnapshotRowLike } from './rollup';
 import type { TreasuryAccount } from '$lib/types/spawner';
 
 function account(overrides: Partial<TreasuryAccount> = {}): TreasuryAccount {
@@ -118,5 +120,98 @@ describe('isPaperAccount / paperAccountIds', () => {
     expect(out.has('crypto-funding')).toBe(true); // stopgap: paper
     expect(out.has('crypto-spot')).toBe(false); // stopgap: real
     expect(out.has('new-bot')).toBe(false); // unclassified = treated real
+  });
+});
+
+describe('realNetWorthFromRows (the / overview ⇄ /treasury headline parity fn)', () => {
+  function row(bot_id: string, ts: string, net_worth: number): SnapshotRowLike {
+    return { bot_id, ts, net_worth, currency: 'USD' };
+  }
+
+  it('carries forward each real account and EXCLUDES paper', () => {
+    const rows = [
+      row('real-a', '2026-07-01T00:00:00Z', 1000),
+      row('real-a', '2026-07-03T00:00:00Z', 1500),
+      row('real-b', '2026-07-02T00:00:00Z', 500),
+      row('paper-x', '2026-07-03T00:00:00Z', 9999),
+    ];
+    const accounts = [
+      account({ account_id: 'real-a', account_class: 'personal-crypto' }),
+      account({ account_id: 'real-b', account_class: 'personal-crypto' }),
+      account({ account_id: 'paper-x', account_class: 'paper' }),
+    ];
+    // At the last tick real-a=1500 (carried) + real-b=500 (carried) = 2000;
+    // paper-x's 9999 is excluded — proving the / snapshot mirrors the headline.
+    const res = realNetWorthFromRows(rows, accounts);
+    expect(res.latest).toBe(2000);
+    expect(res.realCount).toBe(2);
+    expect(res.currency).toBe('USD');
+  });
+
+  it('is an honest null (never $0) when there are no rows', () => {
+    const res = realNetWorthFromRows([], []);
+    expect(res.latest).toBeNull();
+    expect(res.realCount).toBe(0);
+    expect(res.currency).toBe('USD');
+  });
+
+  it('excludes unregistered paper via the stopgap table', () => {
+    // crypto-funding is paper per the stopgap even with no registry entry.
+    const rows = [
+      row('crypto-spot', '2026-07-01T00:00:00Z', 300),
+      row('crypto-funding', '2026-07-01T00:00:00Z', 10000),
+    ];
+    const res = realNetWorthFromRows(rows, []);
+    expect(res.latest).toBe(300);
+    expect(res.realCount).toBe(1);
+  });
+
+  // ── Staleness parity with TreasuryHeadline (the / snapshot must carry the
+  //    SAME ⚠ caveat, or a possibly-overstated total reads as live money) ──
+  const T0 = Date.parse('2026-07-10T00:00:00Z') / 1000; // deterministic "now"
+
+  it('flags a REAL account whose newest snapshot is stale (>6h old)', () => {
+    // fresh-a reported 1h ago; dead-b's last row is 2 days old but its 500 is
+    // still carried into the total — exactly the overstatement risk.
+    const rows = [
+      row('fresh-a', '2026-07-09T23:00:00Z', 1000),
+      row('dead-b', '2026-07-08T00:00:00Z', 500),
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.latest).toBe(1500); // dead-b still summed in
+    expect(res.stale.map((s) => s.accountId)).toEqual(['dead-b']);
+    expect(res.staleValue).toBe(500);
+  });
+
+  it('never flags paper as stale — paper is excluded before the staleness check', () => {
+    const rows = [
+      row('fresh-a', '2026-07-09T23:00:00Z', 1000),
+      row('paper-x', '2026-07-01T00:00:00Z', 9999), // ancient AND paper
+    ];
+    const accounts = [account({ account_id: 'paper-x', account_class: 'paper' })];
+    const res = realNetWorthFromRows(rows, accounts, T0);
+    expect(res.latest).toBe(1000);
+    expect(res.stale).toEqual([]);
+    expect(res.staleValue).toBe(0);
+  });
+
+  it('reports no stale accounts when every real snapshot is fresh', () => {
+    const rows = [
+      row('fresh-a', '2026-07-09T23:30:00Z', 1000),
+      row('fresh-b', '2026-07-09T22:00:00Z', 500),
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.stale).toEqual([]);
+    expect(res.staleValue).toBe(0);
+  });
+
+  it('orders multiple stale accounts oldest-first (matches the headline lead offender)', () => {
+    const rows = [
+      row('older', '2026-07-06T00:00:00Z', 200), // 4 days
+      row('newer-stale', '2026-07-09T10:00:00Z', 300), // 14h
+    ];
+    const res = realNetWorthFromRows(rows, [], T0);
+    expect(res.stale.map((s) => s.accountId)).toEqual(['older', 'newer-stale']);
+    expect(res.staleValue).toBe(500);
   });
 });
