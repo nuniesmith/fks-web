@@ -50,7 +50,7 @@ test.describe("Shell", () => {
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Click on the body first to ensure no input has focus
     // (the handler skips key events when an input/textarea is focused)
@@ -68,7 +68,7 @@ test.describe("Shell", () => {
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page.locator("body").click();
 
@@ -86,7 +86,7 @@ test.describe("Shell", () => {
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page.locator("body").click();
 
@@ -104,7 +104,7 @@ test.describe("Workspace Smoke Tests", () => {
       page.on("pageerror", (err) => errors.push(err.message));
 
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       // Correct page rendered (a login redirect would change the title).
       await expect(page).toHaveTitle(route.title);
