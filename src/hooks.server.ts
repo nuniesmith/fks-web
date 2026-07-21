@@ -26,6 +26,7 @@ import {
   upstreamHeaders,
 } from "$lib/server/adapter";
 import { AuthStoreUnavailable, resolveAuthState } from "$lib/server/auth";
+import { validateNotificationEvents } from "$lib/types/notifications";
 import {
   cockpitKillPost,
   cockpitRearmPost,
@@ -750,9 +751,12 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
 // (never the URL). Mirrors the exchange-keys adapter above.
 //
 // BOUNDARY: this is the management adapter — plus a Test route (below) that
-// asks the spawner to fire a channel's webhook once (fks #181). Actually SENDING
-// on real events (spawn/stop/live-flip → Discord) is still a spawner-side
-// (consumer) follow-up, not wired in either repo yet.
+// asks the spawner to fire a channel's webhook once (fks #181). Dispatch on real
+// events IS live in the spawner for the five lifecycle kinds (bot_spawned /
+// _stopped / _removed / _error / _crashed — notifications.rs); this adapter
+// validates a channel's `events[]` against that wire contract on POST
+// (`$lib/types/notifications`) so a scoped channel can't silently store an id
+// the spawner never emits.
 function sanitizeChannelName(raw: unknown): string {
   const s = (typeof raw === "string" ? raw : "").trim();
   return /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(s) ? s : "";
@@ -804,13 +808,22 @@ async function notificationsPost(event: RequestEvent): Promise<Response> {
     return json({ ok: false, message: "A valid http(s) webhook URL is required" }, 400);
   }
   const kind = str(body?.kind) || "discord_webhook";
-  const events = Array.isArray(body?.events)
-    ? Array.from(
-        new Set(
-          body.events.map((e: unknown) => str(e)).filter((e: string) => e.length > 0),
-        ),
-      )
-    : [];
+  // Validate the scope against the spawner's wire contract
+  // ($lib/types/notifications, the single source of truth the UI also reads):
+  // reject an unknown id by name so a typo/legacy scope can't be stored as a
+  // filter that silently matches nothing. Forward-compatible — a new Phase-C
+  // kind is accepted the moment it's added to NOTIFY_EVENT_KINDS.
+  const scope = validateNotificationEvents(body?.events);
+  if (!scope.ok) {
+    return json(
+      {
+        ok: false,
+        message: `Unknown notification event '${scope.bad}' — not a spawner event kind`,
+      },
+      400,
+    );
+  }
+  const events = scope.events;
   const payload = { name, kind, url, events };
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));

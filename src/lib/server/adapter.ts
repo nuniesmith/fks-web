@@ -25,6 +25,33 @@ export const PUBLIC_PREFIXES = ["/login", "/logout"];
  *  survive even in bootstrap mode or an auth-store outage). */
 export const PUBLIC_EXACT = ["/api/health", "/healthz"];
 
+/**
+ * Installable-app static assets that must be reachable pre-login (PWA milestone
+ * groundwork). In prod adapter-node serves `build/client/*` via sirv BEFORE the
+ * SvelteKit handler runs, so these never reach this hook — but if the serving
+ * order ever changes (adapter swap, direct node exposure) or in dev where SSR
+ * handles them, the manifest/SW/icons must return the asset (200), never a
+ * 302→/login (iOS treats a redirected manifest as broken). This is an EXPLICIT
+ * allowlist of known static filenames only — deliberately NOT a wildcard/
+ * extension bypass, which could leak an app page or data route pre-auth. The
+ * manifest/SW files themselves are added by the PWA milestone (M1); this only
+ * guarantees the paths won't fail closed once they exist. GET/HEAD only.
+ */
+export const PUBLIC_STATIC_EXACT: readonly string[] = [
+  "/manifest.webmanifest",
+  "/service-worker.js",
+  "/favicon.ico",
+  "/favicon.svg",
+  "/robots.txt",
+  "/apple-touch-icon.png",
+  "/apple-touch-icon.svg",
+];
+
+/** Whether a path is a pre-login installable-app static asset (GET/HEAD). */
+export function isPublicStatic(pathname: string): boolean {
+  return PUBLIC_STATIC_EXACT.includes(pathname);
+}
+
 /** The forced-credential-change page (and its form action). */
 export const SETUP_PREFIX = "/setup";
 
@@ -156,6 +183,12 @@ export function routeRequest(
   if (PUBLIC_EXACT.includes(pathname)) {
     return backend ? { kind: "backend" } : { kind: "pass" };
   }
+
+  // 1b. Installable-app static assets (manifest/SW/icons/robots) are public on
+  //     GET/HEAD so they never 302→/login (a redirected manifest reads as broken
+  //     on iOS). Explicit filename allowlist — not a wildcard. A non-GET to one
+  //     of these falls through to the normal page gate (harmless: no backend).
+  if (get && isPublicStatic(pathname)) return { kind: "pass" };
 
   // 2. Login/logout pages are public.
   if (!backend && isPublic(pathname)) return { kind: "pass" };

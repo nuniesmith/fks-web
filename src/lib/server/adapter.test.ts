@@ -152,6 +152,49 @@ describe("routeRequest — enabled, full session", () => {
   });
 });
 
+describe("routeRequest — PWA static assets are public pre-login (GET/HEAD)", () => {
+  const staticPaths = [
+    "/manifest.webmanifest",
+    "/service-worker.js",
+    "/favicon.ico",
+    "/favicon.svg",
+    "/robots.txt",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon.svg",
+  ];
+
+  it("passes each static asset unauthenticated on GET and HEAD", () => {
+    for (const p of staticPaths) {
+      expect(routeRequest(p, "", "GET", noSession)).toEqual({ kind: "pass" });
+      expect(routeRequest(p, "", "HEAD", noSession)).toEqual({ kind: "pass" });
+    }
+  });
+
+  it("does NOT open a random /api path or an unlisted static-looking page", () => {
+    // A backend path still fails closed without a session…
+    expect(routeRequest("/api/signals", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest("/api/spawner/x", "", "POST", noSession)).toEqual({ kind: "unauthorized" });
+    // …and a path merely *resembling* a static asset (not on the allowlist)
+    // still redirects to login — proving this is an allowlist, not a wildcard.
+    expect(routeRequest("/manifest.webmanifest.map", "", "GET", noSession)).toEqual({
+      kind: "redirect",
+      location: "/login?next=%2Fmanifest.webmanifest.map",
+    });
+    expect(routeRequest("/icons/secret.png", "", "GET", noSession)).toEqual({
+      kind: "redirect",
+      location: "/login?next=%2Ficons%2Fsecret.png",
+    });
+  });
+
+  it("does not grant a non-GET (e.g. POST) a static free pass", () => {
+    // Falls through to the page gate → redirect to login, never a pass.
+    expect(routeRequest("/manifest.webmanifest", "", "POST", noSession)).toEqual({
+      kind: "redirect",
+      location: "/login?next=%2Fmanifest.webmanifest",
+    });
+  });
+});
+
 describe("outageRoute — fail closed but keep login renderable on a store outage", () => {
   it("keeps health probes open (monitoring survives)", () => {
     expect(outageRoute("/api/health")).toBe("open-backend");
