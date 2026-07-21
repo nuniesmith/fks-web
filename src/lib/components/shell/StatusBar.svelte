@@ -145,12 +145,16 @@
 
 <style>
   .statusbar {
-    height: var(--status-h);
+    /* Grow by the bottom safe-area inset so the logout button clears the iOS
+       home indicator; --bg1 fills the indicator zone. env() is 0 on desktop. */
+    height: calc(var(--status-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     background: var(--bg1);
     border-top: 1px solid var(--b1);
     display: flex;
     align-items: center;
-    padding: 0 12px;
+    padding-left: 12px;
+    padding-right: 12px;
     gap: 16px;
     font-size: 10px;
     color: var(--t3);

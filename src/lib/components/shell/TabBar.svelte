@@ -330,4 +330,15 @@
         margin-left: 2px;
         font-family: inherit;
     }
+
+    /* ── Touch: ≥44px tap targets (Apple HIG) ───────────────────────────────
+       The 34px tabbar / tab row is below the 44px touch guideline. On coarse
+       pointers grow the bar so each tab is ≥44px tall (fixed height would clip
+       it under overflow-y:hidden), and drop the keyboard-shortcut badges —
+       dead weight without a keyboard. Desktop (pointer: fine) is untouched. */
+    @media (pointer: coarse) {
+        .tabbar { height: 60px; }
+        .tab { min-height: 44px; padding-left: 14px; padding-right: 14px; }
+        .shortcut { display: none; }
+    }
 </style>

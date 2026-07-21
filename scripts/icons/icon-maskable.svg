@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- FKS Terminal app icon — maskable variant (purpose: maskable).
+       Same ">_" glyph as icon.svg but scaled into the central 80% safe zone so
+       Android's circular / squircle mask never clips it. Full-bleed --bg0. -->
+  <rect width="512" height="512" fill="#07070d"/>
+  <g transform="translate(256 256) scale(0.8) translate(-256 -256)">
+    <g fill="none" stroke="#5b6ef5" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="140,150 258,256 140,362"/>
+    </g>
+    <rect x="278" y="318" width="118" height="38" rx="14" fill="#5b6ef5"/>
+  </g>
+</svg>

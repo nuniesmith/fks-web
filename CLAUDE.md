@@ -147,9 +147,16 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   forwards to the spawner's `POST /notifications/:name/test` (fks #181), which
   decrypts the stored webhook, sends a synthetic event, and reports only the
   outcome ({ok:true} sent · {ok:false,status} webhook non-2xx · 404 no channel ·
-  503 no DB) — the URL never returns to the browser. Actually SENDING on real
-  events (spawn/stop/live-flip → Discord) is still a spawner-side follow-up;
-  this repo only manages + test-fires the channels.
+  503 no DB) — the URL never returns to the browser. **Dispatch on real events
+  is LIVE** in the spawner for the five lifecycle kinds — `bot_spawned`,
+  `bot_stopped`, `bot_removed`, `bot_error`, `bot_crashed` (`ALL_EVENT_KINDS` in
+  `fks-spawner` `crates/spawner/src/notifications.rs`); `bot_crashed` is
+  always-delivered (bypasses the `events[]` filter). Those wire ids are the
+  single source of truth in `$lib/types/notifications.ts`, which both the
+  `/settings` checkboxes and the adapter's POST validation read — the adapter
+  400s any submitted `events[]` id that isn't a real wire kind, so a scoped
+  channel can't store a filter (e.g. the old `spawn`/`stop`/`pnl_digest`) that
+  silently matches nothing. Adding a Phase-C kind is a one-line edit there.
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the

@@ -107,12 +107,17 @@
 
 <style>
   .strip {
-    height: var(--strip-h);
+    /* Grow by the top safe-area inset so the strip's --bg1 fills the status-bar
+       zone (standalone/black-translucent) while the 48px content row keeps its
+       size. env() is 0 on desktop → pixel-identical there. */
+    height: calc(var(--strip-h) + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
     background: var(--bg1);
     border-bottom: 1px solid var(--b1);
     display: flex;
     align-items: center;
-    padding: 0 12px;
+    padding-left: 12px;
+    padding-right: 12px;
     gap: 2px;
     overflow: hidden;
     flex-shrink: 0;
@@ -166,4 +171,24 @@
     font-size: 11px;
   }
   .logout-link:hover { color: var(--t1); text-decoration: underline; }
+
+  /* ── Phone width: stop the silent cell clipping ─────────────────────────
+     5 fixed cells + overflow:hidden clip RISK/REGIME/clock mid-glyph at phone
+     widths. Drop the redundant REGIME + clock (the OS status bar already shows
+     a clock), tighten padding, and fall back to a hidden-scrollbar horizontal
+     scroll so nothing is ever clipped mid-glyph on SE-class widths. */
+  @media (max-width: 640px) {
+    .strip {
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;
+    }
+    .strip::-webkit-scrollbar { display: none; }
+    .strip-cell { padding: 0 8px; }
+    /* 4th cell = REGIME; .clock = trailing clock — both dropped on phone. */
+    .strip-cell:nth-child(4),
+    .strip-cell.clock { display: none; }
+    /* RISK (now the last visible cell) sheds its trailing divider. */
+    .strip-cell:nth-child(3) { border-right: none; }
+  }
 </style>
