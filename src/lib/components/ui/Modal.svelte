@@ -135,6 +135,7 @@
     border-radius: var(--r-md);
     max-width: 520px;
     width: 90%;
+    max-height: min(85dvh, 720px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -142,6 +143,7 @@
   }
 
   .header {
+    flex-shrink: 0;
     padding: 12px 16px;
     border-bottom: 1px solid var(--b1);
     display: flex;
@@ -177,9 +179,12 @@
 
   .body {
     padding: 16px;
+    min-height: 0;
+    overflow-y: auto;   /* tall bodies scroll instead of overflowing the card */
   }
 
   .footer {
+    flex-shrink: 0;
     padding: 10px 16px;
     border-top: 1px solid var(--b1);
     display: flex;

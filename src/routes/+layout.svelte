@@ -42,7 +42,8 @@
     .terminal {
         display: flex;
         flex-direction: column;
-        height: 100vh;
+        height: 100vh;   /* fallback for browsers without dvh */
+        height: 100dvh;  /* phone: excludes dynamic browser chrome */
         overflow: hidden;
     }
     .workspace {

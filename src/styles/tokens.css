@@ -14,7 +14,7 @@
   /* ── Text ────────────────────────────────────────────── */
   --t1: #dde0f5;    /* primary */
   --t2: #8890b8;    /* secondary / muted */
-  --t3: #454870;    /* dimmed / label */
+  --t3: #787eab;    /* dimmed / label — WCAG-AA (>=4.5:1 on --bg0..--bg3) */
 
   /* ── Brand ───────────────────────────────────────────── */
   --accent:      #5b6ef5;
@@ -67,7 +67,8 @@
 }
 
 body {
-  height: 100vh;
+  height: 100vh;       /* fallback for browsers without dvh */
+  height: 100dvh;      /* phone: excludes dynamic browser chrome */
   overflow: hidden;
 }
 

@@ -44,6 +44,17 @@
   min-width: 0;
 }
 
+/* ── Keyboard focus ─────────────────────────────────────────
+   Repairs the ~31 `all: unset` buttons app-wide: `all: unset` strips
+   the UA focus ring, leaving keyboard focus invisible. One global
+   :focus-visible rule restores a visible ring everywhere without any
+   per-component styles (!important beats scoped `all: unset` on the ~30 reset buttons). Pointer clicks (`:focus` without `-visible`)
+   stay ring-free. */
+:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 1px !important;
+}
+
 /* ── Animations ────────────────────────────────────────── */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(4px); }

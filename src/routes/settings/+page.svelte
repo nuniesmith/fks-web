@@ -1273,6 +1273,20 @@
   .pane-left  { flex: 5; }
   .pane-right { flex: 5; }
 
+  /* Narrow viewports: stack the two settings columns; the page owns the
+     single scroll (both panes are forms with no `fill` panel, so they grow
+     naturally). */
+  @media (max-width: 900px) {
+    .page {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .pane {
+      overflow: visible;
+      flex: none;
+    }
+  }
+
   /* ═══════════════════════════════════════════════════════════════════
      Header Badges (inside Panel header snippet)
      ═══════════════════════════════════════════════════════════════════ */

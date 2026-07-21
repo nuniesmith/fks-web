@@ -865,6 +865,28 @@
     overflow-y: auto;
   }
 
+  /* Narrow viewports: stack chart pane over order pane; the page scrolls
+     between them. Each pane keeps a real height so the chart (`fill`) and
+     order/signal panels stay usable rather than collapsing. */
+  @media (max-width: 900px) {
+    .page {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .pane-left {
+      flex: none;
+      min-height: 70vh;
+      border-right: none;
+      border-bottom: 1px solid var(--b1);
+    }
+    .pane-right {
+      flex: none;
+      min-width: 0;
+      max-width: none;
+      min-height: 60vh;
+    }
+  }
+
   .symbol-badge {
     font-size: 12px;
     font-weight: 700;
