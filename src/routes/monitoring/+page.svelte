@@ -5,6 +5,8 @@
   import StatCard from '$components/ui/StatCard.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Panel from '$components/ui/Panel.svelte';
+  import AlertInbox from '$components/monitoring/AlertInbox.svelte';
+  import { alertInbox } from '$lib/stores/alertInbox';
 
   // ─── Types ──────────────────────────────────────────────────────────
   interface MetricResult {
@@ -131,9 +133,6 @@
   let layoutPanels = $state<LayoutPanel[]>([]);
   let panelData = $state<Record<string, any>>({});
   let layoutLoading = $state(true);
-
-  let alerts = $state<Alert[]>([]);
-  let alertsLoading = $state(true);
 
   let targets = $state<ScrapeTarget[]>([]);
   let targetsLoading = $state(true);
@@ -271,17 +270,6 @@
     panelData = { ...panelData };
   }
 
-  async function fetchAlerts(): Promise<void> {
-    try {
-      const resp = await api.get<AlertsResponse>('/api/metrics/alerts');
-      alerts = resp?.data ?? [];
-    } catch {
-      // keep previous
-    } finally {
-      alertsLoading = false;
-    }
-  }
-
   async function fetchTargets(): Promise<void> {
     try {
       const resp = await api.get<TargetsResponse>('/api/metrics/targets');
@@ -336,18 +324,21 @@
   onMount(() => {
     fetchHealthStats();
     fetchLayout();
-    fetchAlerts();
     fetchTargets();
+
+    // The alert feed is now the shared alert-ack inbox poll (30s) — the same
+    // poll feeds the StatusBar chip + cockpit panel (createPoll dedupes it).
+    alertInbox.start();
 
     timers.push(setInterval(fetchHealthStats, 15_000));
     timers.push(setInterval(() => { if (layoutPanels.length) fetchAllPanelData(); }, 15_000));
-    timers.push(setInterval(fetchAlerts, 30_000));
     timers.push(setInterval(fetchTargets, 60_000));
   });
 
   onDestroy(() => {
     timers.forEach(clearInterval);
     timers = [];
+    alertInbox.stop();
   });
 </script>
 
@@ -469,26 +460,14 @@
          Section 3 — Alert Feed + Scrape Targets (side by side)
          ══════════════════════════════════════════════════════════════════ -->
     <div class="dual-row">
-      <!-- Alert Feed -->
-      <Panel title="Alert Feed" badge="30s" fill>
-        {#if alertsLoading && alerts.length === 0}
-          <Skeleton lines={3} height="14px" />
-        {:else if alerts.length === 0}
-          <span class="ok-msg">✓ No active alerts</span>
-        {:else}
-          <div class="alert-list">
-            {#each alerts as alert}
-              <div class="alert-row">
-                <Badge variant={severityVariant(alert.labels.severity)}>
-                  {alert.labels.severity}
-                </Badge>
-                <span class="alert-name">{alert.labels.alertname}</span>
-                <span class="alert-instance dim">{alert.labels.instance}</span>
-                <span class="alert-age dim">{alert.age_str}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
+      <!-- Alert-ack inbox (M3 Phase B) — ack buttons + acked history + honest
+           degrade states, fed by the shared alertInbox poll. -->
+      <Panel title="Alert Inbox" badge="30s" fill>
+        <AlertInbox
+          inbox={$alertInbox}
+          loading={$alertInbox === null}
+          onacked={() => alertInbox.refresh()}
+        />
       </Panel>
 
       <!-- Scrape Targets -->
@@ -731,38 +710,9 @@
     flex-shrink: 0;
   }
 
-  .alert-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .alert-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    padding: 3px 0;
-    border-bottom: 1px solid var(--b1);
-  }
-
-  .alert-row:last-child {
-    border-bottom: none;
-  }
-
   .alert-name {
     color: var(--t1);
     font-weight: 500;
-  }
-
-  .alert-instance {
-    margin-left: auto;
-    font-size: 10px;
-  }
-
-  .alert-age {
-    font-size: 10px;
-    white-space: nowrap;
   }
 
   .targets-loading-pad {

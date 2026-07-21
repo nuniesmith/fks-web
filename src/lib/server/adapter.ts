@@ -150,6 +150,11 @@ export type AdapterRoute =
 export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
   "/api/cockpit/kill",
   "/api/cockpit/rearm",
+  // An ack silences an armed-path page (halt / breaker / stop-divergence). The
+  // dev bypass must not turn tailnet reachability into the only wall between an
+  // unauthenticated `curl -XPOST .../api/alerts/ack` and the operator's pager
+  // going quiet — refused with 403 even in disabled mode (webui plan 04 OD-3).
+  "/api/alerts/ack",
 ];
 
 function isGetLike(method: string): boolean {

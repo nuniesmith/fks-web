@@ -35,6 +35,37 @@
   } from '$lib/cockpit/model';
   import type { ArmedTelemetry } from '$lib/cockpit/promParse';
   import type { ExchangesStatus } from '$lib/types/exchanges';
+  import AlertInbox from '$lib/components/monitoring/AlertInbox.svelte';
+  import { alertInbox } from '$lib/stores/alertInbox';
+  import type { InboxAlert } from '$lib/types/alertInbox';
+
+  /**
+   * Armed-path alertnames — the LIVE money-path Prometheus rules. Pinned to the
+   * actual fks rule names so the cockpit panel shows exactly the 3 a.m. alerts,
+   * even if a future rule omits the `mode="live"` label. Source of truth:
+   *   fks/infrastructure/config/prometheus/alerts/armed-path.yml
+   *   fks/infrastructure/config/prometheus/alerts/crash-supervision.yml
+   * Keep in sync when those rules change (webui plan 04 OD-4 — allowlist).
+   */
+  const ARMED_ALERTNAMES = new Set<string>([
+    // armed-path.yml (bot money-path, severity=critical, mode="live")
+    'LiveSessionHalted',
+    'LiveCircuitBreakerTripped',
+    'LiveSustainedOrderErrors',
+    'LiveRestingStopDivergence',
+    'LivePositionStuckNoFill',
+    'LiveFundingNotBooked',
+    'LiveFillAnomaly',
+    'LiveCloseBookedFromModel',
+    // crash-supervision.yml (live bot crashed / metrics down)
+    'LiveBotCrashed',
+    'LiveBotMetricsDown',
+  ]);
+
+  /** Armed-path filter: an explicit live-mode label OR a known armed alertname. */
+  function isArmedAlert(a: InboxAlert): boolean {
+    return a.labels.mode === 'live' || ARMED_ALERTNAMES.has(a.labels.alertname ?? '');
+  }
   import { page } from '$app/stores';
 
   // Role-aware affordances (A5) — UX honesty only; the seam (routeRequest)
@@ -71,10 +102,12 @@
     statePoll.start();
     telemetry.start();
     exStatus.start();
+    alertInbox.start(); // shared with /monitoring + the StatusBar chip
     return () => {
       statePoll.stop();
       telemetry.stop();
       exStatus.stop();
+      alertInbox.stop();
     };
   });
 
@@ -548,10 +581,24 @@
     </Panel>
   </div>
 
-  <p class="deferred-note">
-    Deferred (scope discipline): alert acknowledgement inbox — Prometheus alerts remain read-only
-    on <a href="/monitoring">/monitoring</a>.
-  </p>
+  <!-- ── Armed-path alerts (M3 Phase B) ──────────────────────────────────── -->
+  <!-- The alert-ack inbox filtered to the live money-path rules, with inline
+       Ack — the 3 a.m. flow: the cockpit shows the alert, the operator reads
+       the gate/telemetry panels above, and acks from this same screen. Shares
+       the /monitoring poll + StatusBar chip (one poll, three surfaces). -->
+  <Panel title="Armed-path alerts">
+    <p class="armed-blurb">
+      Live money-path alerts (halt · breaker · stop-divergence · crash) from
+      Prometheus, acknowledgeable inline. Full feed on
+      <a href="/monitoring">/monitoring</a>.
+    </p>
+    <AlertInbox
+      inbox={$alertInbox}
+      loading={$alertInbox === null}
+      filter={isArmedAlert}
+      onacked={() => alertInbox.refresh()}
+    />
+  </Panel>
 </div>
 
 <!-- ── Typed-confirmation dialog ────────────────────────────────────────── -->
@@ -816,10 +863,10 @@
     font-size: 12px;
     padding: 2px 0;
   }
-  .deferred-note {
+  .armed-blurb {
     font-size: 11px;
     color: var(--t3);
-    margin: 0;
+    margin: 0 0 8px;
   }
   .dialog-body {
     display: flex;

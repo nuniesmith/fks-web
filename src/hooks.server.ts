@@ -33,6 +33,8 @@ import {
   cockpitStateGet,
   cockpitTelemetryGet,
 } from "$lib/server/cockpit";
+import { alertAckPost, alertInboxGet } from "$lib/server/alertAck";
+import { getAlertAckStore } from "$lib/server/alertAck/store";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Backend proxy  (replaces the old vite/nginx → fks_ruby reverse proxy)
@@ -1005,6 +1007,33 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   if (pathname === "/api/cockpit/rearm" && event.request.method === "POST") {
     return cockpitRearmPost(event.request, operatorName(auth));
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Alert-ack inbox (M3 Phase B) ────────────────────────────────────────────
+  // Self-contained block (deliberately separate from the cockpit dispatch
+  // above so it never interleaves with the M3 Phase A live-status line). Paths
+  // are unique, so the position within proxyBackend is immaterial.
+  //   GET  /api/alerts/inbox → live Prometheus alerts LEFT-JOINed to acks.
+  //   POST /api/alerts/ack   → record an ack (irrevocable audit row).
+  // Both are behind the #47 session seam. The ack is additionally in
+  // AUTH_DISABLED_BLOCKED_MUTATIONS (adapter.ts) so the WEBUI_AUTH=disabled dev
+  // bypass can NEVER let an unauthenticated tailnet curl silence the pager.
+  if (pathname === "/api/alerts/inbox") {
+    return alertInboxGet(PROMETHEUS_URL, getAlertAckStore());
+  }
+  if (pathname === "/api/alerts/ack" && event.request.method === "POST") {
+    // Defense-in-depth: proxyBackend is also invoked on the auth-store outage
+    // path WITHOUT an `auth` arg (handle → outageRoute open-backend). An ack
+    // silences an armed-path page, so require a real session here too — a
+    // missing/disabled auth context must never write an ack. (routeRequest +
+    // AUTH_DISABLED_BLOCKED_MUTATIONS already gate this; this is belt-and-braces,
+    // mirroring the /api/users philosophy.)
+    if (!(auth?.mode === "enabled" && auth.session)) {
+      return jsonError(401, { error: "unauthorized" });
+    }
+    return alertAckPost(event.request, getAlertAckStore(), auth.session.username);
+  }
+  // ══════════════════════════════════════════════════════════════════════════
 
   // ── Spawner — a real, working backend (the /bots page) ──────────────────────
   // /api/spawner/<rest> → spawner /<rest>  (mirrors the old vite/nginx rewrite)
