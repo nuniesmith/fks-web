@@ -14,17 +14,21 @@ test.describe("Cockpit viewport reachability (1366x768)", () => {
     page,
   }) => {
     await page.goto("/cockpit");
-    await page.waitForLoadState("networkidle");
+    // Don't wait for networkidle: the cockpit polls (10s badges) so the
+    // network never goes idle. The title is the deterministic ready signal.
     await expect(page).toHaveTitle("Cockpit — FKS Terminal");
 
-    // 1) The page root must be a scroll region (its content exceeds a laptop
-    //    viewport). Before the fix it had no overflow at all → clipped.
+    // 1) The page root must OWN a scroll region — overflow-y must be scrollable
+    //    so below-fold content is reachable regardless of how much mock data is
+    //    present. Before the fix it had `overflow: hidden` (no region) → clipped.
+    //    (Asserting scrollHeight > clientHeight would be data-dependent and
+    //    flaky when sparse cockpit data doesn't fill 768px.)
     const pageRoot = page.locator(".cockpit-page");
     await expect(pageRoot).toBeVisible();
-    const rootScrolls = await pageRoot.evaluate(
-      (el) => el.scrollHeight > el.clientHeight + 4,
+    const overflowY = await pageRoot.evaluate(
+      (el) => getComputedStyle(el).overflowY,
     );
-    expect(rootScrolls).toBe(true);
+    expect(["auto", "scroll", "overlay"]).toContain(overflowY);
 
     // 2) The deferred-note is the very last node on the page. If the page
     //    clips (no scroll region) it can never be scrolled into view.

@@ -521,8 +521,8 @@
         </Panel>
 
         <!-- Panel 2: Key Browser -->
-        <div style="flex:2; min-height:0;">
-          <Panel title="Key Browser">
+        <div style="flex:2; min-height:0; display:flex; flex-direction:column;">
+          <Panel title="Key Browser" fill>
             {#snippet header()}
               {#if redisScanResult}
                 <Badge variant="default">{redisScanResult.count} keys</Badge>
@@ -598,8 +598,8 @@
         <!-- Row with Pub/Sub + Patterns side-by-side -->
         <div class="panel-row">
           <!-- Panel 3: Pub/Sub Channels -->
-          <div style="flex:1; min-height:0;">
-            <Panel title="Pub/Sub Channels">
+          <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
+            <Panel title="Pub/Sub Channels" fill>
               {#snippet header()}
                 {#if redisPubSub}
                   <Badge variant="default">{redisPubSub.total_channels}</Badge>
@@ -623,8 +623,8 @@
           </div>
 
           <!-- Panel 4: FKS Key Patterns -->
-          <div style="flex:1.5; min-height:0;">
-            <Panel title="FKS Key Patterns" noPad>
+          <div style="flex:1.5; min-height:0; display:flex; flex-direction:column;">
+            <Panel title="FKS Key Patterns" noPad fill>
               {#snippet header()}
                 <button class="btn-ghost" onclick={() => loadRedisPatterns()}>↻</button>
               {/snippet}
@@ -670,7 +670,7 @@
       <div class="tab-content">
 
         <!-- Panel 1: Tables -->
-        <div style="flex:1; min-height:0;">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
           <Panel title="Tables" noPad fill>
             {#snippet header()}
               {#if pgTables.length > 0}
@@ -787,8 +787,8 @@
         </div>
 
         <!-- Panel 2: Ad-hoc Query Runner -->
-        <div style="flex:1; min-height:0;">
-          <Panel title="Query Runner">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
+          <Panel title="Query Runner" fill>
             {#snippet header()}
               <span class="dim" style="font-size:9px;">SELECT only · Ctrl+Enter to run</span>
               {#if pgQueryResult}
@@ -856,7 +856,7 @@
       <div class="tab-content">
 
         <!-- Panel 1: Tables -->
-        <div style="flex:1; min-height:0;">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
           <Panel title="Tables" noPad fill>
             {#snippet header()}
               {#if qdbTables.length > 0}
@@ -944,8 +944,8 @@
         </div>
 
         <!-- Panel 2: Ad-hoc Query Runner -->
-        <div style="flex:1; min-height:0;">
-          <Panel title="Query Runner">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
+          <Panel title="Query Runner" fill>
             {#snippet header()}
               <span class="dim" style="font-size:9px;">Ctrl+Enter to run</span>
               {#if qdbQueryResult}
@@ -1069,7 +1069,7 @@
         </Panel>
 
         <!-- Panel 2: Services -->
-        <div style="flex:1; min-height:0;">
+        <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
           <Panel title="Services" noPad fill>
             {#snippet header()}
               {#if janusServices.length > 0}
@@ -1170,11 +1170,11 @@
   .panel-row {
     display: flex;
     gap: 8px;
-    min-height: 0;
     flex-shrink: 0;
-    /* Responsive cap: grows on tall monitors instead of a fixed 220px
-       strip in a half-empty viewport (floor keeps short screens unchanged). */
-    max-height: clamp(220px, 30vh, 460px);
+    /* Definite height (not max-height): the two child panels are `fill`,
+       so they need a resolved parent height to bound their inner scroll.
+       Responsive: grows on tall monitors, floored on short screens. */
+    height: clamp(220px, 30vh, 460px);
   }
 
   /* ═══════════════════════════════════════════════════════════════════

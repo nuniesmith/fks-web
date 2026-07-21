@@ -949,7 +949,7 @@
   }
 
   /* .trades-body intentionally has no rule: the `fill` Open Positions panel
-     body is the single scroll region (its sticky thead pins to it). */
+     body is the single scroll region (this table's thead is not sticky). */
 
   .tbl {
     width: 100%;
