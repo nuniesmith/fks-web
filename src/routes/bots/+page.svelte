@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
     import { onMount } from "svelte";
+    import { page } from "$app/stores";
     import { createPoll } from "$stores/poll";
     import { spawner } from "$api/spawner";
     import { ApiError, api } from "$api/client";
@@ -36,6 +37,13 @@
         StoredExchangeCredential,
         ExchangeKeysStatusResponse,
     } from "$lib/types/spawner";
+
+    // ─── Role-aware affordances (A5) ──────────────────────────────────────
+    // Spawning + all container/config writes are R3 (operator+). A viewer is
+    // denied at the seam; disable the write controls so the UI is honest. Null
+    // role (auth disabled / no session) leaves controls on — the server gates.
+    let role = $derived(($page.data.user?.role as string | undefined) ?? null);
+    let canWrite = $derived(role == null || role === "admin" || role === "operator");
 
     // ─── Live polls ───────────────────────────────────────────────────────
 
@@ -641,10 +649,13 @@
 
                 <button
                     class="btn run"
-                    disabled={submitting || !spawnImage.trim()}
+                    disabled={submitting || !spawnImage.trim() || !canWrite}
                 >
                     {submitting ? "Spawning…" : "▶ Spawn"}
                 </button>
+                {#if !canWrite}
+                    <p class="role-hint">read-only (viewer) — spawning requires operator or admin.</p>
+                {/if}
 
                 <div class="save-cfg-row">
                     <input
@@ -954,6 +965,11 @@
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--t3);
+    }
+    .role-hint {
+        font-size: 11px;
+        color: var(--amber, #e0a000);
+        margin: 6px 0 0;
     }
     .preset-btn {
         all: unset;

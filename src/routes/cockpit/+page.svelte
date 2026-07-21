@@ -35,6 +35,15 @@
   } from '$lib/cockpit/model';
   import type { ArmedTelemetry } from '$lib/cockpit/promParse';
   import type { ExchangesStatus } from '$lib/types/exchanges';
+  import { page } from '$app/stores';
+
+  // Role-aware affordances (A5) — UX honesty only; the seam (routeRequest)
+  // is the real gate. KILL is operator+ (R3, panic must be reachable), RE-ARM
+  // is admin-only (R2, the dangerous direction). A null role means auth is
+  // disabled / no session → don't second-guess the server, leave controls on.
+  let role = $derived(($page.data.user?.role as string | undefined) ?? null);
+  let canKill = $derived(role == null || role === 'admin' || role === 'operator');
+  let canRearm = $derived(role == null || role === 'admin');
 
   interface InstanceView {
     sentinel: SentinelView;
@@ -235,19 +244,25 @@
         {#if inst?.sentinel.state === 'killed'}
           <button
             class="btn-rearm"
-            disabled={!cockpit?.configured}
+            disabled={!cockpit?.configured || !canRearm}
             onclick={() => openDialog('rearm')}
           >
             RE-ARM {selected}…
           </button>
+          {#if !canRearm}
+            <span class="role-hint">read-only ({role}) — re-arm is admin-only</span>
+          {/if}
         {:else}
           <button
             class="btn-kill"
-            disabled={!cockpit?.configured}
+            disabled={!cockpit?.configured || !canKill}
             onclick={() => openDialog('kill')}
           >
             KILL {selected}…
           </button>
+          {#if !canKill}
+            <span class="role-hint">read-only (viewer)</span>
+          {/if}
         {/if}
       </div>
     </div>
@@ -702,6 +717,12 @@
     font-size: 11px;
     color: var(--t3);
     margin: 8px 0 0;
+  }
+  .role-hint {
+    font-size: 11px;
+    color: var(--amber, #e0a000);
+    align-self: center;
+    white-space: nowrap;
   }
   .action-result {
     font-size: 12px;

@@ -6,6 +6,8 @@ import {
   isPublic,
   originAllowed,
   outageRoute,
+  roleDenies,
+  roleRank,
   routeRequest,
   upstreamHeaders,
 } from "./adapter";
@@ -85,6 +87,9 @@ const bootstrap: AuthState = { mode: "bootstrap" };
 const noSession: AuthState = { mode: "enabled", session: null };
 const good: SessionInfo = { userId: 1, username: "admin", role: "admin", mustChange: false };
 const mustChange: SessionInfo = { ...good, mustChange: true };
+const operator: SessionInfo = { userId: 2, username: "op", role: "operator", mustChange: false };
+const viewer: SessionInfo = { userId: 3, username: "vw", role: "viewer", mustChange: false };
+const garbage: SessionInfo = { userId: 4, username: "gb", role: "wat", mustChange: false };
 const enabled = (s: SessionInfo | null): AuthState => ({ mode: "enabled", session: s });
 
 describe("routeRequest — health probes are always open", () => {
@@ -149,6 +154,121 @@ describe("routeRequest — enabled, full session", () => {
   });
   it("bounces a completed /setup back to the app", () => {
     expect(routeRequest("/setup", "", "GET", enabled(good))).toEqual({ kind: "redirect", location: "/" });
+  });
+});
+
+// ── RBAC: roleRank / roleDenies (pure rule table, plan 01 §1.1) ──────────────
+
+describe("roleRank — ordering + fail-closed on unknown", () => {
+  it("orders viewer < operator < admin", () => {
+    expect(roleRank("viewer")).toBeLessThan(roleRank("operator"));
+    expect(roleRank("operator")).toBeLessThan(roleRank("admin"));
+  });
+  it("treats an unknown/garbage role as viewer (fail closed)", () => {
+    expect(roleRank("garbage")).toBe(roleRank("viewer"));
+    expect(roleRank("")).toBe(roleRank("viewer"));
+    // prototype keys must not resolve to a rank
+    expect(roleRank("toString")).toBe(roleRank("viewer"));
+    expect(roleRank("constructor")).toBe(roleRank("viewer"));
+  });
+});
+
+describe("roleDenies — R1-R4 backend rules", () => {
+  it("R1: admin-only surfaces deny non-admins on ANY method incl. GET", () => {
+    expect(roleDenies("/api/users", "GET", "operator")).toBe(true);
+    expect(roleDenies("/api/users/7/role", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/invites", "GET", "viewer")).toBe(true);
+    expect(roleDenies("/api/users", "GET", "admin")).toBe(false);
+  });
+  it("R4: reads (GET/HEAD) are open to every role", () => {
+    expect(roleDenies("/api/spawner/status", "GET", "viewer")).toBe(false);
+    expect(roleDenies("/sse/bars/BTC", "GET", "viewer")).toBe(false);
+    expect(roleDenies("/api/settings/risk", "GET", "viewer")).toBe(false);
+  });
+  it("R2: admin-only mutations deny operator, allow admin", () => {
+    expect(roleDenies("/api/cockpit/rearm", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/settings/exchange-keys", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/settings/kraken-keys", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/settings/notifications/discord/test", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/settings/risk", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/janus/config", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/settings/exchange-keys", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/cockpit/rearm", "POST", "admin")).toBe(false);
+  });
+  it("R3: kill + other mutations are operator+ (viewer denied)", () => {
+    expect(roleDenies("/api/cockpit/kill", "POST", "operator")).toBe(false);
+    expect(roleDenies("/api/cockpit/kill", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/cockpit/kill", "POST", "viewer")).toBe(true);
+    expect(roleDenies("/api/spawner/spawn", "POST", "operator")).toBe(false);
+    expect(roleDenies("/api/spawner/spawn", "POST", "viewer")).toBe(true);
+    expect(roleDenies("/api/spawner/configs/x/respawn", "POST", "viewer")).toBe(true);
+  });
+  it("fail-closed: a garbage role is treated as viewer everywhere", () => {
+    expect(roleDenies("/api/spawner/spawn", "POST", "wat")).toBe(true); // viewer denied
+    expect(roleDenies("/api/spawner/status", "GET", "wat")).toBe(false); // read ok
+    expect(roleDenies("/api/users", "GET", "wat")).toBe(true);
+  });
+});
+
+describe("routeRequest — RBAC matrix (enabled, full session)", () => {
+  const roles = { viewer, operator, admin: good };
+
+  it("admin-only page /users: admin passes, operator/viewer redirect home", () => {
+    expect(routeRequest("/users", "", "GET", enabled(good))).toEqual({ kind: "pass" });
+    expect(routeRequest("/users", "", "GET", enabled(operator))).toEqual({ kind: "redirect", location: "/" });
+    expect(routeRequest("/users", "", "GET", enabled(viewer))).toEqual({ kind: "redirect", location: "/" });
+    // garbage role is viewer → redirected too
+    expect(routeRequest("/users", "", "GET", enabled(garbage))).toEqual({ kind: "redirect", location: "/" });
+  });
+
+  it("non-admin page /cockpit passes for every role", () => {
+    for (const s of Object.values(roles)) {
+      expect(routeRequest("/cockpit", "", "GET", enabled(s))).toEqual({ kind: "pass" });
+    }
+  });
+
+  it("backend GET (a read) proxies for every role", () => {
+    for (const s of Object.values(roles)) {
+      expect(routeRequest("/api/signals", "", "GET", enabled(s))).toEqual({ kind: "backend" });
+    }
+  });
+
+  it("backend POST (R3 mutation): operator+admin proxy, viewer 403 role_denied", () => {
+    expect(routeRequest("/api/spawner/spawn", "", "POST", enabled(good))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/spawn", "", "POST", enabled(operator))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/spawn", "", "POST", enabled(viewer))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+  });
+
+  it("admin-path GET (R1): admin proxies, operator/viewer 403 role_denied", () => {
+    expect(routeRequest("/api/users", "", "GET", enabled(good))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/users", "", "GET", enabled(operator))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+    expect(routeRequest("/api/users", "", "GET", enabled(viewer))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+  });
+
+  it("kill vs rearm: operator halts (kill) but cannot rearm", () => {
+    expect(routeRequest("/api/cockpit/kill", "", "POST", enabled(operator))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/cockpit/rearm", "", "POST", enabled(operator))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+    expect(routeRequest("/api/cockpit/rearm", "", "POST", enabled(good))).toEqual({ kind: "backend" });
+  });
+
+  it("R2 exchange-keys mutation: operator 403, admin proxies", () => {
+    expect(routeRequest("/api/settings/exchange-keys", "", "POST", enabled(operator))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+    expect(routeRequest("/api/settings/exchange-keys", "", "POST", enabled(good))).toEqual({ kind: "backend" });
   });
 });
 

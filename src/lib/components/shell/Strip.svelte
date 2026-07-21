@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createSSE } from '$stores/sse';
   import { focusSymbol } from '$stores/focusSymbol';
+  import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import type { StripData } from '$lib/types';
   import { fmtPrice, fmtPct } from '$lib/utils/format';
@@ -8,6 +9,13 @@
   const sse = createSSE<StripData>('/sse/strip');
 
   let data = $derived($sse);
+
+  // ─── Identity (A3/A4) ───────────────────────────────────────────────
+  // Set on event.locals by the hook, surfaced via +layout.server.ts. Null
+  // for unauthenticated pages and for WEBUI_AUTH=disabled (then authDisabled
+  // is true so we badge "auth off" instead of an identity).
+  let user = $derived($page.data.user as { username: string; role: string } | null);
+  let authDisabled = $derived($page.data.authDisabled === true);
 
   $effect(() => {
     const sym = data?.focus?.symbol;
@@ -82,6 +90,19 @@
   <div class="strip-cell clock" aria-label="Clock" aria-live="off">
     <span class="val muted" id="fks-clock">{clock}</span>
   </div>
+
+  {#if user}
+    <div class="strip-cell identity" aria-label="Signed-in user">
+      <span class="lbl">USER</span>
+      <span class="val">{user.username}</span>
+      <span class="val role" data-role={user.role}>{user.role}</span>
+      <a href="/logout" class="val logout-link" data-sveltekit-preload-data="off">logout</a>
+    </div>
+  {:else if authDisabled}
+    <div class="strip-cell identity" aria-label="Authentication disabled">
+      <span class="val role" data-role="disabled">auth off</span>
+    </div>
+  {/if}
 </header>
 
 <style>
@@ -117,10 +138,32 @@
     font-weight: 600;
   }
   .clock { margin-left: auto; }
+  /* When the identity cell is present it becomes the last child; keep it snug
+     against the clock (the clock's margin-left:auto already pushes the group
+     right) rather than inheriting the last-child auto gap. */
+  .identity { margin-left: 0; }
   .focus-link {
     color: var(--accent);
     text-decoration: none;
     cursor: pointer;
   }
   .focus-link:hover { text-decoration: underline; }
+  .role {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--b1);
+    color: var(--t2);
+  }
+  .role[data-role="admin"] { color: var(--accent); border-color: var(--accent); }
+  .role[data-role="operator"] { color: var(--cyan); border-color: var(--cyan); }
+  .role[data-role="disabled"] { color: var(--amber, #e0a000); border-color: var(--amber, #e0a000); }
+  .logout-link {
+    color: var(--t3);
+    text-decoration: none;
+    font-size: 11px;
+  }
+  .logout-link:hover { color: var(--t1); text-decoration: underline; }
 </style>
