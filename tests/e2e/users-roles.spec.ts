@@ -141,4 +141,80 @@ test.describe("users role-matrix (needs Postgres + auth enabled)", () => {
 
     await ctx.close();
   });
+
+  // ── Phase C: invite links ───────────────────────────────────────────────────
+  test("admin mints a viewer invite; a fresh visitor claims it and lands as viewer", async ({ page, browser }) => {
+    // Re-establish an admin session (each test gets a fresh context).
+    await page.goto("/login");
+    await page.fill('input[name="username"]', "admin");
+    await page.fill('input[name="password"]', ADMIN_PW);
+    await page.click('button[type="submit"]');
+    await page.waitForURL((url) => !url.pathname.startsWith("/setup") && !url.pathname.startsWith("/login"));
+
+    await page.goto("/users");
+    await expect(page).toHaveTitle("Users — FKS Terminal");
+
+    // Mint a viewer invite; capture the one-time absolute URL from the callout.
+    const inviteForm = page.locator("form", {
+      has: page.getByRole("button", { name: "Create invite link" }),
+    });
+    await inviteForm.locator("select").selectOption("viewer");
+    await inviteForm.getByRole("button", { name: "Create invite link" }).click();
+    const inviteUrl = (await page.locator("code.invite-url").innerText()).trim();
+    expect(inviteUrl).toContain("/invite/");
+
+    // A brand-new visitor (no cookies) opens the invite and sets their own creds.
+    const VIEWER_PW = `e2e-viewer-${RUN_TAG}`;
+    const VIEWER_USER = "e2einvitee";
+    const claimCtx = await browser.newContext();
+    const claim = await claimCtx.newPage();
+    await claim.goto(inviteUrl);
+    await claim.fill('input[name="username"]', VIEWER_USER);
+    await claim.fill('input[name="password"]', VIEWER_PW);
+    await claim.fill('input[name="confirm"]', VIEWER_PW);
+    await claim.click('button[type="submit"]');
+    // Lands authenticated in the app (no /setup hop — invitee set their own creds).
+    await claim.waitForURL((url) => url.pathname === "/");
+
+    // Viewer is a real, non-admin session: a backend POST is role_denied (403).
+    const status = await claim.evaluate(async () => {
+      return (
+        await fetch("/api/users", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "x", role: "viewer" }),
+        })
+      ).status;
+    });
+    expect(status).toBe(403);
+
+    // Reusing the URL from a fresh (unauth) context shows the not-usable state —
+    // coarse by design (previewInvite gives no exists-vs-revoked oracle), so the
+    // claim form is gone and the generic invalid copy renders.
+    const reuseCtx = await browser.newContext();
+    const reuse = await reuseCtx.newPage();
+    await reuse.goto(inviteUrl);
+    await expect(reuse.locator('input[name="username"]')).toHaveCount(0);
+    await expect(reuse.getByText(/not valid|expired|already been used/i)).toBeVisible();
+    await reuseCtx.close();
+
+    // A REVOKED invite renders the same not-usable state. Mint a second invite,
+    // revoke it in the console, then open it from a fresh context.
+    await inviteForm.getByRole("button", { name: "Create invite link" }).click();
+    const revokeUrl = (await page.locator("code.invite-url").innerText()).trim();
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // The only "active" invite has a Revoke button (the first is now redeemed).
+    await page.getByRole("button", { name: "Revoke", exact: true }).click();
+    await page.getByRole("button", { name: "Yes" }).click();
+    await expect(page.getByText("revoked")).toBeVisible();
+
+    const revCtx = await browser.newContext();
+    const rev = await revCtx.newPage();
+    await rev.goto(revokeUrl);
+    await expect(rev.locator('input[name="username"]')).toHaveCount(0);
+    await expect(rev.getByText(/not valid|expired|already been used/i)).toBeVisible();
+    await revCtx.close();
+
+    await claimCtx.close();
+  });
 });

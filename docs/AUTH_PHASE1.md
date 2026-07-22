@@ -1,5 +1,10 @@
 # fks-web Auth — Phase 1 deploy runbook
 
+> **Phase 2 (multi-user + roles) builds on this.** The permission/role model,
+> the role-recovery psql snippets, and the users+invites go-live runbook live in
+> [`AUTH_PHASE2.md`](./AUTH_PHASE2.md). This Phase-1 doc remains the reference
+> for the single-admin bootstrap, session, and CSRF-origin wiring it introduced.
+
 Implements Phase 1 of `research-2026-07-17/design-user-management.md`: default-admin
 bootstrap, forced first-login credential change, scrypt hashing, DB-backed
 revocable sessions, login rate-limit/lockout, and a **fail-closed** auth seam.

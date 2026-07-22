@@ -18,10 +18,13 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Skeleton from "$lib/components/ui/Skeleton.svelte";
   import { usersApi } from "$lib/api/users";
+  import { invitesApi } from "$lib/api/invites";
   import { ApiError } from "$lib/api/client";
-  import type { AssignableRole, UserSummary } from "$lib/types/users";
+  import type { AssignableRole, AuditEvent, UserSummary } from "$lib/types/users";
+  import type { InviteRole, InviteStatus, InviteSummary } from "$lib/types/invites";
 
   const ROLES: AssignableRole[] = ["admin", "operator", "viewer"];
+  const INVITE_ROLES: InviteRole[] = ["operator", "viewer"];
 
   let users = $state<UserSummary[] | null>(null);
   let loadError = $state<string | null>(null);
@@ -181,6 +184,143 @@
   let onlyAdmin = $derived(
     (users ?? []).filter((u) => u.role === "admin" && !u.disabled).length <= 1,
   );
+
+  // ── Invites (Phase C) ──────────────────────────────────────────────────────
+  let invites = $state<InviteSummary[] | null>(null);
+  let invitesError = $state<string | null>(null);
+  let inviteRole = $state<InviteRole>("operator");
+  let creatingInvite = $state(false);
+  let createInviteError = $state<string | null>(null);
+  // One-time invite URL reveal (absolute, built from the relative path + origin).
+  let inviteReveal = $state<{ url: string } | null>(null);
+  let inviteCopied = $state(false);
+  let confirmingRevoke = $state<number | null>(null);
+  let inviteRowBusy = $state<number | null>(null);
+  let inviteRowError = $state<Record<number, string>>({});
+
+  async function loadInvites() {
+    invitesError = null;
+    try {
+      const r = await invitesApi.list();
+      invites = r.invites;
+    } catch (e) {
+      invitesError = errText(e);
+      invites = [];
+    }
+  }
+
+  $effect(() => {
+    void loadInvites();
+  });
+
+  async function createInvite(ev: SubmitEvent) {
+    ev.preventDefault();
+    createInviteError = null;
+    creatingInvite = true;
+    try {
+      const r = await invitesApi.create(inviteRole);
+      // Complete the RELATIVE path with THIS admin browser's origin — the server
+      // deliberately never guesses its own public host.
+      inviteReveal = { url: `${window.location.origin}${r.url}` };
+      inviteCopied = false;
+      await loadInvites();
+    } catch (e) {
+      createInviteError = errText(e);
+    } finally {
+      creatingInvite = false;
+    }
+  }
+
+  async function copyInviteUrl() {
+    if (!inviteReveal) return;
+    try {
+      await navigator.clipboard.writeText(inviteReveal.url);
+      inviteCopied = true;
+    } catch {
+      inviteCopied = false;
+    }
+  }
+
+  async function revokeInvite(id: number) {
+    inviteRowBusy = id;
+    confirmingRevoke = null;
+    const { [id]: _drop, ...rest } = inviteRowError;
+    inviteRowError = rest;
+    try {
+      await invitesApi.revoke(id);
+      await loadInvites();
+    } catch (e) {
+      inviteRowError = { ...inviteRowError, [id]: errText(e) };
+    } finally {
+      inviteRowBusy = null;
+    }
+  }
+
+  function inviteStatusVariant(s: InviteStatus): "green" | "red" | "amber" | "default" {
+    if (s === "active") return "green";
+    if (s === "revoked") return "red";
+    if (s === "expired") return "amber";
+    return "default"; // redeemed
+  }
+
+  // ── Recent auth events (Phase D) ────────────────────────────────────────────
+  // Read-only view of the existing audit trail — every login/mutation/invite
+  // action already writes a row (Phase B/C); this only surfaces them.
+  let events = $state<AuditEvent[] | null>(null);
+  let eventsError = $state<string | null>(null);
+
+  async function loadAudit() {
+    eventsError = null;
+    try {
+      const r = await usersApi.audit(100);
+      events = r.events;
+    } catch (e) {
+      eventsError = errText(e);
+      events = [];
+    }
+  }
+
+  $effect(() => {
+    void loadAudit();
+  });
+
+  // Color-code by CLASS: failures (red), auth successes (green), admin
+  // mutations (purple), invite events (cyan). Unknown verbs fall back neutral.
+  const AUTH_OK = new Set(["login_ok", "logout", "bootstrap", "credential_change"]);
+  const AUTH_FAIL = new Set(["login_fail", "lockout"]);
+  const ADMIN_MUTATION = new Set([
+    "user_created",
+    "user_disabled",
+    "user_enabled",
+    "role_changed",
+    "password_reset",
+    "sessions_revoked",
+  ]);
+  const INVITE_EVENT = new Set(["invite_created", "invite_redeemed", "invite_revoked"]);
+
+  function actionVariant(action: string): "green" | "red" | "purple" | "cyan" | "default" {
+    if (AUTH_FAIL.has(action)) return "red";
+    if (AUTH_OK.has(action)) return "green";
+    if (ADMIN_MUTATION.has(action)) return "purple";
+    if (INVITE_EVENT.has(action)) return "cyan";
+    return "default";
+  }
+
+  function relTime(iso: string): string {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return "—";
+    const diff = Date.now() - t;
+    if (diff < 0) return "just now";
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 30) return `${d}d ago`;
+    return new Date(iso).toLocaleDateString();
+  }
 </script>
 
 <svelte:head><title>Users — FKS Terminal</title></svelte:head>
@@ -373,6 +513,149 @@
       </div>
     {/if}
   </Panel>
+
+  {#if inviteReveal}
+    <div class="callout" role="alert">
+      <div class="callout-head">
+        <span class="callout-icon" aria-hidden="true">🔗</span>
+        <div>
+          <strong>Invite link created</strong>
+          <p class="callout-note">
+            Shown once — copy it now and hand it over (message, not email). The
+            person opening it sets their own username and password. Single-use,
+            expires in 48 hours. It is never retrievable again.
+          </p>
+        </div>
+      </div>
+      <div class="callout-cred">
+        <code class="temp-pw invite-url">{inviteReveal.url}</code>
+        <button type="button" class="btn small" onclick={copyInviteUrl}>
+          {inviteCopied ? "Copied ✓" : "Copy"}
+        </button>
+        <button type="button" class="btn small ghost" onclick={() => (inviteReveal = null)}>
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <Panel title="Invite links">
+    <form class="create-form" onsubmit={createInvite}>
+      <label class="fld">
+        <span>Role</span>
+        <select bind:value={inviteRole} disabled={creatingInvite}>
+          {#each INVITE_ROLES as r}
+            <option value={r}>{r}</option>
+          {/each}
+        </select>
+      </label>
+      <button type="submit" class="btn" disabled={creatingInvite}>
+        {creatingInvite ? "Creating…" : "Create invite link"}
+      </button>
+      {#if createInviteError}
+        <span class="inline-err" role="alert">{createInviteError}</span>
+      {/if}
+    </form>
+    <p class="panel-note">
+      Invites grant <strong>operator</strong> or <strong>viewer</strong> only —
+      admins are created above. Use an invite for remote family; use "Create user"
+      for hand-the-laptop cases.
+    </p>
+  </Panel>
+
+  <Panel title="Outstanding invites" noPad>
+    {#if invites === null}
+      <div class="pad"><Skeleton /></div>
+    {:else if invitesError}
+      <EmptyState icon="⚠️" title="Failed to load invites" variant="error" hint={invitesError} />
+    {:else if invites.length === 0}
+      <EmptyState icon="🔗" title="No invites yet" hint="Create one above to invite someone." />
+    {:else}
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Created by</th>
+              <th>Expires</th>
+              <th class="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each invites as inv (inv.id)}
+              <tr>
+                <td><Badge variant={roleVariant(inv.role)}>{inv.role}</Badge></td>
+                <td><Badge variant={inviteStatusVariant(inv.status)}>{inv.status}</Badge></td>
+                <td class="dim">{inv.createdBy}</td>
+                <td class="dim">{fmtDate(inv.expiresAt)}</td>
+                <td class="actions">
+                  {#if inv.status === "active"}
+                    {#if confirmingRevoke === inv.id}
+                      <span class="confirm">
+                        Revoke this invite?
+                        <button type="button" class="btn small danger" disabled={inviteRowBusy === inv.id} onclick={() => revokeInvite(inv.id)}>Yes</button>
+                        <button type="button" class="btn small ghost" onclick={() => (confirmingRevoke = null)}>No</button>
+                      </span>
+                    {:else}
+                      <button
+                        type="button"
+                        class="btn small danger"
+                        disabled={inviteRowBusy === inv.id}
+                        onclick={() => (confirmingRevoke = inv.id)}
+                      >
+                        Revoke
+                      </button>
+                    {/if}
+                  {:else}
+                    <span class="dim">—</span>
+                  {/if}
+                  {#if inviteRowError[inv.id]}
+                    <span class="inline-err" role="alert">{inviteRowError[inv.id]}</span>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </Panel>
+
+  <Panel title="Recent auth events" noPad>
+    {#if events === null}
+      <div class="pad"><Skeleton /></div>
+    {:else if eventsError}
+      <EmptyState icon="⚠️" title="Failed to load audit trail" variant="error" hint={eventsError} />
+    {:else if events.length === 0}
+      <EmptyState icon="🗒️" title="No events yet" hint="Logins and admin actions will appear here." />
+    {:else}
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Action</th>
+              <th>User</th>
+              <th>IP</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each events as ev, i (i)}
+              <tr>
+                <td class="dim" title={new Date(ev.at).toLocaleString()}>{relTime(ev.at)}</td>
+                <td><Badge variant={actionVariant(ev.action)}>{ev.action}</Badge></td>
+                <td><span class="uname">{ev.username || "—"}</span></td>
+                <td class="dim mono">{ev.ip || "—"}</td>
+                <td class="dim detail">{ev.detail || "—"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </Panel>
 </div>
 
 <style>
@@ -554,5 +837,23 @@
   }
   .pad {
     padding: 12px;
+  }
+  .panel-note {
+    margin: 10px 0 0;
+    font-size: 11px;
+    color: var(--t3);
+    max-width: 70ch;
+  }
+  .invite-url {
+    word-break: break-all;
+    font-size: 12px;
+  }
+  .mono {
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+  }
+  .detail {
+    max-width: 40ch;
+    word-break: break-word;
   }
 </style>

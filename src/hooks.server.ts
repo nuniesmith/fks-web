@@ -33,7 +33,7 @@ import {
 } from "$lib/server/auth";
 import { clientIp } from "$lib/server/auth/http";
 import type { RequestCtx } from "$lib/server/auth/service";
-import { usersDispatch } from "$lib/server/users";
+import { invitesDispatch, usersDispatch } from "$lib/server/users";
 import { validateNotificationEvents } from "$lib/types/notifications";
 import {
   cockpitKillPost,
@@ -1077,6 +1077,19 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // outage curl never forces a DB connect.
   if (pathname === "/api/users" || pathname.startsWith("/api/users/")) {
     return usersDispatch(
+      event.request,
+      pathname,
+      auth,
+      requestCtx(event),
+      getAuthService,
+    );
+  }
+
+  // ── Invites (Phase C) — mint / list / revoke one-time signup links ──────────
+  // Admin-only at the seam (R1 covers /api/invites for ANY method); invitesDispatch
+  // re-checks admin as defense in depth (same outage/disabled reasoning as users).
+  if (pathname === "/api/invites" || pathname.startsWith("/api/invites/")) {
+    return invitesDispatch(
       event.request,
       pathname,
       auth,
