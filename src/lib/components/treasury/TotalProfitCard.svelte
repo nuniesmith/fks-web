@@ -21,15 +21,21 @@
     totals,
     currency = 'USD',
     accountCount,
+    erroredCount = 0,
+    currencyMismatch = false,
     loading = false,
     stale = [],
     staleValue = 0,
   } = $props<{
-    /** Per-window aggregate across the real accounts. */
+    /** Per-window aggregate across the CONTRIBUTING (non-errored) real accounts. */
     totals: ProfitTotals;
     currency?: string;
-    /** How many real accounts feed the total. */
+    /** How many real accounts actually feed the total (errored ones excluded). */
     accountCount: number;
+    /** Real accounts whose /profit load failed — summed nowhere, caveated here. */
+    erroredCount?: number;
+    /** True when contributors span >1 currency; figures are then suppressed. */
+    currencyMismatch?: boolean;
     /** True while any contributing card is still (re-)fetching. */
     loading?: boolean;
     /** Real accounts whose newest snapshot is stale (oldest-first). */
@@ -47,6 +53,11 @@
 
   {#if loading}
     <Skeleton lines={3} height="12px" />
+  {:else if currencyMismatch}
+    <p class="err">
+      Accounts span multiple currencies — a single total would add unlike units,
+      so the summed figures are hidden. See the per-account cards below.
+    </p>
   {:else}
     <table class="wins">
       <thead>
@@ -76,16 +87,24 @@
         {/each}
       </tbody>
     </table>
+  {/if}
 
-    {#if stale.length > 0}
-      <span
-        class="stale"
-        title={stale.map((s: StaleAccount) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}
-      >
-        ⚠ includes {fmtMoney(staleValue, currency)} carried from {stale.length} stale
-        account{stale.length === 1 ? '' : 's'} — oldest as of {formatStaleAge(stale[0].ageSeconds)} ago
-      </span>
-    {/if}
+  {#if !loading && erroredCount > 0}
+    <span class="excluded">
+      ⚠ excludes {erroredCount} account{erroredCount === 1 ? '' : 's'} that failed to
+      load — this total is NOT the full real-account picture
+    </span>
+  {/if}
+
+  {#if !loading && !currencyMismatch && stale.length > 0}
+    <span
+      class="stale"
+      title={stale.map((s: StaleAccount) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}
+    >
+      ⚠ {stale.length} stale account{stale.length === 1 ? '' : 's'} —
+      {fmtMoney(staleValue, currency)} of carried balance is frozen, so these profit
+      windows may be understated (oldest as of {formatStaleAge(stale[0].ageSeconds)} ago)
+    </span>
   {/if}
 </div>
 
@@ -176,5 +195,16 @@
     font-size: 10px;
     color: var(--amber, #f0a500);
     cursor: help;
+  }
+  .excluded {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--red, #ea3943);
+  }
+  .err {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--amber, #f0a500);
   }
 </style>

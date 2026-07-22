@@ -26,7 +26,7 @@
   import { ApiError } from '$api/client';
   import { groupSnapshots, staleAccounts, type AccountSeries } from '$lib/treasury/rollup';
   import { paperAccountIds, selectProfitAccounts } from '$lib/treasury/cards';
-  import { aggregateProfitTotals } from '$lib/treasury/aggregate';
+  import { buildProfitTotalsView } from '$lib/treasury/aggregate';
   import { PROFIT_WINDOWS, windowToSince, type ProfitWindow } from '$lib/treasury/windows';
   import type { ProfitResponse, TransferRow, TreasuryAccount } from '$lib/types/spawner';
 
@@ -156,26 +156,40 @@
   }
 
   // ── Aggregate TOTAL over REAL accounts (D5) ───────────────────────────────
-  let realProfitMaps = $derived(
-    cardAccounts.real.map((a) => profitStates[a.account_id]?.profits ?? {}),
+  // An ERRORED account renders NO figures on its own card (ProfitCard shows the
+  // error, not numbers) AND its `profits` map may hold stale-prev responses that
+  // aren't on screen — so summing it would (a) break by-construction equality
+  // and (b) silently fold a failed account into a total that presents as whole.
+  // `buildProfitTotalsView` excludes errored accounts from the sum, the count,
+  // and the currency set (reporting them as `erroredCount` for an explicit
+  // caveat), and flags a mixed-currency contributor set so the bogus bare sum
+  // can be suppressed rather than presented as authoritative money.
+  let totalsView = $derived(
+    buildProfitTotalsView(
+      cardAccounts.real.map((a) => ({
+        profits: profitStates[a.account_id]?.profits ?? {},
+        error: profitStates[a.account_id]?.error,
+        currency: seriesById.get(a.account_id)?.currency ?? 'USD',
+      })),
+    ),
   );
-  let profitTotals = $derived(aggregateProfitTotals(realProfitMaps));
-  // The total is honest only once every contributing card has loaded.
+  // The total is honest only once every contributing card has settled (loaded
+  // or errored). A still-loading card keeps the skeleton; an errored one does
+  // not block the total for the healthy accounts (it's excluded + caveated).
   let totalsLoading = $derived(
     cardAccounts.real.some((a) => {
       const s = profitStates[a.account_id];
       return !s || s.loading;
     }),
   );
-  let totalsCurrency = $derived(
-    seriesById.get(cardAccounts.real[0]?.account_id ?? '')?.currency ?? 'USD',
-  );
-  // Stale propagation: a real account whose newest snapshot is stale still
-  // carries its frozen balance into the total, so surface the same ⚠ caveat
-  // the headline does. Series are the source (age), not /profit.
+  // Stale propagation: a contributing (non-errored) account whose newest
+  // snapshot is stale still carries its frozen balance into the profit windows,
+  // so surface the same ⚠ caveat the headline does. Series are the source (age),
+  // not /profit; errored accounts are excluded to match the total.
   let realStale = $derived(
     staleAccounts(
       cardAccounts.real
+        .filter((a) => profitStates[a.account_id]?.error == null)
         .map((a) => seriesById.get(a.account_id))
         .filter((s): s is AccountSeries => s != null),
     ),
@@ -253,9 +267,11 @@
     {:else}
       {#if cardAccounts.real.length > 0}
         <TotalProfitCard
-          totals={profitTotals}
-          currency={totalsCurrency}
-          accountCount={cardAccounts.real.length}
+          totals={totalsView.totals}
+          currency={totalsView.currency}
+          accountCount={totalsView.accountCount}
+          erroredCount={totalsView.erroredCount}
+          currencyMismatch={totalsView.currencyMismatch}
           loading={totalsLoading}
           stale={realStale}
           staleValue={realStaleValue}

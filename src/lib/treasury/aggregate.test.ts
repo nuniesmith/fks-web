@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateProfitTotals } from './aggregate';
+import {
+  aggregateProfitTotals,
+  buildProfitTotalsView,
+  hasCurrencyMismatch,
+  type ProfitContributor,
+} from './aggregate';
 import type { ProfitResponse } from '$lib/types/spawner';
 import type { ProfitWindow } from '$lib/treasury/windows';
 
@@ -102,5 +107,89 @@ describe('aggregateProfitTotals', () => {
       expect(totals[w].deposits).toBeNull();
       expect(totals[w].profitContributors).toBe(0);
     }
+  });
+});
+
+describe('hasCurrencyMismatch', () => {
+  it('is false for a single currency or none', () => {
+    expect(hasCurrencyMismatch([])).toBe(false);
+    expect(hasCurrencyMismatch(['USD'])).toBe(false);
+    expect(hasCurrencyMismatch(['USD', 'USD', 'USD'])).toBe(false);
+  });
+
+  it('is true when denominations diverge', () => {
+    expect(hasCurrencyMismatch(['USD', 'BTC'])).toBe(true);
+    expect(hasCurrencyMismatch(['EUR', 'USD', 'USD'])).toBe(true);
+  });
+
+  it('ignores blank codes (they do not manufacture a mismatch)', () => {
+    expect(hasCurrencyMismatch(['USD', '', 'USD'])).toBe(false);
+  });
+});
+
+describe('buildProfitTotalsView', () => {
+  function contrib(over: Partial<ProfitContributor> = {}): ProfitContributor {
+    return { profits: {}, error: null, currency: 'USD', ...over };
+  }
+
+  it('excludes an ERRORED account from the sum AND the count, and reports it (HIGH fix)', () => {
+    // Account A succeeds; account B's /profit 500'd — its stale-prev map must
+    // NOT be folded in, and the count must not claim it.
+    const a = contrib({
+      profits: { '7d': profit({ profit: 100, deposits_in: 500 }) },
+    });
+    const b = contrib({
+      // a stale-prev response lingering on an errored account
+      profits: { '7d': profit({ profit: 9999, deposits_in: 9999 }) },
+      error: '500 Internal Server Error',
+    });
+    const view = buildProfitTotalsView([a, b]);
+    expect(view.totals['7d'].profit).toBe(100); // B's 9999 excluded, not summed
+    expect(view.totals['7d'].profitContributors).toBe(1);
+    expect(view.accountCount).toBe(1); // header matches the sum, not 2
+    expect(view.erroredCount).toBe(1); // surfaced for the caveat
+  });
+
+  it('sums all when none errored; header count equals contributor count', () => {
+    const view = buildProfitTotalsView([
+      contrib({ profits: { '7d': profit({ profit: 100, deposits_in: 500 }) } }),
+      contrib({ profits: { '7d': profit({ profit: 25, deposits_in: 0 }) } }),
+    ]);
+    expect(view.totals['7d'].profit).toBe(125);
+    expect(view.accountCount).toBe(2);
+    expect(view.erroredCount).toBe(0);
+    expect(view.currencyMismatch).toBe(false);
+  });
+
+  it('flags a mixed-currency contributor set (MEDIUM fix) and picks currency from contributors only', () => {
+    const view = buildProfitTotalsView([
+      contrib({ currency: 'USD', profits: { '7d': profit({ profit: 100 }) } }),
+      contrib({ currency: 'BTC', profits: { '7d': profit({ profit: 2 }) } }),
+    ]);
+    expect(view.currencyMismatch).toBe(true);
+    expect(view.currency).toBe('USD'); // first contributor
+  });
+
+  it('does not let an errored foreign-currency account trip the mismatch guard', () => {
+    // B is BTC but errored → excluded from the currency set → no false mismatch.
+    const view = buildProfitTotalsView([
+      contrib({ currency: 'USD', profits: { '7d': profit({ profit: 100 }) } }),
+      contrib({ currency: 'BTC', error: 'boom' }),
+    ]);
+    expect(view.currencyMismatch).toBe(false);
+    expect(view.currency).toBe('USD');
+    expect(view.accountCount).toBe(1);
+    expect(view.erroredCount).toBe(1);
+  });
+
+  it('all-errored → empty honest total (— everywhere), zero count, all flagged errored', () => {
+    const view = buildProfitTotalsView([
+      contrib({ error: 'a' }),
+      contrib({ error: 'b' }),
+    ]);
+    expect(view.accountCount).toBe(0);
+    expect(view.erroredCount).toBe(2);
+    expect(view.totals['7d'].profit).toBeNull();
+    expect(view.currency).toBe('USD');
   });
 });

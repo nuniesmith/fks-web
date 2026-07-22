@@ -70,3 +70,67 @@ export function aggregateProfitTotals(
   }
   return out;
 }
+
+/**
+ * True when the contributing accounts are NOT all denominated in one currency.
+ * `aggregateProfitTotals` sums bare numbers with no unit awareness (the
+ * `/profit` payload carries no currency), so a mixed-denomination set (e.g. a
+ * USD spot account + a BTC-denominated cold-storage backbone — the M4 treasury
+ * goal) would add unlike currencies into one meaningless figure. The page uses
+ * this to SUPPRESS the numeric total and show a caveat instead of presenting a
+ * bogus number as authoritative money. Empty / blank codes are ignored; a
+ * single distinct currency (or none) is consistent.
+ */
+export function hasCurrencyMismatch(currencies: readonly string[]): boolean {
+  const distinct = new Set<string>();
+  for (const c of currencies) {
+    if (c) distinct.add(c);
+  }
+  return distinct.size > 1;
+}
+
+/** One real account's state as the TOTAL card sees it. */
+export interface ProfitContributor {
+  profits: Partial<Record<ProfitWindow, ProfitResponse | undefined>>;
+  /** Non-null ⇒ this account's /profit load failed — excluded from the total. */
+  error: string | null | undefined;
+  /** Denomination of this account (from its net-worth series; 'USD' fallback). */
+  currency: string;
+}
+
+/** Everything the TOTAL card needs, derived honestly from the contributors. */
+export interface ProfitTotalsView {
+  totals: ProfitTotals;
+  /** Real accounts actually summed (errored ones excluded). */
+  accountCount: number;
+  /** Real accounts dropped because their /profit load failed. */
+  erroredCount: number;
+  /** Display currency (first contributor's; 'USD' fallback). */
+  currency: string;
+  /** True when contributors span >1 currency — figures must be suppressed. */
+  currencyMismatch: boolean;
+}
+
+/**
+ * Compose the honest TOTAL view from the real accounts' states. An ERRORED
+ * account is excluded from the sum, the count, AND the currency set (its card
+ * shows the error, not numbers — folding it in would make the total present as
+ * whole while silently omitting it), and reported separately via `erroredCount`
+ * so the card can caveat "excludes N that failed to load". The currency guard
+ * flags a mixed-denomination set so the page can suppress a meaningless bare
+ * sum. Kept pure so both behaviours are vitest-covered.
+ */
+export function buildProfitTotalsView(
+  contributors: readonly ProfitContributor[],
+): ProfitTotalsView {
+  const ok = contributors.filter((c) => c.error == null);
+  const errored = contributors.length - ok.length;
+  const currencies = ok.map((c) => c.currency);
+  return {
+    totals: aggregateProfitTotals(ok.map((c) => c.profits)),
+    accountCount: ok.length,
+    erroredCount: errored,
+    currency: currencies[0] ?? 'USD',
+    currencyMismatch: hasCurrencyMismatch(currencies),
+  };
+}
