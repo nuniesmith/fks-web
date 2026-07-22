@@ -7,6 +7,9 @@ import { SCHEMA_SQL } from "./schema";
 import type {
   AuditEntry,
   AuthStore,
+  InviteRow,
+  InviteSummary,
+  NewInvite,
   NewSession,
   NewUser,
   SessionWithUser,
@@ -37,6 +40,32 @@ function toUserRow(r: UserRecord): UserRow {
     disabled: r.disabled,
     failedLogins: r.failed_logins,
     lockedUntil: r.locked_until,
+  };
+}
+
+interface InviteRecord {
+  id: string;
+  token_hash: string;
+  role: string;
+  created_by: string;
+  created_at: Date;
+  expires_at: Date;
+  redeemed_by: string | null;
+  redeemed_at: Date | null;
+  revoked_at: Date | null;
+}
+
+function toInviteRow(r: InviteRecord): InviteRow {
+  return {
+    id: Number(r.id),
+    tokenHash: r.token_hash,
+    role: r.role,
+    createdBy: Number(r.created_by),
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    redeemedBy: r.redeemed_by === null ? null : Number(r.redeemed_by),
+    redeemedAt: r.redeemed_at,
+    revokedAt: r.revoked_at,
   };
 }
 
@@ -73,8 +102,17 @@ export class PgStore implements AuthStore {
   /** Whether the auth tables are already present (migration already applied). */
   private async tablesExist(): Promise<boolean> {
     try {
+      // Probe the NEWEST table, not the oldest. Convention: always probe the
+      // LAST table this schema adds (currently `webui_invites`, C1). SCHEMA_SQL
+      // is one idempotent CREATE-IF-NOT-EXISTS batch, so on a privileged dev DB
+      // that already has the Phase-1/B tables but NOT the newly-added one,
+      // probing an OLD table (`webui_users`) would report "present" and skip the
+      // batch — silently never creating `webui_invites`. Probing the newest
+      // table makes an additive migration run exactly when it must. On the
+      // scoped live role (no CREATE) the DBA applies the SQL by hand first, so
+      // this returns true and the DDL is correctly skipped.
       const rows = await this.sql<{ present: boolean }[]>`
-        SELECT to_regclass('public.webui_users') IS NOT NULL AS present`;
+        SELECT to_regclass('public.webui_invites') IS NOT NULL AS present`;
       return rows[0]?.present === true;
     } catch {
       // Couldn't even probe (e.g. no USAGE) — fall through and let the DDL
@@ -150,6 +188,11 @@ export class PgStore implements AuthStore {
       RETURNING id, username, password_hash, role, must_change_credentials,
                 disabled, failed_logins, locked_until`;
     return toUserRow(rows[0]);
+  }
+
+  async deleteUser(userId: number): Promise<void> {
+    // Sessions FK-cascade (webui_sessions.user_id ON DELETE CASCADE).
+    await this.sql`DELETE FROM webui_users WHERE id = ${userId}`;
   }
 
   async updateCredentials(
@@ -272,5 +315,68 @@ export class PgStore implements AuthStore {
     await this.sql`
       INSERT INTO webui_auth_audit (username, action, ip, detail)
       VALUES (${entry.username}, ${entry.action}, ${entry.ip}, ${entry.detail})`;
+  }
+
+  // ── Invites (Phase C) ──────────────────────────────────────────────────────
+
+  async createInvite(invite: NewInvite): Promise<InviteRow> {
+    const rows = await this.sql<InviteRecord[]>`
+      INSERT INTO webui_invites (token_hash, role, created_by, expires_at)
+      VALUES (${invite.tokenHash}, ${invite.role}, ${invite.createdBy},
+              ${invite.expiresAt})
+      RETURNING id, token_hash, role, created_by, created_at, expires_at,
+                redeemed_by, redeemed_at, revoked_at`;
+    return toInviteRow(rows[0]);
+  }
+
+  async getInviteByTokenHash(tokenHash: string): Promise<InviteRow | null> {
+    const rows = await this.sql<InviteRecord[]>`
+      SELECT id, token_hash, role, created_by, created_at, expires_at,
+             redeemed_by, redeemed_at, revoked_at
+      FROM webui_invites WHERE token_hash = ${tokenHash} LIMIT 1`;
+    return rows[0] ? toInviteRow(rows[0]) : null;
+  }
+
+  async listInvites(): Promise<InviteSummary[]> {
+    const rows = await this.sql<
+      {
+        id: string;
+        role: string;
+        created_by_username: string;
+        created_at: Date;
+        expires_at: Date;
+        redeemed_at: Date | null;
+        revoked_at: Date | null;
+      }[]
+    >`
+      SELECT i.id, i.role, u.username AS created_by_username,
+             i.created_at, i.expires_at, i.redeemed_at, i.revoked_at
+      FROM webui_invites i
+      JOIN webui_users u ON u.id = i.created_by
+      ORDER BY i.id DESC`;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      role: r.role,
+      createdByUsername: r.created_by_username,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      redeemedAt: r.redeemed_at,
+      revokedAt: r.revoked_at,
+    }));
+  }
+
+  async revokeInvite(id: number): Promise<void> {
+    await this.sql`
+      UPDATE webui_invites SET revoked_at = now()
+      WHERE id = ${id} AND revoked_at IS NULL AND redeemed_at IS NULL`;
+  }
+
+  async redeemInvite(id: number, userId: number): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      UPDATE webui_invites
+      SET redeemed_by = ${userId}, redeemed_at = now()
+      WHERE id = ${id} AND redeemed_at IS NULL AND revoked_at IS NULL
+      RETURNING id`;
+    return rows.length === 1;
   }
 }

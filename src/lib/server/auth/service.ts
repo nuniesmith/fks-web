@@ -33,6 +33,49 @@ function isAssignableRole(role: string): role is AssignableRole {
   return (ASSIGNABLE_ROLES as readonly string[]).includes(role);
 }
 
+/**
+ * Roles an INVITE may grant — a DELIBERATE subset of ASSIGNABLE_ROLES that
+ * EXCLUDES 'admin' (plan OD-5 / fks 012 CHECK): there is no admin-by-invite,
+ * admin creation stays a deliberate /users act or psql. Mirrors the DB CHECK so
+ * a bad role is rejected in the service before it can reach the constraint.
+ */
+export const INVITE_ROLES = ["operator", "viewer"] as const;
+export type InviteRole = (typeof INVITE_ROLES)[number];
+
+function isInviteRole(role: string): role is InviteRole {
+  return (INVITE_ROLES as readonly string[]).includes(role);
+}
+
+/** Default invite lifetime (plan OD-5: 48 h, single-use). */
+export const INVITE_TTL_HOURS = 48;
+
+/** An invite row projected for the admin console, with a derived status. */
+export interface InviteView {
+  id: number;
+  role: string;
+  createdBy: string;
+  createdAt: Date;
+  expiresAt: Date;
+  status: "active" | "expired" | "redeemed" | "revoked";
+}
+
+/**
+ * What the PUBLIC claim page learns about a token at load. Deliberately
+ * COARSE: `valid` collapses every not-usable reason (absent / expired /
+ * redeemed / revoked) into one state so an unauthenticated prober gains no
+ * exists-vs-revoked oracle from the load. The distinct, actionable reasons are
+ * surfaced only by `claimInvite` when a form is actually submitted.
+ */
+export interface InvitePreview {
+  valid: boolean;
+  role: string | null;
+  expiresAt: Date | null;
+}
+
+export type ClaimResult =
+  | { ok: true; token: string; role: string }
+  | { ok: false; error: string };
+
 /** Result of an admin mutation. `status` lets the HTTP seam pick 400/404/409. */
 export type AdminResult<T> =
   | ({ ok: true } & T)
@@ -538,6 +581,173 @@ export class AuthService {
       detail: `by ${actor.username}`,
     });
     return { ok: true };
+  }
+
+  // ── Invites (plan 01 Phase C) ─────────────────────────────────────────────
+
+  /** Every invite for the admin console, newest first, with a derived status. */
+  async adminListInvites(): Promise<InviteView[]> {
+    const now = this.now();
+    return (await this.store.listInvites()).map((i) => ({
+      id: i.id,
+      role: i.role,
+      createdBy: i.createdByUsername,
+      createdAt: i.createdAt,
+      expiresAt: i.expiresAt,
+      // redeemed wins over revoked (revokeInvite can't touch a redeemed row, so
+      // they're mutually exclusive in practice — this order is defensive).
+      status: i.redeemedAt
+        ? "redeemed"
+        : i.revokedAt
+          ? "revoked"
+          : i.expiresAt.getTime() <= now
+            ? "expired"
+            : "active",
+    }));
+  }
+
+  /**
+   * Mint a single-use invite for {operator|viewer} ONLY. The raw token is
+   * generated here, returned to the caller EXACTLY ONCE, and only hashToken(it)
+   * is persisted — the audit row records role + expiry + actor, NEVER the token.
+   */
+  async adminCreateInvite(
+    role: string,
+    ttlHours: number,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminResult<{ token: string; role: string; expiresAt: Date }>> {
+    if (!isInviteRole(role)) {
+      // No admin-by-invite; anything else is garbage.
+      return { ok: false, error: "Invite role must be operator or viewer.", status: 400 };
+    }
+    if (!Number.isFinite(ttlHours) || ttlHours <= 0 || ttlHours > 24 * 30) {
+      return { ok: false, error: "Invalid invite lifetime.", status: 400 };
+    }
+    const token = generateSessionToken();
+    const expiresAt = new Date(this.now() + ttlHours * 60 * 60 * 1000);
+    await this.store.createInvite({
+      tokenHash: hashToken(token),
+      role,
+      createdBy: actor.userId,
+      expiresAt,
+    });
+    await this.store.audit({
+      username: actor.username,
+      action: "invite_created",
+      ip: ctx.ip,
+      detail: `role=${role}; expires=${expiresAt.toISOString()}; by ${actor.username}`,
+    });
+    return { ok: true, token, role, expiresAt };
+  }
+
+  /** Revoke an outstanding invite (audit invite_revoked; the URL stops working). */
+  async adminRevokeInvite(
+    id: number,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminMutation> {
+    await this.store.revokeInvite(id);
+    await this.store.audit({
+      username: actor.username,
+      action: "invite_revoked",
+      ip: ctx.ip,
+      detail: `invite ${id}; by ${actor.username}`,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * What the public claim page shows at load — coarse valid/invalid only (see
+   * InvitePreview). No audit, no side effects, no oracle beyond "usable or not".
+   */
+  async previewInvite(token: string): Promise<InvitePreview> {
+    const invalid: InvitePreview = { valid: false, role: null, expiresAt: null };
+    if (!token) return invalid;
+    const invite = await this.store.getInviteByTokenHash(hashToken(token));
+    if (!invite) return invalid;
+    if (invite.revokedAt || invite.redeemedAt) return invalid;
+    if (invite.expiresAt.getTime() <= this.now()) return invalid;
+    return { valid: true, role: invite.role, expiresAt: invite.expiresAt };
+  }
+
+  /**
+   * Redeem an invite: the invitee sets their OWN username+password (mustChange
+   * stays FALSE — there is no forced-change hop), and a session is minted just
+   * like login. Distinct rejections for invalid / revoked / redeemed / expired /
+   * bad-credential / taken-username, so the claim UX can explain the failure.
+   *
+   * CONCURRENCY — "two concurrent claims yield exactly one user" (the pin):
+   * the FK redeemed_by → webui_users(id) requires the user to exist before we
+   * can stamp who redeemed it, so we (1) create the invitee, then (2) win-or-lose
+   * the ATOMIC redeem. Exactly one concurrent claim wins the conditional UPDATE;
+   * the loser rolls back its just-created user (deleteUser) and is rejected. No
+   * session is minted until the redeem is won, so a loser is never logged in.
+   */
+  async claimInvite(
+    token: string,
+    username: string,
+    password: string,
+    ctx: RequestCtx,
+  ): Promise<ClaimResult> {
+    const invite = await this.store.getInviteByTokenHash(hashToken(token));
+    if (!invite) return { ok: false, error: "This invite link is not valid." };
+    if (invite.revokedAt) {
+      return { ok: false, error: "This invite link has been revoked." };
+    }
+    if (invite.redeemedAt) {
+      return { ok: false, error: "This invite link has already been used." };
+    }
+    if (invite.expiresAt.getTime() <= this.now()) {
+      return { ok: false, error: "This invite link has expired." };
+    }
+
+    const check = validateNewCredentials(username, password);
+    if (!check.ok) return { ok: false, error: check.error };
+    const clean = username.trim();
+    if (await this.store.getUserByUsername(clean)) {
+      return { ok: false, error: "That username is taken." };
+    }
+
+    const passwordHash = await hashPassword(password, this.hashParams);
+    let user: UserRow;
+    try {
+      user = await this.store.createUser({
+        username: clean,
+        passwordHash,
+        role: invite.role,
+        mustChange: false,
+      });
+    } catch {
+      // Lost a create race against the unique index.
+      return { ok: false, error: "That username is taken." };
+    }
+
+    const won = await this.store.redeemInvite(invite.id, user.id);
+    if (!won) {
+      // A concurrent claim consumed the invite first — undo our user so the
+      // invariant "one invite ⇒ at most one user" holds, and reject.
+      await this.store.deleteUser(user.id);
+      return { ok: false, error: "This invite link has already been used." };
+    }
+
+    const now = this.now();
+    const sessionToken = generateSessionToken();
+    await this.store.createSession({
+      tokenHash: hashToken(sessionToken),
+      userId: user.id,
+      idleExpiresAt: new Date(now + SESSION_IDLE_MS),
+      expiresAt: new Date(now + SESSION_ABSOLUTE_MS),
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+    await this.store.audit({
+      username: clean,
+      action: "invite_redeemed",
+      ip: ctx.ip,
+      detail: `role=${invite.role}; invite ${invite.id}`,
+    });
+    return { ok: true, token: sessionToken, role: invite.role };
   }
 
   /**

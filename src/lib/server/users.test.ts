@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { usersDispatch } from "./users";
+import { invitesDispatch, usersDispatch } from "./users";
 import { AuthService } from "./auth/service";
 import { MemoryStore } from "./auth/memoryStore";
 import type { ScryptParams } from "./auth/hash";
@@ -192,6 +192,91 @@ describe("admin flow", () => {
     const nf = await usersDispatch(req("POST", "/api/users/1/nuke"), "/api/users/1/nuke", adminAuth(adminSession), CTX, getService);
     expect(nf.status).toBe(404);
     const na = await usersDispatch(req("DELETE", "/api/users"), "/api/users", adminAuth(adminSession), CTX, getService);
+    expect(na.status).toBe(405);
+  });
+});
+
+describe("invitesDispatch — same admin defense in depth", () => {
+  it("undefined auth (outage) / operator / mustChange-admin / disabled → 403, service untouched for outage", async () => {
+    let touched = false;
+    const throwing = async (): Promise<never> => {
+      touched = true;
+      throw new Error("store must not be touched on the unauthenticated path");
+    };
+    const outage = await invitesDispatch(
+      req("GET", "/api/invites"),
+      "/api/invites",
+      undefined,
+      CTX,
+      throwing as never,
+    );
+    expect(outage.status).toBe(403);
+    expect(touched).toBe(false);
+
+    const { getService } = await harness();
+    const op: SessionInfo = { userId: 5, username: "op", role: "operator", mustChange: false };
+    const opRes = await invitesDispatch(req("GET", "/api/invites"), "/api/invites", adminAuth(op), CTX, getService);
+    expect(opRes.status).toBe(403);
+
+    const mc: SessionInfo = { userId: 6, username: "adm", role: "admin", mustChange: true };
+    const mcRes = await invitesDispatch(req("GET", "/api/invites"), "/api/invites", adminAuth(mc), CTX, getService);
+    expect(mcRes.status).toBe(403);
+
+    const disabled = await invitesDispatch(req("GET", "/api/invites"), "/api/invites", { mode: "disabled" } as AuthState, CTX, getService);
+    expect(disabled.status).toBe(403);
+  });
+
+  it("admin mints a viewer invite → { ok, url } with a RELATIVE /invite/<token> path", async () => {
+    const { adminSession, getService } = await harness();
+    const res = await invitesDispatch(
+      req("POST", "/api/invites", { role: "viewer" }),
+      "/api/invites",
+      adminAuth(adminSession),
+      CTX,
+      getService,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; url: string };
+    expect(body.ok).toBe(true);
+    expect(body.url).toMatch(/^\/invite\/[A-Za-z0-9_-]+$/);
+    // Relative — no scheme/host guessed by the server.
+    expect(body.url).not.toContain("http");
+
+    // It shows up in the list with active status + the minting admin.
+    const listRes = await invitesDispatch(req("GET", "/api/invites"), "/api/invites", adminAuth(adminSession), CTX, getService);
+    const list = (await listRes.json()) as { invites: { role: string; status: string; createdBy: string }[] };
+    expect(list.invites).toHaveLength(1);
+    expect(list.invites[0]).toMatchObject({ role: "viewer", status: "active", createdBy: "admin" });
+  });
+
+  it("no admin-by-invite: POST role=admin → 400", async () => {
+    const { adminSession, getService } = await harness();
+    const res = await invitesDispatch(
+      req("POST", "/api/invites", { role: "admin" }),
+      "/api/invites",
+      adminAuth(adminSession),
+      CTX,
+      getService,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("revoke flips the listed status to revoked", async () => {
+    const { adminSession, getService } = await harness();
+    const mint = await invitesDispatch(req("POST", "/api/invites", { role: "operator" }), "/api/invites", adminAuth(adminSession), CTX, getService);
+    expect(mint.status).toBe(200);
+    const rev = await invitesDispatch(req("POST", "/api/invites/1/revoke"), "/api/invites/1/revoke", adminAuth(adminSession), CTX, getService);
+    expect(rev.status).toBe(200);
+    const listRes = await invitesDispatch(req("GET", "/api/invites"), "/api/invites", adminAuth(adminSession), CTX, getService);
+    const list = (await listRes.json()) as { invites: { id: number; status: string }[] };
+    expect(list.invites.find((i) => i.id === 1)?.status).toBe("revoked");
+  });
+
+  it("unknown subpath → 404, wrong method → 405", async () => {
+    const { adminSession, getService } = await harness();
+    const nf = await invitesDispatch(req("POST", "/api/invites/1/nuke"), "/api/invites/1/nuke", adminAuth(adminSession), CTX, getService);
+    expect(nf.status).toBe(404);
+    const na = await invitesDispatch(req("DELETE", "/api/invites"), "/api/invites", adminAuth(adminSession), CTX, getService);
     expect(na.status).toBe(405);
   });
 });

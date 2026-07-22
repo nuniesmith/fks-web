@@ -61,3 +61,16 @@ CREATE TABLE IF NOT EXISTS webui_auth_audit (
     ip       TEXT NOT NULL DEFAULT '',
     detail   TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS webui_invites (
+    id          BIGSERIAL PRIMARY KEY,
+    token_hash  TEXT NOT NULL UNIQUE,          -- sha256(token); raw token only in the URL, once
+    role        TEXT NOT NULL DEFAULT 'viewer'
+                CHECK (role IN ('operator','viewer')),  -- no admin-by-invite
+    created_by  BIGINT NOT NULL REFERENCES webui_users(id),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,          -- service sets now()+TTL at mint
+    redeemed_by BIGINT REFERENCES webui_users(id),
+    redeemed_at TIMESTAMPTZ,
+    revoked_at  TIMESTAMPTZ
+);

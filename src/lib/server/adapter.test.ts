@@ -34,8 +34,16 @@ describe("isBackend", () => {
 });
 
 describe("isPublic", () => {
-  it("treats login/logout pages and health probes as public", () => {
-    for (const p of ["/login", "/login/oauth", "/logout", "/api/health", "/healthz"]) {
+  it("treats login/logout/invite pages and health probes as public", () => {
+    for (const p of [
+      "/login",
+      "/login/oauth",
+      "/logout",
+      "/invite",
+      "/invite/some-opaque-token",
+      "/api/health",
+      "/healthz",
+    ]) {
       expect(isPublic(p)).toBe(true);
     }
   });
@@ -91,6 +99,27 @@ const operator: SessionInfo = { userId: 2, username: "op", role: "operator", mus
 const viewer: SessionInfo = { userId: 3, username: "vw", role: "viewer", mustChange: false };
 const garbage: SessionInfo = { userId: 4, username: "gb", role: "wat", mustChange: false };
 const enabled = (s: SessionInfo | null): AuthState => ({ mode: "enabled", session: s });
+
+// The public claim page must render pre-auth in EVERY posture — its load surfaces
+// the invite state, and the claim ACTION (a page-path POST) fails closed in the
+// service, not at the seam. Bootstrap mode is harmless: isPublic passes before
+// the bootstrap branch, and with no users there are no invites → invalid state.
+describe("/invite — public claim page across postures", () => {
+  const token = "/invite/opaque-token-xyz";
+  it("GET load passes for bootstrap, no-session, and full sessions", () => {
+    for (const a of [bootstrap, noSession, enabled(good), enabled(operator), enabled(viewer)]) {
+      expect(routeRequest(token, "", "GET", a)).toEqual({ kind: "pass" });
+    }
+  });
+  it("the claim action (page-path POST) passes the seam in enabled AND bootstrap", () => {
+    expect(routeRequest(token, "", "POST", noSession)).toEqual({ kind: "pass" });
+    expect(routeRequest(token, "", "POST", bootstrap)).toEqual({ kind: "pass" });
+  });
+  it("renders open-page (degraded) during a store outage", () => {
+    expect(outageRoute(token)).toBe("open-page");
+    expect(outageRoute("/invite")).toBe("open-page");
+  });
+});
 
 describe("routeRequest — health probes are always open", () => {
   it("proxies /api/health unauthenticated in every mode", () => {

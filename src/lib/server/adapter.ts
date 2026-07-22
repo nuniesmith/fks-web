@@ -19,8 +19,16 @@ export function isBackend(pathname: string): boolean {
   return BACKEND_PREFIXES.some((x) => pathname.startsWith(x));
 }
 
-/** Page prefixes that never require an authenticated session. */
-export const PUBLIC_PREFIXES = ["/login", "/logout"];
+/**
+ * Page prefixes that never require an authenticated session. `/invite` is the
+ * public one-time-signup claim page (Phase C): both its GET load and its form
+ * action are page-path (non-backend) requests, so `isPublic` covers both. It is
+ * safe in every mode: in `bootstrap` (empty users table) `isPublic` passes at
+ * routeRequest step 2 BEFORE the bootstrap branch, so `/invite/x` renders — but
+ * harmlessly, since no users ⇒ no invites ⇒ the load resolves the invalid
+ * state. The claim ACTION still fails closed (it calls into the auth store).
+ */
+export const PUBLIC_PREFIXES = ["/login", "/logout", "/invite"];
 /** Exact paths that never require auth (health probes — monitoring must
  *  survive even in bootstrap mode or an auth-store outage). */
 export const PUBLIC_EXACT = ["/api/health", "/healthz"];
@@ -385,8 +393,11 @@ export function outageRoute(pathname: string): OutageDisposition {
   if (PUBLIC_EXACT.includes(pathname)) {
     return backend ? "open-backend" : "open-page";
   }
-  // Public *pages* (login/logout) render degraded so the operator has a UI +
-  // retry path; public backend paths are only the health probes above.
+  // Public *pages* (login/logout/invite) render degraded so the operator has a
+  // UI + retry path; public backend paths are only the health probes above.
+  // `/invite` rides this same render-degraded path: the page shell renders while
+  // the store is down (its load surfaces the "unavailable" state), and the claim
+  // ACTION still fails closed — claimInvite needs the store, which is down.
   if (!backend && PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) {
     return "open-page";
   }

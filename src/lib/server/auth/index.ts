@@ -98,6 +98,16 @@ export const loginRateLimiter = new LoginRateLimiter({
   windowMs: 5 * 60 * 1000,
 });
 
+/**
+ * Per-IP limiter for the PUBLIC invite-claim action (Phase C) — a SEPARATE
+ * instance from the login limiter so a burst of bogus-token claims can't consume
+ * the login budget (or vice-versa). Same 10 / 5 min shape; keyed by clientIp.
+ */
+export const inviteRateLimiter = new LoginRateLimiter({
+  max: 10,
+  windowMs: 5 * 60 * 1000,
+});
+
 export class AuthStoreUnavailable extends Error {}
 
 /**

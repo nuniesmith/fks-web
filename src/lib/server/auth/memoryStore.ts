@@ -5,6 +5,9 @@
 import type {
   AuditEntry,
   AuthStore,
+  InviteRow,
+  InviteSummary,
+  NewInvite,
   NewSession,
   NewUser,
   SessionWithUser,
@@ -18,9 +21,17 @@ export class MemoryStore implements AuthStore {
   private users = new Map<number, UserRow>();
   private createdAt = new Map<number, Date>();
   private sessions = new Map<string, StoredSession>();
+  private invites = new Map<number, InviteRow>();
   private seq = 0;
+  private inviteSeq = 0;
   /** Exposed for test assertions on the append-only audit trail. */
   readonly auditLog: AuditEntry[] = [];
+  /**
+   * Test seam for the concurrent-claim race: an async hook awaited INSIDE the
+   * atomic `redeemInvite` (after the read, before the write), so a test can
+   * interleave two claims deterministically and prove exactly one wins.
+   */
+  onRedeemInvite: ((id: number) => Promise<void>) | null = null;
 
   async init(): Promise<void> {
     /* no schema to apply */
@@ -82,6 +93,14 @@ export class MemoryStore implements AuthStore {
     this.users.set(row.id, row);
     this.createdAt.set(row.id, new Date());
     return { ...row };
+  }
+
+  async deleteUser(userId: number): Promise<void> {
+    this.users.delete(userId);
+    this.createdAt.delete(userId);
+    for (const [hash, s] of this.sessions) {
+      if (s.userId === userId) this.sessions.delete(hash);
+    }
   }
 
   async updateCredentials(
@@ -178,5 +197,68 @@ export class MemoryStore implements AuthStore {
 
   async audit(entry: AuditEntry): Promise<void> {
     this.auditLog.push({ ...entry });
+  }
+
+  // ── Invites (Phase C) ──────────────────────────────────────────────────────
+
+  async createInvite(invite: NewInvite): Promise<InviteRow> {
+    const row: InviteRow = {
+      id: ++this.inviteSeq,
+      tokenHash: invite.tokenHash,
+      role: invite.role,
+      createdBy: invite.createdBy,
+      createdAt: new Date(),
+      expiresAt: invite.expiresAt,
+      redeemedBy: null,
+      redeemedAt: null,
+      revokedAt: null,
+    };
+    this.invites.set(row.id, row);
+    return { ...row };
+  }
+
+  async getInviteByTokenHash(tokenHash: string): Promise<InviteRow | null> {
+    for (const i of this.invites.values()) {
+      if (i.tokenHash === tokenHash) return { ...i };
+    }
+    return null;
+  }
+
+  async listInvites(): Promise<InviteSummary[]> {
+    return [...this.invites.values()]
+      .sort((a, b) => b.id - a.id)
+      .map((i) => ({
+        id: i.id,
+        role: i.role,
+        createdByUsername: this.users.get(i.createdBy)?.username ?? "",
+        createdAt: i.createdAt,
+        expiresAt: i.expiresAt,
+        redeemedAt: i.redeemedAt,
+        revokedAt: i.revokedAt,
+      }));
+  }
+
+  async revokeInvite(id: number): Promise<void> {
+    const i = this.invites.get(id);
+    if (i && i.revokedAt === null && i.redeemedAt === null) {
+      i.revokedAt = new Date();
+    }
+  }
+
+  async redeemInvite(id: number, userId: number): Promise<boolean> {
+    const i = this.invites.get(id);
+    // Read the guard state BEFORE the (optional) interleave hook, mirroring the
+    // instant Postgres evaluates the WHERE clause; the winner is whoever commits
+    // the write first.
+    const claimable = !!i && i.redeemedAt === null && i.revokedAt === null;
+    if (this.onRedeemInvite) await this.onRedeemInvite(id);
+    if (!i) return false;
+    // Re-check under the "lock": if a concurrent claim wrote redeemed_at during
+    // the await, we lost. This is the MemoryStore analogue of the atomic
+    // conditional UPDATE ... WHERE redeemed_at IS NULL RETURNING id.
+    if (!claimable || i.redeemedAt !== null || i.revokedAt !== null) return false;
+    i.redeemedBy = userId;
+    i.redeemedAt = new Date();
+    return true;
   }
 }

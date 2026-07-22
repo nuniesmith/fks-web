@@ -24,8 +24,8 @@
  * covered upstream (the origin check runs for every backend non-GET).
  */
 
-import type { AuthState } from "./adapter";
-import type { AuthService, RequestCtx } from "./auth/service";
+import type { AuthState, SessionInfo } from "./adapter";
+import { INVITE_TTL_HOURS, type AuthService, type RequestCtx } from "./auth/service";
 
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -35,6 +35,26 @@ const json = (body: unknown, status = 200): Response =>
 
 const forbidden = (reason: string): Response =>
   json({ error: "forbidden", reason }, 403);
+
+/**
+ * The shared admin guard for BOTH the /api/users and /api/invites seams (see
+ * file header — defense in depth over routeRequest R1). Returns the acting admin
+ * SessionInfo, or a ready-to-send 403 Response. `disabled` mode is an explicit
+ * refusal distinct from "not an admin".
+ */
+function requireAdmin(auth: AuthState | undefined): SessionInfo | Response {
+  if (auth?.mode === "disabled") {
+    return forbidden("user_management_requires_auth");
+  }
+  const actor =
+    auth?.mode === "enabled" &&
+    auth.session &&
+    !auth.session.mustChange &&
+    auth.session.role === "admin"
+      ? auth.session
+      : null;
+  return actor ?? forbidden("admin_required");
+}
 
 /** The one route regex — base list/create + the five per-user sub-actions. */
 const ROUTE =
@@ -75,19 +95,9 @@ export async function usersDispatch(
   ctx: RequestCtx,
   getService: () => Promise<AuthService>,
 ): Promise<Response> {
-  // Defense in depth (see file header). Order matters: disabled mode is an
-  // explicit refusal distinct from "not an admin".
-  if (auth?.mode === "disabled") {
-    return forbidden("user_management_requires_auth");
-  }
-  const actor =
-    auth?.mode === "enabled" &&
-    auth.session &&
-    !auth.session.mustChange &&
-    auth.session.role === "admin"
-      ? auth.session
-      : null;
-  if (!actor) return forbidden("admin_required");
+  // Defense in depth (see file header).
+  const actor = requireAdmin(auth);
+  if (actor instanceof Response) return actor;
 
   const svc = await getService();
   const m = ROUTE.exec(pathname);
@@ -141,4 +151,63 @@ export async function usersDispatch(
     default:
       return json({ error: "not_found" }, 404);
   }
+}
+
+/** The invite route regex — base list/create + the per-invite revoke action. */
+const INVITE_ROUTE = /^\/api\/invites(?:\/(\d+)\/(revoke))?$/;
+
+/**
+ * Handle a request under `/api/invites` (Phase C). Same admin defense-in-depth
+ * as usersDispatch (R1 already gates it upstream; this re-checks because the
+ * outage path calls proxyBackend WITHOUT auth and WEBUI_AUTH=disabled must
+ * refuse here). The mint endpoint returns a RELATIVE `/invite/<raw token>` URL —
+ * the raw token is surfaced exactly once, and the admin's own browser origin
+ * completes it (the server never guesses its public host).
+ *
+ *   GET  /api/invites               → { invites: InviteView[] }
+ *   POST /api/invites {role,ttlHours?} → { ok, url }
+ *   POST /api/invites/:id/revoke    → { ok }
+ */
+export async function invitesDispatch(
+  request: Request,
+  pathname: string,
+  auth: AuthState | undefined,
+  ctx: RequestCtx,
+  getService: () => Promise<AuthService>,
+): Promise<Response> {
+  const actor = requireAdmin(auth);
+  if (actor instanceof Response) return actor;
+
+  const svc = await getService();
+  const m = INVITE_ROUTE.exec(pathname);
+  if (!m) return json({ error: "not_found" }, 404);
+  const method = request.method;
+  const id = m[1] ? Number(m[1]) : null;
+  const action = m[2] ?? null;
+
+  // Base collection: GET list / POST mint.
+  if (id === null) {
+    if (method === "GET") {
+      return json({ invites: await svc.adminListInvites() });
+    }
+    if (method === "POST") {
+      const body = await readBody(request);
+      const role = typeof body.role === "string" ? body.role : "";
+      const ttlHours =
+        typeof body.ttlHours === "number" ? body.ttlHours : INVITE_TTL_HOURS;
+      const r = await svc.adminCreateInvite(role, ttlHours, actor, ctx);
+      if (!r.ok) return fail(r);
+      // RELATIVE URL — the admin browser origin completes it (see header).
+      return json({ ok: true, url: `/invite/${r.token}` });
+    }
+    return json({ error: "method_not_allowed" }, 405);
+  }
+
+  // Per-invite action is POST-only.
+  if (method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (action === "revoke") {
+    const r = await svc.adminRevokeInvite(id, actor, ctx);
+    return r.ok ? json({ ok: true }) : fail(r);
+  }
+  return json({ error: "not_found" }, 404);
 }
