@@ -9,12 +9,14 @@ import type {
   NewUser,
   SessionWithUser,
   UserRow,
+  UserSummary,
 } from "./store";
 
 interface StoredSession extends NewSession {}
 
 export class MemoryStore implements AuthStore {
   private users = new Map<number, UserRow>();
+  private createdAt = new Map<number, Date>();
   private sessions = new Map<string, StoredSession>();
   private seq = 0;
   /** Exposed for test assertions on the append-only audit trail. */
@@ -26,6 +28,28 @@ export class MemoryStore implements AuthStore {
 
   async countUsers(): Promise<number> {
     return this.users.size;
+  }
+
+  async countEnabledAdmins(): Promise<number> {
+    let n = 0;
+    for (const u of this.users.values()) {
+      if (u.role === "admin" && !u.disabled) n++;
+    }
+    return n;
+  }
+
+  async listUsers(): Promise<UserSummary[]> {
+    return [...this.users.values()]
+      .sort((a, b) => a.id - b.id)
+      .map((u) => ({
+        id: u.id,
+        username: u.username,
+        role: u.role,
+        mustChange: u.mustChange,
+        disabled: u.disabled,
+        lockedUntil: u.lockedUntil,
+        createdAt: this.createdAt.get(u.id) ?? new Date(0),
+      }));
   }
 
   async getUserByUsername(username: string): Promise<UserRow | null> {
@@ -56,6 +80,7 @@ export class MemoryStore implements AuthStore {
       lockedUntil: null,
     };
     this.users.set(row.id, row);
+    this.createdAt.set(row.id, new Date());
     return { ...row };
   }
 
@@ -73,6 +98,29 @@ export class MemoryStore implements AuthStore {
     u.mustChange = false;
     u.failedLogins = 0;
     u.lockedUntil = null;
+  }
+
+  async updatePassword(
+    userId: number,
+    passwordHash: string,
+    mustChange: boolean,
+  ): Promise<void> {
+    const u = this.users.get(userId);
+    if (!u) throw new Error("no_such_user");
+    u.passwordHash = passwordHash;
+    u.mustChange = mustChange;
+    u.failedLogins = 0;
+    u.lockedUntil = null;
+  }
+
+  async setUserDisabled(userId: number, disabled: boolean): Promise<void> {
+    const u = this.users.get(userId);
+    if (u) u.disabled = disabled;
+  }
+
+  async setUserRole(userId: number, role: string): Promise<void> {
+    const u = this.users.get(userId);
+    if (u) u.role = role;
   }
 
   async setFailedLogins(
@@ -94,7 +142,10 @@ export class MemoryStore implements AuthStore {
     const s = this.sessions.get(tokenHash);
     if (!s) return null;
     const u = this.users.get(s.userId);
-    if (!u) return null;
+    // Mirror PgStore's `AND u.disabled = FALSE` join filter: a disabled user's
+    // sessions resolve to null (die at the next resolve) even if a stray row
+    // outlives the cascade delete.
+    if (!u || u.disabled) return null;
     return {
       userId: u.id,
       username: u.username,

@@ -137,7 +137,12 @@
         tabs: workspaceTabs(ws.id),
     }));
 
-    const systemGroup: Group = {
+    // Users is admin-only: the tab is appended to the System group ONLY when
+    // the signed-in role is admin ($page.data.user, exposed via
+    // +layout.server.ts). Non-admins never see it, and direct nav to /users
+    // already redirects home at the seam (adapter R5). Derived so the tab
+    // appears/disappears live on identity change (login/logout/role-change).
+    const systemGroup: Group = $derived({
         label: "System",
         color: "var(--t3, #555)",
         tabs: [
@@ -156,14 +161,21 @@
                 key: "9",
                 href: "/bots",
             },
+            ...($page.data.user?.role === "admin"
+                ? [{ id: "users", label: "Users", href: "/users" }]
+                : []),
         ],
-    };
+    });
 
-    const groups: Group[] = [...staticGroups, ...workspaceGroups, systemGroup];
+    const groups: Group[] = $derived([
+        ...staticGroups,
+        ...workspaceGroups,
+        systemGroup,
+    ]);
 
     // ── Active-state helpers ──────────────────────────────────────────────
 
-    const allTabs = groups.flatMap((g) => g.tabs);
+    const allTabs = $derived(groups.flatMap((g) => g.tabs));
     const wsDashHrefs = new Set(workspaceList.map((ws) => `/${ws.id}`));
 
     let currentPath = $derived($page.url.pathname);

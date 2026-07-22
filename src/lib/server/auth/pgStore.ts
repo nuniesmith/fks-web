@@ -11,6 +11,7 @@ import type {
   NewUser,
   SessionWithUser,
   UserRow,
+  UserSummary,
 } from "./store";
 
 type Sql = ReturnType<typeof postgres>;
@@ -88,6 +89,40 @@ export class PgStore implements AuthStore {
     return Number(rows[0]?.n ?? 0);
   }
 
+  async countEnabledAdmins(): Promise<number> {
+    const rows = await this.sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM webui_users
+      WHERE role = 'admin' AND disabled = FALSE`;
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async listUsers(): Promise<UserSummary[]> {
+    const rows = await this.sql<
+      {
+        id: string;
+        username: string;
+        role: string;
+        must_change_credentials: boolean;
+        disabled: boolean;
+        locked_until: Date | null;
+        created_at: Date;
+      }[]
+    >`
+      SELECT id, username, role, must_change_credentials, disabled,
+             locked_until, created_at
+      FROM webui_users
+      ORDER BY id`;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      username: r.username,
+      role: r.role,
+      mustChange: r.must_change_credentials,
+      disabled: r.disabled,
+      lockedUntil: r.locked_until,
+      createdAt: r.created_at,
+    }));
+  }
+
   async getUserByUsername(username: string): Promise<UserRow | null> {
     const rows = await this.sql<UserRecord[]>`
       SELECT id, username, password_hash, role, must_change_credentials,
@@ -127,6 +162,35 @@ export class PgStore implements AuthStore {
       SET username = ${username}, password_hash = ${passwordHash},
           must_change_credentials = FALSE, failed_logins = 0,
           locked_until = NULL, updated_at = now()
+      WHERE id = ${userId}`;
+  }
+
+  async updatePassword(
+    userId: number,
+    passwordHash: string,
+    mustChange: boolean,
+  ): Promise<void> {
+    // Password-only rotation (username untouched, unlike updateCredentials).
+    // Clears lock counters so an admin reset also unsticks a locked account.
+    await this.sql`
+      UPDATE webui_users
+      SET password_hash = ${passwordHash},
+          must_change_credentials = ${mustChange},
+          failed_logins = 0, locked_until = NULL, updated_at = now()
+      WHERE id = ${userId}`;
+  }
+
+  async setUserDisabled(userId: number, disabled: boolean): Promise<void> {
+    await this.sql`
+      UPDATE webui_users
+      SET disabled = ${disabled}, updated_at = now()
+      WHERE id = ${userId}`;
+  }
+
+  async setUserRole(userId: number, role: string): Promise<void> {
+    await this.sql`
+      UPDATE webui_users
+      SET role = ${role}, updated_at = now()
       WHERE id = ${userId}`;
   }
 

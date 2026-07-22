@@ -22,14 +22,11 @@ export const SESSION_CACHE_TTL_MS = 60 * 1000;
 export type PasswordCheck = { ok: true } | { ok: false; error: string };
 
 /**
- * Validate a proposed new credential. Rejects: too short, equals username,
- * equals the current/bootstrap password (caller passes it), and empty username.
+ * Validate a username in isolation — the SINGLE source of the username charset
+ * rule, reused by `validateNewCredentials` (self-service setup) and by the admin
+ * `adminCreateUser` path so both accept exactly the same names.
  */
-export function validateNewCredentials(
-  username: string,
-  password: string,
-  currentPassword?: string,
-): PasswordCheck {
+export function validateUsername(username: string): PasswordCheck {
   const u = username.trim();
   if (u.length < 1) return { ok: false, error: "Username is required." };
   if (u.length > 64) return { ok: false, error: "Username is too long." };
@@ -39,6 +36,21 @@ export function validateNewCredentials(
       error: "Username may use letters, digits, dot, underscore, hyphen only.",
     };
   }
+  return { ok: true };
+}
+
+/**
+ * Validate a proposed new credential. Rejects: too short, equals username,
+ * equals the current/bootstrap password (caller passes it), and empty username.
+ */
+export function validateNewCredentials(
+  username: string,
+  password: string,
+  currentPassword?: string,
+): PasswordCheck {
+  const uCheck = validateUsername(username);
+  if (!uCheck.ok) return uCheck;
+  const u = username.trim();
   if (password.length < MIN_PASSWORD_LENGTH) {
     return {
       ok: false,
