@@ -25,7 +25,15 @@ import {
   routeRequest,
   upstreamHeaders,
 } from "$lib/server/adapter";
-import { AuthStoreUnavailable, resolveAuthState } from "$lib/server/auth";
+import {
+  AuthStoreUnavailable,
+  getAuthService,
+  resolveAuthState,
+  trustForwardedFor,
+} from "$lib/server/auth";
+import { clientIp } from "$lib/server/auth/http";
+import type { RequestCtx } from "$lib/server/auth/service";
+import { usersDispatch } from "$lib/server/users";
 import { validateNotificationEvents } from "$lib/types/notifications";
 import {
   cockpitKillPost,
@@ -991,6 +999,15 @@ function operatorName(auth?: AuthState): string {
   return auth.session?.username ?? "unknown";
 }
 
+/** Audit IP + UA context for a request (same anchoring the login/setup actions
+ *  use — the unspoofable socket peer unless a trusted proxy is configured). */
+function requestCtx(event: RequestEvent): RequestCtx {
+  return {
+    ip: clientIp(event.request, event.getClientAddress(), trustForwardedFor()),
+    userAgent: event.request.headers.get("user-agent") ?? "",
+  };
+}
+
 // Exported for the internal-token regression test (auth-chain H5): it drives the
 // direct spawner helpers below through this dispatcher to assert each mints the
 // service token. Not a SvelteKit hook export — SvelteKit only reads `handle`.
@@ -1050,6 +1067,23 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     return alertAckPost(event.request, getAlertAckStore(), auth.session.username);
   }
   // ══════════════════════════════════════════════════════════════════════════
+
+  // ── User management (Phase B) — dispatched ABOVE the spawner match ──────────
+  // GET list / POST create + per-user disable|enable|role|reset-password|
+  // revoke-sessions. routeRequest (R1) already 403s non-admins for ANY method;
+  // usersDispatch re-checks admin as defense in depth (the outage path calls
+  // proxyBackend WITHOUT auth, and WEBUI_AUTH=disabled must refuse here). The
+  // service is resolved only after the guard passes so an unauthenticated
+  // outage curl never forces a DB connect.
+  if (pathname === "/api/users" || pathname.startsWith("/api/users/")) {
+    return usersDispatch(
+      event.request,
+      pathname,
+      auth,
+      requestCtx(event),
+      getAuthService,
+    );
+  }
 
   // ── Spawner — a real, working backend (the /bots page) ──────────────────────
   // /api/spawner/<rest> → spawner /<rest>  (mirrors the old vite/nginx rewrite)

@@ -20,9 +20,28 @@ import {
   SESSION_CACHE_TTL_MS,
   SESSION_IDLE_MS,
   validateNewCredentials,
+  validateUsername,
 } from "./policy";
 import { generateBootstrapPassword, generateSessionToken, hashToken } from "./tokens";
-import type { AuthStore } from "./store";
+import type { AuthStore, UserRow, UserSummary } from "./store";
+
+/** Roles an admin may assign — the CHECK-constrained set (schema.sql). */
+export const ASSIGNABLE_ROLES = ["admin", "operator", "viewer"] as const;
+export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
+
+function isAssignableRole(role: string): role is AssignableRole {
+  return (ASSIGNABLE_ROLES as readonly string[]).includes(role);
+}
+
+/** Result of an admin mutation. `status` lets the HTTP seam pick 400/404/409. */
+export type AdminResult<T> =
+  | ({ ok: true } & T)
+  | { ok: false; error: string; status: number };
+
+/** A mutation with no success payload (enable/disable/role/revoke). */
+export type AdminMutation =
+  | { ok: true }
+  | { ok: false; error: string; status: number };
 
 export interface RequestCtx {
   ip: string;
@@ -321,6 +340,234 @@ export class AuthService {
       detail: `user ${userId}`,
     });
     return { ok: true };
+  }
+
+  // ── Admin user management (plan 01 §3 / Phase B) ──────────────────────────
+  // Every mutation writes an audit row (username = TARGET, detail = "by
+  // <actor>; <specifics>" — the actor lives in `detail`, not a column, per plan
+  // OD-4's zero-migration choice). Guards that protect the operator from
+  // locking themselves out (last-admin, self-disable) live here, not in the UI:
+  // the page merely mirrors them as disabled affordances.
+
+  /** List all users, secret-free, for the admin console. */
+  async adminListUsers(): Promise<UserSummary[]> {
+    return this.store.listUsers();
+  }
+
+  /**
+   * Create a user with a random temp password + mustChange=TRUE (reuses the
+   * bootstrap machinery). The temp password is returned ONCE for the admin to
+   * hand over — it is never persisted in plaintext, never logged, and the audit
+   * row records only that a user was created, never the password.
+   */
+  async adminCreateUser(
+    username: string,
+    role: string,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminResult<{ user: UserSummary; tempPassword: string }>> {
+    if (!isAssignableRole(role)) {
+      return { ok: false, error: "Invalid role.", status: 400 };
+    }
+    const uCheck = validateUsername(username);
+    if (!uCheck.ok) return { ok: false, error: uCheck.error, status: 400 };
+    const clean = username.trim();
+    // Case-insensitive pre-check against the lower(username) unique index —
+    // mirrors changeCredentials so the user gets a clean 409 rather than a raw
+    // constraint 500.
+    if (await this.store.getUserByUsername(clean)) {
+      return { ok: false, error: "That username is taken.", status: 409 };
+    }
+    const tempPassword = generateBootstrapPassword();
+    const passwordHash = await hashPassword(tempPassword, this.hashParams);
+    let row: UserRow;
+    try {
+      row = await this.store.createUser({
+        username: clean,
+        passwordHash,
+        role,
+        mustChange: true,
+      });
+    } catch {
+      // Lost a create race against the unique index.
+      return { ok: false, error: "That username is taken.", status: 409 };
+    }
+    await this.store.audit({
+      username: clean,
+      action: "user_created",
+      ip: ctx.ip,
+      detail: `by ${actor.username}; role=${role}`,
+    });
+    return { ok: true, user: this.toSummary(row), tempPassword };
+  }
+
+  /**
+   * Enable/disable a user. Disabling revokes the target's sessions immediately
+   * (and purges the resolve cache). Guards: an admin cannot disable their own
+   * account, nor disable the LAST enabled admin (that would lock everyone out).
+   */
+  async adminSetDisabled(
+    targetId: number,
+    disabled: boolean,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminMutation> {
+    const target = await this.store.getUserById(targetId);
+    if (!target) return { ok: false, error: "No such user.", status: 404 };
+
+    if (disabled) {
+      if (target.id === actor.userId) {
+        return {
+          ok: false,
+          error: "You cannot disable your own account.",
+          status: 400,
+        };
+      }
+      if (
+        target.role === "admin" &&
+        !target.disabled &&
+        (await this.store.countEnabledAdmins()) <= 1
+      ) {
+        return {
+          ok: false,
+          error: "Cannot disable the last enabled admin.",
+          status: 400,
+        };
+      }
+      await this.store.setUserDisabled(targetId, true);
+      await this.store.deleteUserSessions(targetId);
+      this.purgeUserFromCache(targetId);
+      await this.store.audit({
+        username: target.username,
+        action: "user_disabled",
+        ip: ctx.ip,
+        detail: `by ${actor.username}`,
+      });
+    } else {
+      await this.store.setUserDisabled(targetId, false);
+      await this.store.audit({
+        username: target.username,
+        action: "user_enabled",
+        ip: ctx.ip,
+        detail: `by ${actor.username}`,
+      });
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Change a user's role. Guard: cannot demote the last enabled admin (a
+   * self-demotion is allowed ONLY while another enabled admin remains — the
+   * `countEnabledAdmins() <= 1` check covers both, since that lone admin is the
+   * actor). Sweeps the resolve cache so the new role is authoritative on the
+   * target's next in-process request (no 60s stale window).
+   */
+  async adminSetRole(
+    targetId: number,
+    role: string,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminMutation> {
+    if (!isAssignableRole(role)) {
+      return { ok: false, error: "Invalid role.", status: 400 };
+    }
+    const target = await this.store.getUserById(targetId);
+    if (!target) return { ok: false, error: "No such user.", status: 404 };
+
+    const demotingAdmin =
+      target.role === "admin" && role !== "admin" && !target.disabled;
+    if (demotingAdmin && (await this.store.countEnabledAdmins()) <= 1) {
+      return {
+        ok: false,
+        error: "Cannot demote the last enabled admin.",
+        status: 400,
+      };
+    }
+    const from = target.role;
+    await this.store.setUserRole(targetId, role);
+    this.purgeUserFromCache(targetId);
+    await this.store.audit({
+      username: target.username,
+      action: "role_changed",
+      ip: ctx.ip,
+      detail: `by ${actor.username}; ${from} -> ${role}`,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Reset a user's password to a fresh temp value with mustChange=TRUE and
+   * revoke ALL their sessions (they re-login through /setup). Returns the temp
+   * password once — never persisted/logged, and the audit row omits it.
+   */
+  async adminResetPassword(
+    targetId: number,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminResult<{ tempPassword: string }>> {
+    const target = await this.store.getUserById(targetId);
+    if (!target) return { ok: false, error: "No such user.", status: 404 };
+    const tempPassword = generateBootstrapPassword();
+    const passwordHash = await hashPassword(tempPassword, this.hashParams);
+    await this.store.updatePassword(targetId, passwordHash, true);
+    await this.store.deleteUserSessions(targetId);
+    this.purgeUserFromCache(targetId);
+    await this.store.audit({
+      username: target.username,
+      action: "password_reset",
+      ip: ctx.ip,
+      detail: `by ${actor.username}`,
+    });
+    return { ok: true, tempPassword };
+  }
+
+  /** Revoke ALL of a user's sessions (a "log them out everywhere" button). */
+  async adminRevokeSessions(
+    targetId: number,
+    actor: SessionInfo,
+    ctx: RequestCtx,
+  ): Promise<AdminMutation> {
+    const target = await this.store.getUserById(targetId);
+    if (!target) return { ok: false, error: "No such user.", status: 404 };
+    await this.store.deleteUserSessions(targetId);
+    this.purgeUserFromCache(targetId);
+    await this.store.audit({
+      username: target.username,
+      action: "sessions_revoked",
+      ip: ctx.ip,
+      detail: `by ${actor.username}`,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Purge every cached resolve for a user by userId — called on disable /
+   * demote / reset / revoke so a role/disable change is authoritative on THIS
+   * process's next request instead of surviving up to the cache TTL.
+   *
+   * RESIDUAL (multi-replica): each process caches independently, so OTHER
+   * replicas still serve a stale role for up to WEBUI_SESSION_CACHE_TTL_MS
+   * (default 60s). Set WEBUI_SESSION_CACHE_TTL_MS=0 (auth/index.ts) on clustered
+   * deploys to make every resolve DB-authoritative and remove the window.
+   */
+  private purgeUserFromCache(userId: number): void {
+    for (const [hash, entry] of this.cache) {
+      if (entry.info.userId === userId) this.cache.delete(hash);
+    }
+  }
+
+  private toSummary(u: UserRow): UserSummary {
+    // Freshly-created rows: createdAt ≈ now (the list refetch carries the exact
+    // DB value; this is only the immediate create-response echo).
+    return {
+      id: u.id,
+      username: u.username,
+      role: u.role,
+      mustChange: u.mustChange,
+      disabled: u.disabled,
+      lockedUntil: u.lockedUntil,
+      createdAt: new Date(this.now()),
+    };
   }
 
   /** Revoke a single session (logout). */
