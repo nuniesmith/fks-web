@@ -13,7 +13,8 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 | Risk gates (session halt / breaker) | Postgres `framework_risk_state` | keys `kucoin-futures/risk/<SYM>` (paper) / `kucoin-futures-live/risk/<SYM>` (live); halt rendered rollover-aware, breaker rendered against the 3600s cooldown — same logic as the bot's own exporter |
 | Session PnL (UTC day) | Postgres `funding_paper_records` | shared ledger, discriminated by the `mode` key (`live` rows → live instance, everything else → paper); close actions `exit` / `stop_exit` / `kill_exit` (mirrors `is_close_action`); closes without `net_pnl_usdt` are FLAGGED, never imputed |
 | Armed-path telemetry (halt / breaker / resting-stop divergence / order errors / open notional) | Prometheus (`fks_prometheus:9090`) | the #18 `:9092` exporter series (`fks_bot_session_halt_active`, `fks_bot_circuit_breaker_tripped`, `fks_bot_resting_stop_present/expected`, `fks_bot_order_errors_total`, `fks_bot_open_positions`, `fks_bot_open_notional_usd`, `fks_bot_open_position_entry_unix`), all selected `{mode="live"}` — the scrape job (`fks-bots-risk`) only targets live funding bots |
-| Unrealized ret% (paper only) | the paper twin's `/status` via the existing `/api/exchanges/status` proxy | the live twin's status server is not proxied yet (deferred) |
+| Unrealized ret% (paper) | the paper twin's `/status` via the existing `/api/exchanges/status` proxy | per-symbol `ret_pct` on open paper positions |
+| Unrealized ret% + mark px (live) | the live twin's `/status` via `/api/cockpit/live-status` (M3 Phase A) | three-state honest feed — see "Live-twin /status feed" below; `configured:false` until the live funding bot is spawned (Gate-A ~Aug 1) |
 
 ## Honest-empty rules
 
@@ -110,10 +111,45 @@ The live-futures dashboard + kill switch for the funding-reversion bot
   bot never ran there) the cockpit reports not-configured and REFUSES to
   write a sentinel — it will not create tables or write into the wrong DB.
 - Prometheus is reached via the existing `PROMETHEUS_INTERNAL_URL` seam.
+- `CRYPTO_FUNDING_LIVE_INTERNAL_URL` — the LIVE funding twin's status server
+  base (the live counterpart of `CRYPTO_FUNDING_INTERNAL_URL`). **EMPTY by
+  default = "not configured"**, and deliberately so: it is NOT defaulted to a
+  container DNS name. A wrong default that resolved to the PAPER twin
+  (`fks-bot-crypto-funding:9091`) would silently render paper PnL as live —
+  the exact bug this feed exists to prevent (the FR_INSTANCE parallel: the
+  sentinel is instance-keyed for the same reason). Set the fks compose
+  passthrough
+  `CRYPTO_FUNDING_LIVE_INTERNAL_URL=${CRYPTO_FUNDING_LIVE_INTERNAL_URL:-}`
+  (a separate one-line fks PR) ONLY once the live funding bot is spawned
+  (Gate-A ~Aug 1), pointing at the live container (e.g.
+  `http://fks-bot-crypto-funding-live:9091`).
+
+## Live-twin /status feed (M3 Phase A)
+
+`GET /api/cockpit/live-status` proxies the live funding twin's own `/status`
+`BotStatus` document (the live counterpart of the paper `/api/exchanges/status`
+feed) so the LIVE tab's Open-positions "Unrealized" column shows REAL ret% +
+mark px once the bot is armed. It is **born honest** — a three-state payload
+that stays distinguishable (errors are never collapsed to `{}`):
+
+| State | Payload | Cockpit render |
+|---|---|---|
+| env unset | `{configured:false}` | honest `n/a`; tooltip names `CRYPTO_FUNDING_LIVE_INTERNAL_URL` to set |
+| set-but-unreachable / timeout / non-`BotStatus` reply | `{configured:true, reachable:false, reason}` | amber **"status feed down"** — an armed bot whose status server died is an OUTAGE, never `n/a` |
+| pointed at a PAPER document (`mode` not live-ish) | `{configured:true, reachable:true, status, mode_mismatch:true}` | red panel flag; PnL suppressed (paper-as-live trap) |
+| live `BotStatus` | `{configured:true, reachable:true, status, mode_mismatch:false}` | per-symbol `ret_pct` (mark px in the title) |
+
+Validation mirrors `/api/exchanges/status`: the reply must be a `BotStatus`
+(`"bot" in j`); anything else is `reachable:false` with a reason. The
+mode-mismatch guard asserts `status.mode` is live-ish (`isLiveMode`) — pointing
+the env at the paper container is flagged, not rendered as live PnL. A symbol
+present in `funding_open_trades` (state of record) but absent from the live
+`/status` positions renders "not in /status feed" — the DB row is the source of
+existence, `/status` only enriches. No fake USD sum is derived (`/status`
+carries no per-position notional).
 
 ## Deferred (scope discipline)
 
 - Alert acknowledgement inbox (`/monitoring` stays read-only).
-- Live twin `/status` proxy (unrealized PnL for the live instance).
 - Spawner respawn button + live-spawn friction (tracked separately in the
   fks-web survey recs).

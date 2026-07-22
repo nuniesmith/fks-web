@@ -35,6 +35,7 @@
   } from '$lib/cockpit/model';
   import type { ArmedTelemetry } from '$lib/cockpit/promParse';
   import type { ExchangesStatus } from '$lib/types/exchanges';
+  import type { LiveStatusResp } from '$lib/types/cockpit-live';
   import { page } from '$app/stores';
 
   // Role-aware affordances (A5) — UX honesty only; the seam (routeRequest)
@@ -67,14 +68,19 @@
   const statePoll = createPoll<CockpitStateResp>('/api/cockpit/state', 5_000);
   const telemetry = createPoll<ArmedTelemetry>('/api/cockpit/telemetry', 10_000);
   const exStatus = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Live-twin /status feed (M3 Phase A). Three-state, honest: {configured:false}
+  // until the live funding bot is spawned (Gate-A ~Aug 1), then reachable/down.
+  const liveStatusPoll = createPoll<LiveStatusResp>('/api/cockpit/live-status', 10_000);
   $effect(() => {
     statePoll.start();
     telemetry.start();
     exStatus.start();
+    liveStatusPoll.start();
     return () => {
       statePoll.stop();
       telemetry.stop();
       exStatus.stop();
+      liveStatusPoll.stop();
     };
   });
 
@@ -96,11 +102,31 @@
           cockpit.instances?.live?.sentinel?.state === 'killed')),
   );
 
-  /** Unrealized ret% per symbol from the paper twin's /status document (the
-   *  live twin's status server is not proxied yet — shown only for paper). */
+  /** Unrealized ret% per symbol from the paper twin's /status document (shown
+   *  only for the paper instance). */
   let paperRetBySym = $derived.by(() => {
     const m: Record<string, number> = {};
     for (const p of fundingStatus?.positions ?? []) m[p.symbol] = p.ret_pct;
+    return m;
+  });
+
+  // ── Live-twin /status (M3 Phase A) — the honest three-state feed ───────────
+  let liveStatus = $derived<LiveStatusResp | null>($liveStatusPoll ?? null);
+  /** true only when a live-twin URL is configured (env set). */
+  let liveConfigured = $derived(liveStatus?.configured === true);
+  /** true = configured but the fetch failed/timed out/returned a non-status
+   *  reply. An armed bot whose status server died is an OUTAGE, not "n/a". */
+  let liveFeedDown = $derived(liveConfigured && liveStatus?.reachable === false);
+  /** true = the env is pointed at a PAPER twin by mistake (paper-as-live trap). */
+  let liveModeMismatch = $derived(liveStatus?.mode_mismatch === true);
+  /** Unrealized ret% + mark px per symbol from the LIVE twin's /status document
+   *  (mirrors paperRetBySym). Empty unless reachable AND not a paper mismatch. */
+  let liveRetBySym = $derived.by(() => {
+    const m: Record<string, { ret_pct: number; mark_px: number }> = {};
+    if (!liveStatus?.reachable || liveModeMismatch) return m;
+    for (const p of liveStatus.status?.positions ?? []) {
+      m[p.symbol] = { ret_pct: p.ret_pct, mark_px: p.mark_px };
+    }
     return m;
   });
 
@@ -357,12 +383,33 @@
                 <td>{p.entryPx}</td>
                 <td>{ago(p.entryTMs)}</td>
                 <td>
-                  {#if selected === 'paper' && paperRetBySym[p.symbol] !== undefined}
-                    <span class={paperRetBySym[p.symbol] >= 0 ? 'pos' : 'neg'}>
-                      {paperRetBySym[p.symbol].toFixed(2)}%
+                  {#if selected === 'paper'}
+                    {#if paperRetBySym[p.symbol] !== undefined}
+                      <span class={paperRetBySym[p.symbol] >= 0 ? 'pos' : 'neg'}>
+                        {paperRetBySym[p.symbol].toFixed(2)}%
+                      </span>
+                    {:else}
+                      <span class="muted" title="Unrealized PnL needs the instance's own /status feed — not wired for this instance yet.">n/a</span>
+                    {/if}
+                  {:else if !liveConfigured}
+                    <!-- env unset: honest n/a, tooltip names the var to set -->
+                    <span class="muted" title="Live unrealized needs the live twin's /status feed — set CRYPTO_FUNDING_LIVE_INTERNAL_URL (empty by default) to enable.">n/a</span>
+                  {:else if liveModeMismatch}
+                    <!-- env pointed at a PAPER twin: refuse to render paper PnL as live -->
+                    <span class="neg" title="The configured live-status URL serves a PAPER document (mode is not live) — refusing to show paper PnL as live.">⚠ paper doc</span>
+                  {:else if liveFeedDown}
+                    <!-- armed bot whose status server died = OUTAGE, never n/a -->
+                    <span class="feed-down" title={liveStatus?.reason ?? 'live status feed unreachable'}>status feed down</span>
+                  {:else if liveRetBySym[p.symbol] !== undefined}
+                    <span
+                      class={liveRetBySym[p.symbol].ret_pct >= 0 ? 'pos' : 'neg'}
+                      title="mark {liveRetBySym[p.symbol].mark_px}"
+                    >
+                      {liveRetBySym[p.symbol].ret_pct.toFixed(2)}%
                     </span>
                   {:else}
-                    <span class="muted" title="Unrealized PnL needs the instance's own /status feed — not wired for this instance yet.">n/a</span>
+                    <!-- DB row is source of record; /status only enriches -->
+                    <span class="muted" title="This symbol is in funding_open_trades (state of record) but absent from the live /status feed.">not in /status feed</span>
                   {/if}
                 </td>
                 <td>
@@ -380,6 +427,18 @@
       {#if (cockpit?.other_instance_keys?.length ?? 0) > 0}
         <p class="data-flag">
           Keys under other instance prefixes exist: {cockpit?.other_instance_keys?.join(', ')}
+        </p>
+      {/if}
+      {#if selected === 'live' && liveModeMismatch}
+        <p class="data-flag-red">
+          ⚠ Live-status feed is serving a PAPER document (mode = “{liveStatus?.status?.mode}”).
+          Unrealized PnL is suppressed — check that CRYPTO_FUNDING_LIVE_INTERNAL_URL points at
+          the LIVE twin, not the paper container.
+        </p>
+      {:else if selected === 'live' && liveFeedDown}
+        <p class="data-flag">
+          Live-status feed unreachable ({liveStatus?.reason ?? 'no reason'}) — an armed bot's
+          status server is down. Unrealized shows an outage, not n/a.
         </p>
       {/if}
     </Panel>
@@ -759,6 +818,16 @@
     font-size: 11px;
     color: var(--amber);
     margin: 0;
+  }
+  .data-flag-red {
+    font-size: 11px;
+    color: var(--red);
+    margin: 0;
+    font-weight: 600;
+  }
+  .feed-down {
+    color: var(--amber);
+    font-size: 11px;
   }
   .panel-grid {
     display: grid;
