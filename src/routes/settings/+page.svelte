@@ -5,11 +5,18 @@
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Panel from '$components/ui/Panel.svelte';
+  import EmptyState from '$components/ui/EmptyState.svelte';
+  import { createPoll } from '$lib/stores/poll';
+  import { fmtRelative, fmtDateTime } from '$lib/utils/format';
   import {
     NOTIFY_EVENT_KINDS,
     ALWAYS_DELIVERED_EVENT_IDS,
     isKnownEventKind,
+    coerceNotificationHistory,
+    kindBadgeVariant,
+    outcomeIsOk,
     type NotificationChannel,
+    type NotificationHistory,
   } from '$lib/types/notifications';
 
   // ─── Role-aware affordances (A5) ────────────────────────────────────
@@ -398,6 +405,27 @@
   let channelTesting = $state<string | null>(null); // one in-flight test at a time
   let channelFeedback = $state('');
   let channelFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
+
+  // ─── Notification delivery history (Phase E) ────────────────────────
+  // The read side of the notifier: one row per webhook send ATTEMPT (real
+  // fires + test probes) from the spawner's `notification_log` ledger, so the
+  // operator can answer "did the 3am crash page actually send?". The adapter
+  // already coerces the response; we re-run the SAME pure coercer as a poll
+  // transform for belt-and-suspenders (a bad payload never reaches the panel).
+  // 30s cadence via the shared poll engine — never a hand-rolled setInterval.
+  // `/settings` scrolls at the pane level, so this panel stays rigid and caps
+  // the list at 50 rather than adding a nested scroller.
+  const history = createPoll<NotificationHistory>(
+    '/api/settings/notifications/history?limit=50',
+    30_000,
+    { transform: coerceNotificationHistory },
+  );
+  const historyLoading = history.loading;
+  const historyError = history.error;
+  $effect(() => {
+    history.start();
+    return () => history.stop();
+  });
 
   // ─── API: Notification Channels ────────────────────────────────────
 
@@ -993,8 +1021,9 @@
               {/each}
             </div>
             <span class="form-hint">
-              Bot crashed is always delivered (it bypasses the filter). Tick any
-              additional events to include, or re-enable catch-all above.
+              Always-sent events (crash, restart, live-flip, risk halt) bypass
+              the filter and stay checked. Tick any additional events to include,
+              or re-enable catch-all above.
             </span>
           {/if}
         </div>
@@ -1018,10 +1047,78 @@
         </div>
         <div class="cred-hint">
           Submit-only: the webhook URL is stored encrypted server-side and never
-          returned. The spawner delivers the five lifecycle events above to their
-          scoped channels live; a channel scoped to ids it doesn't emit receives
-          nothing (except the always-delivered crash page).
+          returned. The spawner delivers the events above to their scoped
+          channels live; a channel scoped to ids it doesn't emit receives
+          nothing (except the always-delivered pages: crash, restart, live-flip,
+          risk halt).
         </div>
+      </div>
+    </Panel>
+
+    <!-- ── Panel: Notification history ────────────────────────────── -->
+    <!-- Read side of the notifier: the spawner's delivery ledger
+         (notification_log, fks 013), one row per webhook send ATTEMPT. Answers
+         "did the crash page actually send at 3am?" without docker logs. HONEST
+         STATES: skeleton while loading, an amber line when the ledger DB/table
+         is absent (NOT a fake-empty list), and a real empty state otherwise.
+         Rigid panel — the pane scrolls; the list caps at 50 (no nested
+         overflow). -->
+    <Panel title="Notification history">
+      {#if $history === null}
+        {#if $historyError}
+          <div class="status-display key-status">
+            <span class="status-dot dot-amber"></span>
+            <span class="mono">Notification history unreachable</span>
+          </div>
+        {:else}
+          <div class="notif-log" aria-busy="true">
+            <Skeleton lines={4} height="20px" />
+          </div>
+        {/if}
+      {:else if !$history.db_enabled}
+        <!-- The ledger DB is off or the 013 migration was never applied. Say so
+             explicitly — an empty list here would lie ("nothing sent") when the
+             truth is "we can't see whether anything sent". -->
+        <div class="status-display key-status">
+          <span class="status-dot dot-amber"></span>
+          <span class="mono"
+            >History unavailable — spawner DB off or notification_log table missing (013 not
+            applied)</span
+          >
+        </div>
+      {:else if $history.entries.length === 0}
+        <EmptyState
+          icon="🔔"
+          title="No notifications recorded yet"
+          hint="Sends show up here as bots spawn, stop, or crash and your channels fire."
+        />
+      {:else}
+        <div class="notif-log">
+          {#each $history.entries as row, i (`${row.ts}|${row.channel_name}|${row.event}|${i}`)}
+            <div class="notif-row">
+              <span class="notif-time" title={fmtDateTime(row.ts)}>{fmtRelative(row.ts)}</span>
+              <Badge variant={kindBadgeVariant(row.event)}>{row.event || '—'}</Badge>
+              <span class="notif-bot mono" title={row.bot_id}>{row.bot_id || '—'}</span>
+              <span class="notif-chan" title={row.channel_name}>{row.channel_name || '—'}</span>
+              <span class="notif-outcome" title={row.outcome}>
+                <span
+                  class="status-dot {outcomeIsOk(row.outcome) ? 'dot-green' : 'dot-red'}"
+                ></span>
+                <span class="mono"
+                  >{row.outcome || '—'}{row.status_code != null ? ` ${row.status_code}` : ''}</span
+                >
+              </span>
+              {#if row.detail}
+                <span class="notif-detail" title={row.detail}>{row.detail}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="cred-hint">
+        One row per webhook send attempt (real events + test probes), newest first — last 50,
+        refreshed every 30s. The detail snippet is URL-free: the ledger never stores the webhook
+        address.
       </div>
     </Panel>
 
@@ -1588,6 +1685,73 @@
 
   .ev-known {
     color: var(--t2);
+  }
+
+  /* ── Notification history rows ──────────────────────────────────────
+     One compact row per send attempt. The pane is the scroller (`.page`
+     document scroll); this list stays rigid and is capped at 50 rows, so
+     there is deliberately NO overflow:auto here. */
+  .notif-log {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 6px;
+  }
+
+  .notif-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: var(--bg2);
+    border: 1px solid var(--b1);
+    border-radius: var(--r);
+    font-size: 10px;
+    min-width: 0;
+  }
+
+  .notif-time {
+    color: var(--t3);
+    white-space: nowrap;
+    flex: 0 0 auto;
+    min-width: 56px;
+  }
+
+  .notif-bot {
+    color: var(--t2);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+  }
+
+  .notif-chan {
+    color: var(--t2);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+  }
+
+  .notif-outcome {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--t3);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .notif-detail {
+    color: var(--t3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: right;
   }
 
   /* Always-delivered event row: the disabled checkbox reads as "locked on". */

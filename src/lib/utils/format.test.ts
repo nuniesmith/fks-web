@@ -13,6 +13,7 @@ import {
   directionVariant,
   fmtTime,
   fmtDateTime,
+  fmtRelative,
 } from "./format";
 
 describe("fmtPrice", () => {
@@ -149,5 +150,26 @@ describe("fmtTime / fmtDateTime", () => {
     expect(fmtDateTime(Date.UTC(2025, 6, 18, 14, 32))).toMatch(
       /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/,
     );
+  });
+});
+
+describe("fmtRelative", () => {
+  it("returns — for null / invalid input", () => {
+    expect(fmtRelative(null)).toBe("—");
+    expect(fmtRelative(undefined)).toBe("—");
+    expect(fmtRelative("not-a-date")).toBe("—");
+  });
+
+  it("buckets an age into just-now / s / m / h / d ago", () => {
+    const now = Date.now();
+    expect(fmtRelative(now - 1_000)).toBe("just now");
+    expect(fmtRelative(now - 30_000)).toBe("30s ago");
+    expect(fmtRelative(now - 5 * 60_000)).toBe("5m ago");
+    expect(fmtRelative(now - 2 * 3_600_000)).toBe("2h ago");
+    expect(fmtRelative(now - 3 * 86_400_000)).toBe("3d ago");
+  });
+
+  it("clamps a future timestamp to just now (never negative)", () => {
+    expect(fmtRelative(Date.now() + 60_000)).toBe("just now");
   });
 });

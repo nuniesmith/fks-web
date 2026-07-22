@@ -169,6 +169,24 @@ export function fmtDateTime(ts: string | number | undefined | null): string {
 }
 
 /**
+ * Format a timestamp as a compact relative age, e.g. "just now", "30s ago",
+ * "5m ago", "2h ago", "3d ago". Client-safe (mirrors the server's
+ * `humanizeSince` but lives in `$lib/utils` so components can import it, and
+ * appends "ago"). Pair with `fmtDateTime` in a `title=` for the exact instant.
+ */
+export function fmtRelative(ts: string | number | undefined | null): string {
+  if (ts == null) return "—";
+  const t = typeof ts === "number" ? ts : Date.parse(ts);
+  if (Number.isNaN(t)) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/**
  * Return the current wall-clock time as a "HH:MM:SS TZ" string,
  * suitable for the terminal strip clock.
  */

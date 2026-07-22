@@ -34,7 +34,10 @@ import {
 import { clientIp } from "$lib/server/auth/http";
 import type { RequestCtx } from "$lib/server/auth/service";
 import { invitesDispatch, usersDispatch } from "$lib/server/users";
-import { validateNotificationEvents } from "$lib/types/notifications";
+import {
+  coerceNotificationHistory,
+  validateNotificationEvents,
+} from "$lib/types/notifications";
 import {
   cockpitKillPost,
   cockpitLiveStatusGet,
@@ -804,6 +807,34 @@ async function notificationsList(event: RequestEvent): Promise<Response> {
   }
 }
 
+// GET /api/settings/notifications/history → spawner GET /notifications/history,
+// the delivery ledger (one row per webhook send ATTEMPT — real fires + test
+// probes) so the operator can answer "did the 3am crash page actually send?".
+// R4 read at the seam: viewer-visible, contains NO secrets (the ledger detail
+// is URL-free by the spawner contract — the table doesn't hold the webhook URL).
+// Passes `?limit=` + `?event=` through and DEFENSIVELY reshapes: any non-2xx,
+// bad JSON, or malformed row degrades to {db_enabled:false, entries:[]} rather
+// than surfacing garbage — same contract as the sibling mappers above.
+async function notificationsHistory(event: RequestEvent): Promise<Response> {
+  const src = new URL(event.request.url).searchParams;
+  const qs = new URLSearchParams();
+  const limit = src.get("limit");
+  if (limit) qs.set("limit", limit);
+  const evt = src.get("event");
+  if (evt) qs.set("event", evt);
+  const query = qs.toString();
+  const url = `${SPAWNER_URL}/notifications/history${query ? `?${query}` : ""}`;
+  try {
+    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
+    const r = await fetch(url, { headers });
+    if (!r.ok) return json({ db_enabled: false, entries: [] });
+    const j: unknown = await r.json().catch(() => null);
+    return json(coerceNotificationHistory(j));
+  } catch {
+    return json({ db_enabled: false, entries: [] });
+  }
+}
+
 // POST /api/settings/notifications → spawner POST /notifications. The browser
 // submits { name, url, events?, kind? } and forgets it (the URL is never
 // returned). Empty/absent events = catch-all ("send everything").
@@ -1235,6 +1266,15 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // submits only; list reports name/kind/events, never the webhook URL).
   if (pathname === "/api/settings/notifications") {
     return event.request.method === "POST" ? notificationsPost(event) : notificationsList(event);
+  }
+  // Delivery-ledger read surface (Phase E). Registered BEFORE the generic
+  // `/notifications/(.+)` DELETE matcher below so intent is obvious — it is
+  // GET-only, so the DELETE matcher can never shadow it regardless of order.
+  if (
+    pathname === "/api/settings/notifications/history" &&
+    event.request.method === "GET"
+  ) {
+    return notificationsHistory(event);
   }
   const notificationTestMatch = /^\/api\/settings\/notifications\/(.+)\/test$/.exec(pathname);
   if (notificationTestMatch && event.request.method === "POST") {
