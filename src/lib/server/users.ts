@@ -4,6 +4,7 @@
  * pattern (JSON in/out, injectable service so the logic is tested DB-free).
  *
  *   GET  /api/users                        → { users: UserSummary[] }
+ *   GET  /api/users/audit?limit=100        → { events: AuditView[] }  (Phase D)
  *   POST /api/users {username, role}       → { ok, user, tempPassword }
  *   POST /api/users/:id/disable            → { ok }
  *   POST /api/users/:id/enable             → { ok }
@@ -60,6 +61,18 @@ function requireAdmin(auth: AuthState | undefined): SessionInfo | Response {
 const ROUTE =
   /^\/api\/users(?:\/(\d+)\/(disable|enable|role|reset-password|revoke-sessions))?$/;
 
+/** Audit viewer defaults (Phase D). The query `limit` is validated + clamped
+ *  into [1, MAX] so a caller can neither over-fetch nor pass a garbage value. */
+const AUDIT_DEFAULT_LIMIT = 100;
+const AUDIT_MAX_LIMIT = 500;
+
+/** Parse + clamp `?limit=` to [1, AUDIT_MAX_LIMIT]; non-numeric/absent → default. */
+function clampAuditLimit(raw: string | null): number {
+  const n = raw === null ? NaN : Number(raw);
+  if (!Number.isFinite(n)) return AUDIT_DEFAULT_LIMIT;
+  return Math.min(AUDIT_MAX_LIMIT, Math.max(1, Math.floor(n)));
+}
+
 type SubAction =
   | "disable"
   | "enable"
@@ -100,6 +113,16 @@ export async function usersDispatch(
   if (actor instanceof Response) return actor;
 
   const svc = await getService();
+
+  // Audit viewer (Phase D) — GET-only read of the existing auth trail, newest
+  // first, clamped limit. Handled before the ROUTE regex (which is scoped to the
+  // user CRUD paths and would 404 this otherwise).
+  if (pathname === "/api/users/audit") {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    const limit = clampAuditLimit(new URL(request.url).searchParams.get("limit"));
+    return json({ events: await svc.adminListAudit(limit) });
+  }
+
   const m = ROUTE.exec(pathname);
   if (!m) return json({ error: "not_found" }, 404);
   const method = request.method;

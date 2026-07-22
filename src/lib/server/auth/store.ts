@@ -63,6 +63,20 @@ export interface AuditEntry {
   detail: string;
 }
 
+/**
+ * An audit row projected for the admin viewer (`GET /api/users/audit`). Same
+ * fields as the write-shape `AuditEntry` PLUS the DB-assigned `at` timestamp
+ * (which `AuditEntry` omits — the column defaults it, so the writer never
+ * supplies it). Ordering (newest first) is the store's responsibility.
+ */
+export interface AuditView {
+  at: Date;
+  username: string;
+  action: string;
+  ip: string;
+  detail: string;
+}
+
 /** An invite to mint — the raw token never crosses this boundary, only its
  *  sha256 (same discipline as NewSession.tokenHash). */
 export interface NewInvite {
@@ -143,6 +157,13 @@ export interface AuthStore {
   /** Revoke all of a user's sessions, optionally keeping one (the caller's). */
   deleteUserSessions(userId: number, exceptTokenHash?: string): Promise<void>;
   audit(entry: AuditEntry): Promise<void>;
+  /**
+   * The most recent audit rows, newest first, capped at `limit` (the handler
+   * clamps `limit` to a sane range before calling). Read-only surface for the
+   * admin "Recent auth events" panel — every login/mutation/invite action
+   * already writes here, this just reads it back.
+   */
+  listAudit(limit: number): Promise<AuditView[]>;
 
   // ── Invites (Phase C) ──────────────────────────────────────────────────────
   createInvite(invite: NewInvite): Promise<InviteRow>;

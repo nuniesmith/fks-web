@@ -23,7 +23,7 @@ import {
   validateUsername,
 } from "./policy";
 import { generateBootstrapPassword, generateSessionToken, hashToken } from "./tokens";
-import type { AuthStore, UserRow, UserSummary } from "./store";
+import type { AuditView, AuthStore, UserRow, UserSummary } from "./store";
 
 /** Roles an admin may assign — the CHECK-constrained set (schema.sql). */
 export const ASSIGNABLE_ROLES = ["admin", "operator", "viewer"] as const;
@@ -395,6 +395,16 @@ export class AuthService {
   /** List all users, secret-free, for the admin console. */
   async adminListUsers(): Promise<UserSummary[]> {
     return this.store.listUsers();
+  }
+
+  /**
+   * The most recent audit rows (newest first) for the admin "Recent auth
+   * events" panel. Read-only — every login/mutation/invite path already writes
+   * here (B1/C2), so this surfaces the existing trail without a new schema or a
+   * new write. `limit` is clamped by the handler before it reaches the store.
+   */
+  async adminListAudit(limit: number): Promise<AuditView[]> {
+    return this.store.listAudit(limit);
   }
 
   /**

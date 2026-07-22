@@ -20,7 +20,7 @@
   import { usersApi } from "$lib/api/users";
   import { invitesApi } from "$lib/api/invites";
   import { ApiError } from "$lib/api/client";
-  import type { AssignableRole, UserSummary } from "$lib/types/users";
+  import type { AssignableRole, AuditEvent, UserSummary } from "$lib/types/users";
   import type { InviteRole, InviteStatus, InviteSummary } from "$lib/types/invites";
 
   const ROLES: AssignableRole[] = ["admin", "operator", "viewer"];
@@ -261,6 +261,65 @@
     if (s === "revoked") return "red";
     if (s === "expired") return "amber";
     return "default"; // redeemed
+  }
+
+  // ── Recent auth events (Phase D) ────────────────────────────────────────────
+  // Read-only view of the existing audit trail — every login/mutation/invite
+  // action already writes a row (Phase B/C); this only surfaces them.
+  let events = $state<AuditEvent[] | null>(null);
+  let eventsError = $state<string | null>(null);
+
+  async function loadAudit() {
+    eventsError = null;
+    try {
+      const r = await usersApi.audit(100);
+      events = r.events;
+    } catch (e) {
+      eventsError = errText(e);
+      events = [];
+    }
+  }
+
+  $effect(() => {
+    void loadAudit();
+  });
+
+  // Color-code by CLASS: failures (red), auth successes (green), admin
+  // mutations (purple), invite events (cyan). Unknown verbs fall back neutral.
+  const AUTH_OK = new Set(["login_ok", "logout", "bootstrap", "credential_change"]);
+  const AUTH_FAIL = new Set(["login_fail", "lockout"]);
+  const ADMIN_MUTATION = new Set([
+    "user_created",
+    "user_disabled",
+    "user_enabled",
+    "role_changed",
+    "password_reset",
+    "sessions_revoked",
+  ]);
+  const INVITE_EVENT = new Set(["invite_created", "invite_redeemed", "invite_revoked"]);
+
+  function actionVariant(action: string): "green" | "red" | "purple" | "cyan" | "default" {
+    if (AUTH_FAIL.has(action)) return "red";
+    if (AUTH_OK.has(action)) return "green";
+    if (ADMIN_MUTATION.has(action)) return "purple";
+    if (INVITE_EVENT.has(action)) return "cyan";
+    return "default";
+  }
+
+  function relTime(iso: string): string {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return "—";
+    const diff = Date.now() - t;
+    if (diff < 0) return "just now";
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 30) return `${d}d ago`;
+    return new Date(iso).toLocaleDateString();
   }
 </script>
 
@@ -562,6 +621,41 @@
       </div>
     {/if}
   </Panel>
+
+  <Panel title="Recent auth events" noPad>
+    {#if events === null}
+      <div class="pad"><Skeleton /></div>
+    {:else if eventsError}
+      <EmptyState icon="⚠️" title="Failed to load audit trail" variant="error" hint={eventsError} />
+    {:else if events.length === 0}
+      <EmptyState icon="🗒️" title="No events yet" hint="Logins and admin actions will appear here." />
+    {:else}
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Action</th>
+              <th>User</th>
+              <th>IP</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each events as ev, i (i)}
+              <tr>
+                <td class="dim" title={new Date(ev.at).toLocaleString()}>{relTime(ev.at)}</td>
+                <td><Badge variant={actionVariant(ev.action)}>{ev.action}</Badge></td>
+                <td><span class="uname">{ev.username || "—"}</span></td>
+                <td class="dim mono">{ev.ip || "—"}</td>
+                <td class="dim detail">{ev.detail || "—"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </Panel>
 </div>
 
 <style>
@@ -753,5 +847,13 @@
   .invite-url {
     word-break: break-all;
     font-size: 12px;
+  }
+  .mono {
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+  }
+  .detail {
+    max-width: 40ch;
+    word-break: break-word;
   }
 </style>

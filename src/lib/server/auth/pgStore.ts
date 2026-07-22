@@ -6,6 +6,7 @@ import postgres from "postgres";
 import { SCHEMA_SQL } from "./schema";
 import type {
   AuditEntry,
+  AuditView,
   AuthStore,
   InviteRow,
   InviteSummary,
@@ -315,6 +316,25 @@ export class PgStore implements AuthStore {
     await this.sql`
       INSERT INTO webui_auth_audit (username, action, ip, detail)
       VALUES (${entry.username}, ${entry.action}, ${entry.ip}, ${entry.detail})`;
+  }
+
+  async listAudit(limit: number): Promise<AuditView[]> {
+    // Newest first; ORDER BY id (monotonic BIGSERIAL) is a stable tiebreak for
+    // rows sharing an `at` to the microsecond. `limit` is pre-clamped upstream.
+    const rows = await this.sql<
+      { at: Date; username: string; action: string; ip: string; detail: string }[]
+    >`
+      SELECT at, username, action, ip, detail
+      FROM webui_auth_audit
+      ORDER BY id DESC
+      LIMIT ${limit}`;
+    return rows.map((r) => ({
+      at: r.at,
+      username: r.username,
+      action: r.action,
+      ip: r.ip,
+      detail: r.detail,
+    }));
   }
 
   // ── Invites (Phase C) ──────────────────────────────────────────────────────
