@@ -102,6 +102,140 @@ test.describe("Cockpit viewport reachability (1366x768)", () => {
   });
 });
 
+// ── Treasury phone pass (D6) ────────────────────────────────────────────────
+// The /treasury page is the operator's money home and its stated key flow is
+// "record a transfer in <15s on the phone". At 390px the record-a-transfer form
+// must be reachable and usable, the transfers ledger must not force the PAGE to
+// scroll horizontally (its own overflow-x wrapper absorbs a wide table INSIDE
+// the panel body), and the aggregate TOTAL card (D5) must render above the
+// per-account cards. Hermetic: route-mock the spawner treasury endpoints.
+async function installTreasury(page: Page): Promise<void> {
+  const now = Date.now();
+  const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
+  const accounts = {
+    total: 2,
+    db_enabled: true,
+    accounts: [
+      {
+        account_id: "personal-crypto",
+        display_name: "Personal Crypto",
+        tier: 1,
+        account_class: "personal-crypto",
+        venue: "kucoin",
+        role: "bot-trade",
+        firm: null,
+        compliance_flag: "auto-fill",
+        risk_caps: {},
+        sizing: {},
+        active: true,
+        created_at: iso(90 * 86_400_000),
+        updated_at: iso(3_600_000),
+      },
+      {
+        account_id: "cold-btc",
+        display_name: "Cold BTC Backbone",
+        tier: 0,
+        account_class: "cold-storage",
+        venue: null,
+        role: "watch",
+        firm: null,
+        compliance_flag: "manual-mirror",
+        risk_caps: {},
+        sizing: {},
+        active: true,
+        created_at: iso(90 * 86_400_000),
+        updated_at: iso(3_600_000),
+      },
+    ],
+  };
+  const netWorth = [
+    { bot_id: "personal-crypto", ts: iso(2 * 3_600_000), net_worth: 12_500, currency: "USD" },
+    { bot_id: "personal-crypto", ts: iso(3_600_000), net_worth: 12_900, currency: "USD" },
+    { bot_id: "cold-btc", ts: iso(3_600_000), net_worth: 48_000, currency: "USD" },
+  ];
+  const transfers = Array.from({ length: 12 }, (_, i) => ({
+    id: i + 1,
+    account_id: i % 2 ? "cold-btc" : "personal-crypto",
+    ts: iso((i + 1) * 86_400_000),
+    amount: i % 2 ? 500 : -120.55,
+    currency: "USD",
+    kind: i % 2 ? "deposit" : "withdrawal",
+    source: "manual",
+    note: i % 3 === 0 ? "paycheck DCA — the note column that used to widen the row" : null,
+  }));
+  const profit = (accountId: string) => ({
+    account_id: accountId,
+    since: null,
+    db_enabled: true,
+    start_ts: iso(30 * 86_400_000),
+    end_ts: iso(3_600_000),
+    start_net_worth: 10_000,
+    end_net_worth: accountId === "cold-btc" ? 48_000 : 12_900,
+    delta: 2_900,
+    deposits_in: 2_000,
+    withdrawals_out: 100,
+    net_inflows: 1_900,
+    profit: 1_000,
+    transfers: 3,
+  });
+
+  await page.route("**/api/spawner/accounts", (route) =>
+    route.fulfill({ json: accounts }),
+  );
+  // Trailing ** so the ?limit= query strings still match.
+  await page.route("**/api/spawner/net-worth**", (route) =>
+    route.fulfill({ json: netWorth }),
+  );
+  await page.route("**/api/spawner/transfers**", (route) =>
+    route.fulfill({ json: transfers }),
+  );
+  await page.route("**/api/spawner/profit**", (route) => {
+    const accountId =
+      new URL(route.request().url()).searchParams.get("account_id") ?? "personal-crypto";
+    route.fulfill({ json: profit(accountId) });
+  });
+}
+
+test.describe("Treasury viewport reachability (390x844 phone)", () => {
+  test.use({ viewport: PHONE });
+
+  test("phone: record-transfer flow reachable, ledger doesn't x-overflow the page, total card renders", async ({
+    page,
+  }) => {
+    await installTreasury(page);
+    await page.goto("/treasury");
+    await expect(page).toHaveTitle("Treasury — FKS Terminal");
+
+    // 1) The page root owns the single scroll region.
+    const pageRoot = page.locator(".page");
+    await expect(pageRoot).toBeVisible();
+    const overflowY = await pageRoot.evaluate((el) => getComputedStyle(el).overflowY);
+    expect(["auto", "scroll", "overlay"]).toContain(overflowY);
+
+    // 2) The record-a-transfer flow — the <15s phone key flow — is reachable:
+    //    the account select, amount input, and the Record submit are all there.
+    await expect(page.getByRole("button", { name: /Record deposit/i })).toBeVisible();
+    await expect(page.locator('input[inputmode="decimal"]').first()).toBeVisible();
+
+    // 3) The aggregate TOTAL card (D5) renders above the per-account cards.
+    await expect(page.getByText("All real accounts — total")).toBeVisible();
+
+    // 4) The transfers ledger is present and reachable by scrolling the page.
+    const ledgerScroll = page.locator(".page :is(table)").last();
+    await ledgerScroll.scrollIntoViewIfNeeded();
+
+    // 5) The PAGE must not scroll horizontally at 390px — a wide ledger is
+    //    absorbed by its own overflow-x wrapper INSIDE the panel body, never by
+    //    the page. This is the core D6 assertion.
+    const xOverflow = await pageRoot.evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(xOverflow).toBeLessThanOrEqual(1);
+    const docOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(docOverflow).toBeLessThanOrEqual(1);
+  });
+});
+
 test.describe("Cockpit viewport reachability (390x844 phone)", () => {
   test.use({ viewport: PHONE });
 

@@ -70,6 +70,12 @@ body {
   height: 100vh;       /* fallback for browsers without dvh */
   height: 100dvh;      /* phone: excludes dynamic browser chrome */
   overflow: hidden;
+  /* PWA T3.5 — kill the whole-shell rubber-band / pull-to-refresh: a drag on
+     non-scrollable chrome (Strip / TabBar / StatusBar) must not bounce the app
+     or reload it. `none` stops the bounce AND the browser-tab pull-to-refresh;
+     in-pane scrollers keep native feel via their own overscroll-behavior
+     (.page-scroll uses `contain`). */
+  overscroll-behavior: none;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────── */

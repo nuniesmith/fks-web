@@ -55,6 +55,22 @@
   outline-offset: 1px !important;
 }
 
+/* ── Touch input zoom guard (PWA T3.4) ─────────────────────
+   iOS Safari zooms the whole page when a control whose font-size < 16px
+   gains focus. The terminal base is 12px (tokens.css), so every text
+   input/select/textarea would trip it on the installed app. One shared
+   rule scoped to coarse pointers lifts them to 16px on touch ONLY — desktop
+   (pointer: fine) keeps the compact 12px terminal sizing untouched. This
+   replaces per-form whack-a-mole (the treasury forms already inline 16px;
+   login / bots-spawn / settings inherit the 12px base and needed this). */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 /* ── Animations ────────────────────────────────────────── */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(4px); }
