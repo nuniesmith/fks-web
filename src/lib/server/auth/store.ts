@@ -1,5 +1,5 @@
 // AuthStore — the persistence contract for Phase 1 user management. Two
-// implementations: `PgStore` (production, ruby_db) and `MemoryStore` (tests).
+// implementations: `PgStore` (production, fks_db) and `MemoryStore` (tests).
 // The service depends only on this interface, so the security logic is tested
 // with zero database.
 

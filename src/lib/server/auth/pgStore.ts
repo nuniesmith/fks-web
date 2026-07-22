@@ -1,5 +1,5 @@
 // Postgres-backed AuthStore (porsager/postgres — pure JS, no native build).
-// Targets ruby_db via the scoped `fks_webui` LOGIN role (design §4.1).
+// Targets fks_db via the scoped `fks_webui` LOGIN role (design §4.1).
 // All timestamp columns come back as JS Date via the driver's default parsing.
 
 import postgres from "postgres";

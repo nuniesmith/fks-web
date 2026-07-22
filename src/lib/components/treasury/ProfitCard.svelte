@@ -1,60 +1,31 @@
 <script lang="ts">
   /**
-   * One registry account's honest profit-vs-deposits card.
-   *
-   * Fans out `GET /profit?account_id=&since=` per window (7d / 30d / all —
-   * ET-midnight anchored, see $lib/treasury/windows.ts) and shows, for each:
-   * profit (= net-worth delta minus net inflows), deposits in, withdrawals
-   * out. Null figures (no snapshots inside the window / no DB) render as "—"
-   * — never an invented zero. `refreshToken` bumps re-fetch the card after a
-   * transfer or manual snapshot touches this account.
+   * One registry account's honest profit-vs-deposits card — purely
+   * presentational. The `/profit` fetch per window (7d / 30d / all) is owned by
+   * the /treasury page (a page-level map keyed by account) so the aggregate
+   * TOTAL card sums the SAME responses these cards render; this component just
+   * renders the slice it's handed: profit (= net-worth delta minus net inflows),
+   * deposits in, withdrawals out. Null figures (no snapshots inside the window /
+   * no DB) render as "—" — never an invented zero.
    */
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
-  import { spawner } from '$api/spawner';
-  import { ApiError } from '$api/client';
   import type { ProfitResponse, TreasuryAccount } from '$lib/types/spawner';
   import type { AccountSeries } from '$lib/treasury/rollup';
-  import { PROFIT_WINDOWS, WINDOW_LABELS, windowToSince, type ProfitWindow } from '$lib/treasury/windows';
+  import { PROFIT_WINDOWS, WINDOW_LABELS, type ProfitWindow } from '$lib/treasury/windows';
   import { classVariant, fmtMoney, fmtSignedMoney, moneyTone } from '$lib/treasury/cards';
 
-  let { account, series, refreshToken = 0 } = $props<{
+  let { account, series, profits = {}, loading = false, error = null } = $props<{
     account: TreasuryAccount;
     /** This account's snapshot series (for current value + currency). */
     series: AccountSeries | undefined;
-    /** Bump to re-fetch after a transfer / snapshot touches this account. */
-    refreshToken?: number;
+    /** This account's loaded /profit responses per window (owned by the page). */
+    profits?: Partial<Record<ProfitWindow, ProfitResponse>>;
+    /** True while the page is (re-)fetching this account's /profit windows. */
+    loading?: boolean;
+    /** Non-null when the page's /profit fetch for this account failed. */
+    error?: string | null;
   }>();
-
-  let profits = $state<Partial<Record<ProfitWindow, ProfitResponse>>>({});
-  let loading = $state(true);
-  let error = $state<string | null>(null);
-  let loadSeq = 0;
-
-  async function load(accountId: string) {
-    const seq = ++loadSeq;
-    loading = true;
-    error = null;
-    try {
-      const res = await Promise.all(
-        PROFIT_WINDOWS.map((w) => spawner.profit(accountId, windowToSince(w))),
-      );
-      if (seq !== loadSeq) return;
-      const next: Partial<Record<ProfitWindow, ProfitResponse>> = {};
-      PROFIT_WINDOWS.forEach((w, i) => (next[w] = res[i]));
-      profits = next;
-    } catch (e) {
-      if (seq !== loadSeq) return;
-      error = e instanceof ApiError ? `${e.status} ${e.statusText}` : String(e);
-    } finally {
-      if (seq === loadSeq) loading = false;
-    }
-  }
-
-  $effect(() => {
-    void refreshToken; // re-run on bump
-    void load(account.account_id);
-  });
 
   let currency = $derived(series?.currency ?? 'USD');
   // Prefer the full-history window's end snapshot; fall back to the series.

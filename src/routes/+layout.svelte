@@ -45,6 +45,9 @@
         height: 100vh;   /* fallback for browsers without dvh */
         height: 100dvh;  /* phone: excludes dynamic browser chrome */
         overflow: hidden;
+        /* PWA T3.5 — the shell root also contains overscroll so a drag that
+           starts on the chrome never rubber-bands the installed app. */
+        overscroll-behavior: none;
         /* Landscape notch: keep chrome + content clear of the side inset
            (viewport-fit=cover draws edge-to-edge). env() is 0 on desktop. */
         padding-left: env(safe-area-inset-left, 0px);

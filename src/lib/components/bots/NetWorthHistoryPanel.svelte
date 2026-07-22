@@ -4,7 +4,7 @@
    *
    * Backed by the spawner's db-gated `GET /net-worth` (proxied at
    * /api/spawner/net-worth), which reads the append-only `net_worth_snapshots`
-   * table in ruby_db. Unlike exchanges/NetWorthHistory (Prometheus, 30-day
+   * table in fks_db. Unlike exchanges/NetWorthHistory (Prometheus, 30-day
    * retention) this is the years-horizon record.
    *
    * The primary line is the carry-forward TOTAL across bots (see
@@ -264,7 +264,7 @@
         <EmptyState
           icon="📈"
           title="No net-worth history yet"
-          hint="The spawner sampler appends a row per running bot every few minutes into net_worth_snapshots (ruby_db). Fills in once a bot has been sampled — needs the spawner DB configured."
+          hint="The spawner sampler appends a row per running bot every few minutes into net_worth_snapshots (fks_db). Fills in once a bot has been sampled — needs the spawner DB configured."
         />
       </div>
     {/if}

@@ -1,6 +1,6 @@
 /**
  * Alert-ack store — the persistence half (Postgres in prod, in-memory for
- * tests + UI-first work). The table (`webui_alert_acks`, ruby_db) is created by
+ * tests + UI-first work). The table (`webui_alert_acks`, fks_db) is created by
  * the privileged initdb path (fks 011); the webui's scoped `fks_webui` role has
  * SELECT+INSERT only, so this store NEVER runs DDL — it PROBES `to_regclass`
  * and reports `configured:false` when the table is missing (cockpit.ts idiom),
@@ -124,7 +124,7 @@ let storeSingleton: PgAlertAckStore | null = null;
 
 /**
  * The ack-store connection: `WEBUI_DATABASE_URL` (the scoped fks_webui role on
- * ruby_db, where the table + grants live). Empty = not configured → the inbox
+ * fks_db, where the table + grants live). Empty = not configured → the inbox
  * reports `configured:false` and degrades to read-only (honest-empty).
  */
 export function getAlertAckStore(): AlertAckStore | null {

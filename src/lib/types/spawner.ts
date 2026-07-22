@@ -139,7 +139,7 @@ export interface RunsResponse {
 
 /**
  * One row from the spawner's `GET /net-worth` (durable `net_worth_snapshots`
- * table in ruby_db, appended by the spawner sampler). Rows come back ordered
+ * table in fks_db, appended by the spawner sampler). Rows come back ordered
  * by `ts`, oldest → newest. `venue` is null for a bot-level total (spans
  * venues). The endpoint returns a flat array — an empty array means either
  * no database is configured or nothing has been sampled yet.

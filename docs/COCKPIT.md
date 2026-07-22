@@ -97,7 +97,7 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 - `WEBUI_FR_DATABASE_URL` — connection string for the funding bot's state
   Postgres (the value of the bot's `FR_DATABASE_URL`, through a webui-scoped
   role). Falls back to `WEBUI_DATABASE_URL` (the auth-session DB — same
-  `fks_postgres`/`ruby_db` on the deployed compose). Unset → the cockpit is
+  `fks_postgres`/`fks_db` on the deployed compose). Unset → the cockpit is
   honestly "not configured" and the kill routes refuse.
 - The connecting role needs (grant explicitly; the default `fks_webui` role
   from AUTH_PHASE1 does NOT have these):
@@ -150,6 +150,9 @@ carries no per-position notional).
 
 ## Deferred (scope discipline)
 
-- Alert acknowledgement inbox (`/monitoring` stays read-only).
 - Spawner respawn button + live-spawn friction (tracked separately in the
   fks-web survey recs).
+
+(Shipped since this list was first written: the live-twin `/status` feed
+(M3 Phase A, above) and the alert-acknowledgement inbox (M3 Phase B) — the
+`/monitoring` page is no longer read-only, it carries the ack mutation.)
