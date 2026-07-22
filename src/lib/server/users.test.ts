@@ -196,6 +196,79 @@ describe("admin flow", () => {
   });
 });
 
+describe("audit viewer (Phase D)", () => {
+  it("admin-only matrix: undefined auth (outage) / operator / mustChange-admin / disabled → 403", async () => {
+    const { getService } = await harness();
+    const outage = await usersDispatch(
+      req("GET", "/api/users/audit"),
+      "/api/users/audit",
+      undefined,
+      CTX,
+      getService,
+    );
+    expect(outage.status).toBe(403);
+
+    const op: SessionInfo = { userId: 5, username: "op", role: "operator", mustChange: false };
+    const opRes = await usersDispatch(req("GET", "/api/users/audit"), "/api/users/audit", adminAuth(op), CTX, getService);
+    expect(opRes.status).toBe(403);
+
+    const mc: SessionInfo = { userId: 6, username: "adm", role: "admin", mustChange: true };
+    const mcRes = await usersDispatch(req("GET", "/api/users/audit"), "/api/users/audit", adminAuth(mc), CTX, getService);
+    expect(mcRes.status).toBe(403);
+
+    const dis = await usersDispatch(
+      req("GET", "/api/users/audit"),
+      "/api/users/audit",
+      { mode: "disabled" } as AuthState,
+      CTX,
+      getService,
+    );
+    expect(dis.status).toBe(403);
+  });
+
+  it("wrong method → 405", async () => {
+    const { adminSession, getService } = await harness();
+    const res = await usersDispatch(req("POST", "/api/users/audit"), "/api/users/audit", adminAuth(adminSession), CTX, getService);
+    expect(res.status).toBe(405);
+  });
+
+  it("admin GET returns events newest-first", async () => {
+    const { adminSession, getService, store } = await harness();
+    await store.audit({ username: "a", action: "login_ok", ip: "1.1.1.1", detail: "" });
+    await store.audit({ username: "b", action: "role_changed", ip: "2.2.2.2", detail: "by admin" });
+    const res = await usersDispatch(req("GET", "/api/users/audit"), "/api/users/audit", adminAuth(adminSession), CTX, getService);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { events: { username: string; action: string }[] };
+    // The row written LAST comes back FIRST.
+    expect(body.events[0]).toMatchObject({ username: "b", action: "role_changed" });
+    expect(body.events[1]).toMatchObject({ username: "a", action: "login_ok" });
+  });
+
+  it("limit clamping: >max capped to 500, <1 floored to 1, garbage → default 100, in-range honored", async () => {
+    const { adminSession, getService, store } = await harness();
+    for (let i = 0; i < 600; i++) {
+      await store.audit({ username: `u${i}`, action: "login_ok", ip: "1.1.1.1", detail: "" });
+    }
+    const len = async (q: string): Promise<number> => {
+      const r = await usersDispatch(
+        req("GET", `/api/users/audit${q}`),
+        "/api/users/audit",
+        adminAuth(adminSession),
+        CTX,
+        getService,
+      );
+      expect(r.status).toBe(200);
+      return ((await r.json()) as { events: unknown[] }).events.length;
+    };
+    expect(await len("?limit=9999")).toBe(500); // capped
+    expect(await len("?limit=0")).toBe(1); // floored
+    expect(await len("?limit=-5")).toBe(1); // floored
+    expect(await len("?limit=abc")).toBe(100); // garbage → default
+    expect(await len("")).toBe(100); // absent → default
+    expect(await len("?limit=5")).toBe(5); // honored in range
+  });
+});
+
 describe("invitesDispatch — same admin defense in depth", () => {
   it("undefined auth (outage) / operator / mustChange-admin / disabled → 403, service untouched for outage", async () => {
     let touched = false;

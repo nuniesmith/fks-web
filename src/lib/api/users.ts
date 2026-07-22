@@ -6,6 +6,7 @@
 import { api } from "./client";
 import type {
   AssignableRole,
+  AuditListResponse,
   CreateUserResponse,
   OkResponse,
   ResetPasswordResponse,
@@ -24,4 +25,7 @@ export const usersApi = {
     api.post<ResetPasswordResponse>(`/api/users/${id}/reset-password`),
   revokeSessions: (id: number) =>
     api.post<OkResponse>(`/api/users/${id}/revoke-sessions`),
+  // Recent auth events (newest first); the server clamps limit to [1, 500].
+  audit: (limit = 100) =>
+    api.get<AuditListResponse>(`/api/users/audit?limit=${limit}`),
 };

@@ -4,6 +4,7 @@
 
 import type {
   AuditEntry,
+  AuditView,
   AuthStore,
   InviteRow,
   InviteSummary,
@@ -24,8 +25,9 @@ export class MemoryStore implements AuthStore {
   private invites = new Map<number, InviteRow>();
   private seq = 0;
   private inviteSeq = 0;
-  /** Exposed for test assertions on the append-only audit trail. */
-  readonly auditLog: AuditEntry[] = [];
+  /** Exposed for test assertions on the append-only audit trail. Carries the
+   *  synthetic `at` stamp so `listAudit` can order/return it like Postgres. */
+  readonly auditLog: AuditView[] = [];
   /**
    * Test seam for the concurrent-claim race: an async hook awaited INSIDE the
    * atomic `redeemInvite` (after the read, before the write), so a test can
@@ -196,7 +198,15 @@ export class MemoryStore implements AuthStore {
   }
 
   async audit(entry: AuditEntry): Promise<void> {
-    this.auditLog.push({ ...entry });
+    this.auditLog.push({ ...entry, at: new Date() });
+  }
+
+  async listAudit(limit: number): Promise<AuditView[]> {
+    // Append-only in chronological order → newest-first is a reversed tail.
+    return this.auditLog
+      .slice(-limit)
+      .reverse()
+      .map((e) => ({ ...e }));
   }
 
   // ── Invites (Phase C) ──────────────────────────────────────────────────────

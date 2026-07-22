@@ -36,3 +36,20 @@ export interface ResetPasswordResponse {
 export interface OkResponse {
   ok: true;
 }
+
+/** One row of the auth audit trail, as surfaced to the admin viewer (Phase D).
+ *  `at` is an ISO timestamp string (JSON), never a Date. */
+export interface AuditEvent {
+  /** ISO timestamp of the event. */
+  at: string;
+  /** Target/subject username (may be "" for system rows). */
+  username: string;
+  /** Free-text action verb, e.g. login_ok / role_changed / invite_created. */
+  action: string;
+  ip: string;
+  detail: string;
+}
+
+export interface AuditListResponse {
+  events: AuditEvent[];
+}
