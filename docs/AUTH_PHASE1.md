@@ -25,7 +25,7 @@ known credential**.
 
 | Var | Required? | Meaning |
 |---|---|---|
-| `WEBUI_DATABASE_URL` | **yes** (unless `WEBUI_AUTH=disabled`) | `postgres://fks_webui:${WEBUI_DB_PASSWORD}@fks_postgres:5432/ruby_db` |
+| `WEBUI_DATABASE_URL` | **yes** (unless `WEBUI_AUTH=disabled`) | `postgres://fks_webui:${WEBUI_DB_PASSWORD}@fks_postgres:5432/fks_db` (the platform DB, **renamed from `ruby_db` 2026-07-21**; the fks-side env var name stays `RUBY_DB` for now) |
 | `INTERNAL_TOKEN` | recommended | service-identity token minted to the spawner. Set `INTERNAL_TOKEN=${NGINX_INTERNAL_TOKEN}` (falls back to `NGINX_INTERNAL_TOKEN` if unset). **Must be non-empty for the /settings key-rotation + notification surfaces**: post-#47 the adapter mints this on every spawner call (secrets/notifications/capabilities + the /bots page); an empty token = spawner 401 (auth-chain H5) |
 | `HOST_HEADER` | **yes, behind nginx** | `host` — adapter-node takes the app-origin host from nginx's forwarded `Host` ($host = the tailnet hostname), not the internal container name, so SvelteKit's form-CSRF origin check accepts the login POST from the real tailnet hostname |
 | `PROTOCOL_HEADER` | **leave UNSET behind nginx** | **Do NOT set it.** nginx is HTTP-only behind tailscale (`listen 80`; health reports `"ssl":"off"`) and stamps `X-Forwarded-Proto $scheme` = `http` on every webui location, so `PROTOCOL_HEADER=x-forwarded-proto` would feed `http` into `get_origin()` → app origin `http://<host>` ≠ the browser's `https://<host>` → **login POST 403s as cross-site** (auth-chain M1/M7 — the earlier `x-forwarded-proto` wiring re-created this). Unset, `get_origin()` defaults the scheme to `https` (the true external scheme, since tailscale always terminates TLS). Do NOT set `ORIGIN` either — it overrides `HOST_HEADER` and a static `ORIGIN=http://localhost:3001` re-403s the login. Guard: `fks/scripts/testing/verify_webui_csrf_origin.py` |
@@ -166,7 +166,7 @@ These are independent; none replaces another.
 
 ## Solo-operator recovery (locked out / forgot password)
 
-Loopback + SSH is always the recovery channel. Reset via `psql` to `ruby_db`:
+Loopback + SSH is always the recovery channel. Reset via `psql` to `fks_db`:
 
 ```sql
 -- Wipe sessions and re-arm a forced-change bootstrap on the admin.
@@ -186,5 +186,5 @@ bootstrap machinery and needs no hand-rolled hash.)
 `PgStore` is exercised via typecheck + a MemoryStore mirror in the test suite; it
 was not run against a live Postgres in this change's CI (no DB in the build
 sandbox). The SQL is standard idempotent DDL matching the sibling `spawner/00x`
-files. Run `schema.sql` by hand against a staging `ruby_db` before the first
+files. Run `schema.sql` by hand against a staging `fks_db` before the first
 production deploy to confirm the scoped-role grants.

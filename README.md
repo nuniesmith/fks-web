@@ -28,7 +28,7 @@ src/
 │   ├── janus-ai/        # Brain state, strategy affinity, live signals
 │   ├── db/              # Redis/Postgres/QuestDB/Janus explorer
 │   ├── docs/            # Docs viewer
-│   └── login/, logout/  # Auth handoff (nginx + Tailscale)
+│   └── login/, logout/, setup/  # DB-backed auth (Phase 1) — login, session revoke, forced first-login change
 ├── lib/
 │   ├── components/
 │   │   ├── shell/       # TabBar, Strip (SSE), StatusBar
@@ -86,7 +86,16 @@ const result = await api.post('/api/trades', payload)
 
 ## Auth
 
-Login gate via SvelteKit `hooks.server.ts` — SHA-256 hashed password stored as `WEBUI_PASSWORD_HASH` in `.env`. Sessions are HTTP-only 7-day cookies. Dev mode bypasses auth when env vars are unset.
+DB-backed sessions with a fail-closed seam at `hooks.server.ts` (Phase 1) plus
+role-based access control enforced at the `routeRequest` decision core
+(Phase 2A — `viewer < operator < admin`). On first startup a single `admin` is
+bootstrapped with a CSPRNG password **printed once** to the container log and a
+forced first-login credential change; passwords are **scrypt** (`node:crypto`,
+per-user salt), sessions are opaque tokens stored as `sha256(token)` in the
+HTTP-only `fks_session` cookie (revocable, 7d idle / 30d absolute). The old
+unsalted-`WEBUI_PASSWORD_HASH` gate is gone. Explicit `WEBUI_AUTH=disabled` is
+the only (loud, dev-only) bypass — and even it refuses the live-money
+kill/re-arm mutations. Full runbook in `docs/AUTH_PHASE1.md`.
 
 ## Deployment
 

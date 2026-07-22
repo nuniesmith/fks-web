@@ -13,7 +13,7 @@
  *      Connection: `WEBUI_FR_DATABASE_URL` (the bot's `FR_DATABASE_URL`
  *      pointed at by a webui-scoped role), falling back to
  *      `WEBUI_DATABASE_URL` (the auth-session DB — same `fks_postgres`
- *      `ruby_db` on the deployed compose). Required grants for the connecting
+ *      `fks_db` on the deployed compose). Required grants for the connecting
  *      role, documented in docs/COCKPIT.md:
  *        SELECT                  ON funding_open_trades, funding_paper_records,
  *                                   framework_risk_state
@@ -154,7 +154,7 @@ export class PgCockpitStore implements CockpitStore {
 let storeSingleton: PgCockpitStore | null = null;
 
 /** The cockpit DB URL: explicit override, else the auth-session DB (same
- *  ruby_db on the deployed compose). Empty = not configured (honest-empty). */
+ *  fks_db on the deployed compose). Empty = not configured (honest-empty). */
 function cockpitDbUrl(): string {
   return (env.WEBUI_FR_DATABASE_URL ?? "").trim() || (env.WEBUI_DATABASE_URL ?? "").trim();
 }
