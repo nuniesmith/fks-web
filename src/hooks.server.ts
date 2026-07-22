@@ -29,6 +29,7 @@ import { AuthStoreUnavailable, resolveAuthState } from "$lib/server/auth";
 import { validateNotificationEvents } from "$lib/types/notifications";
 import {
   cockpitKillPost,
+  cockpitLiveStatusGet,
   cockpitRearmPost,
   cockpitStateGet,
   cockpitTelemetryGet,
@@ -109,6 +110,14 @@ const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /c
 // ??) so an empty compose passthrough falls back to the defaults.
 const CRYPTO_SPOT_URL = env.CRYPTO_SPOT_INTERNAL_URL || "http://fks-bot-crypto-spot:9091";
 const CRYPTO_FUNDING_URL = env.CRYPTO_FUNDING_INTERNAL_URL || "http://fks-bot-crypto-funding:9091";
+// Live funding twin status server (M3 Phase A, cockpit LIVE tab unrealized ret%).
+// EMPTY by default = "not configured" — deliberately NOT a container DNS name.
+// A wrong default that resolves to the PAPER twin (`fks-bot-crypto-funding`)
+// would silently render paper PnL as live, the exact bug this feed exists to
+// prevent. Set the fks compose passthrough
+// (CRYPTO_FUNDING_LIVE_INTERNAL_URL=${...:-}) ONLY once the live funding bot is
+// spawned (Gate-A ~Aug 1). `||` so an empty passthrough stays empty.
+const CRYPTO_FUNDING_LIVE_URL = env.CRYPTO_FUNDING_LIVE_INTERNAL_URL || "";
 // Read-only Rithmic connector health/status server (:9091). Runs only under the
 // `rithmic` compose profile (not in the default up), so this is unreachable by
 // default → /api/rithmic/positions degrades to an empty, connected:false view.
@@ -1006,6 +1015,13 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   }
   if (pathname === "/api/cockpit/rearm" && event.request.method === "POST") {
     return cockpitRearmPost(event.request, operatorName(auth));
+  }
+  // Live-twin /status feed (M3 Phase A). Three-state, honest by construction:
+  // env unset → {configured:false}; set-but-down → {configured:true,
+  // reachable:false, reason}; a real BotStatus → {…, reachable:true, status,
+  // mode_mismatch}. CRYPTO_FUNDING_LIVE_URL is EMPTY until the live twin exists.
+  if (pathname === "/api/cockpit/live-status") {
+    return cockpitLiveStatusGet(CRYPTO_FUNDING_LIVE_URL);
   }
 
   // ══════════════════════════════════════════════════════════════════════════

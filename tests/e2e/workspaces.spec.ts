@@ -40,7 +40,7 @@ test.describe("Page Titles", () => {
   for (const route of PAGE_TITLES) {
     test(`${route.path} has correct <title>`, async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
       await expect(page).toHaveTitle(route.title);
     });
   }
@@ -56,14 +56,14 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page.on("pageerror", (err) => errors.push(err.message));
 
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     expect(errors.filter(isCritical)).toHaveLength(0);
   });
 
   test("page header and h1 title are visible", async ({ page }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page.locator(".page-header")).toBeVisible();
     await expect(page.locator("h1.page-title")).toContainText("Janus AI");
@@ -73,7 +73,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page,
   }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("button.btn-accent", { hasText: /New Session/ }),
@@ -85,7 +85,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page,
   }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const leftPane = page.locator(".pane-left");
     await expect(leftPane).toBeVisible();
@@ -99,7 +99,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page,
   }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const leftPane = page.locator(".pane-left");
     await expect(
@@ -111,7 +111,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page,
   }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // InnerTabs renders role="tablist" with one button[role="tab"] per tab
     const tablist = page.locator('[role="tablist"]');
@@ -130,7 +130,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
 
   test("Sessions tab is active by default", async ({ page }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const sessionsTab = page
       .locator('[role="tablist"]')
@@ -143,7 +143,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     page,
   }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const rightPane = page.locator(".pane-right");
     await expect(rightPane).toBeVisible();
@@ -174,7 +174,7 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
 
   test("clicking Live Signals tab switches active tab", async ({ page }) => {
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const tablist = page.locator('[role="tablist"]');
     const signalsTab = tablist.locator('[role="tab"]', {
@@ -212,28 +212,28 @@ for (const route of EMBED_ROUTES) {
       page.on("pageerror", (err) => errors.push(err.message));
 
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       expect(errors.filter(isCritical)).toHaveLength(0);
     });
 
     test(".embed-pane wrapper is visible", async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       await expect(page.locator(".embed-pane")).toBeVisible();
     });
 
     test("iframe element is attached to the DOM", async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       await expect(page.locator("iframe")).toBeAttached();
     });
 
     test("iframe has correct accessible title attribute", async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       await expect(page.locator("iframe")).toHaveAttribute(
         "title",
@@ -243,7 +243,7 @@ for (const route of EMBED_ROUTES) {
 
     test("document <title> contains expected text", async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       await expect(page).toHaveTitle(route.docTitle);
     });
@@ -252,7 +252,7 @@ for (const route of EMBED_ROUTES) {
       page,
     }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       const popOut = page.locator("a.pop-out");
       await expect(popOut).toBeVisible();
@@ -263,7 +263,7 @@ for (const route of EMBED_ROUTES) {
 
     test("iframe has loading=lazy attribute", async ({ page }) => {
       await page.goto(route.path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("load");
 
       await expect(page.locator("iframe")).toHaveAttribute("loading", "lazy");
     });
@@ -280,7 +280,7 @@ test.describe("DB Explorer (/db)", () => {
     page.on("pageerror", (err) => errors.push(err.message));
 
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     expect(errors.filter(isCritical)).toHaveLength(0);
   });
@@ -289,7 +289,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const tablist = page.locator('[role="tablist"]');
     await expect(tablist).toBeVisible();
@@ -310,7 +310,7 @@ test.describe("DB Explorer (/db)", () => {
 
   test("Redis tab is active by default", async ({ page }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const redisTab = page
       .locator('[role="tablist"]')
@@ -320,7 +320,7 @@ test.describe("DB Explorer (/db)", () => {
 
   test("Redis panel titles are visible on initial load", async ({ page }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Panel component renders .panel-title for each panel header
     await expect(
@@ -335,7 +335,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator('[role="tablist"]')
@@ -359,7 +359,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator('[role="tablist"]')
@@ -378,7 +378,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator('[role="tablist"]')
@@ -397,7 +397,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator('[role="tablist"]')
@@ -419,7 +419,7 @@ test.describe("DB Explorer (/db)", () => {
 
   test("Redis tab scan button is present", async ({ page }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Scan button in the Key Browser panel
     await expect(page.locator("button", { hasText: "Scan" })).toBeVisible();
@@ -429,7 +429,7 @@ test.describe("DB Explorer (/db)", () => {
     page,
   }) => {
     await page.goto("/db");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator('[role="tablist"]')
@@ -452,17 +452,19 @@ test.describe("Panel component rendering", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Panel component always renders .panel-title when title prop is provided
     await expect(
       page.locator(".panel-title", { hasText: "Market Overview" }),
     ).toBeVisible();
+    // M3D (D1) replaced the dead "AI Brief" panel with the "Money" snapshot;
+    // (D4) retitled "Active Trades" → "Active Trades (janus paper)".
     await expect(
-      page.locator(".panel-title", { hasText: "AI Brief" }),
+      page.locator(".panel-title", { hasText: "Money" }),
     ).toBeVisible();
     await expect(
-      page.locator(".panel-title", { hasText: "Active Trades" }),
+      page.locator(".panel-title", { hasText: "Active Trades (janus paper)" }),
     ).toBeVisible();
     await expect(
       page.locator(".panel-title", { hasText: "Data Factory" }),
@@ -476,7 +478,7 @@ test.describe("Panel component rendering", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Panel renders .poll-badge when badge prop is provided
     const pollBadges = page.locator(".poll-badge");
@@ -485,7 +487,7 @@ test.describe("Panel component rendering", () => {
 
   test("Settings page renders all section panel titles", async ({ page }) => {
     await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The Ruby/futures-era panels (Data Sources, Rithmic, Analysis
     // Preferences) were removed in the G4 cleanup — only the wired panels
@@ -509,7 +511,7 @@ test.describe("Panel component rendering", () => {
 
   test("Monitoring page renders panel titles", async ({ page }) => {
     await page.goto("/monitoring");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator(".panel-title", { hasText: "System Health" }),
@@ -523,7 +525,7 @@ test.describe("Panel component rendering", () => {
     page,
   }) => {
     await page.goto("/trading");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator(".panel-title", { hasText: "Chart" }),
@@ -546,7 +548,7 @@ test.describe("Login flow", () => {
 
   test("login page renders the password form", async ({ page }) => {
     await page.goto("/login");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page).toHaveURL(/\/login/);
     await expect(page).toHaveTitle(/FKS Terminal/);
@@ -559,7 +561,7 @@ test.describe("Login flow", () => {
       "current-password",
     );
 
-    const submitBtn = page.locator('button[type="submit"]');
+    const submitBtn = page.locator('.gate button[type="submit"]');
     await expect(submitBtn).toBeVisible();
     await expect(submitBtn).toContainText(/Enter Terminal/);
     await expect(submitBtn).toBeDisabled();
@@ -569,7 +571,7 @@ test.describe("Login flow", () => {
     page,
   }) => {
     await page.goto("/login");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page.locator("h1.title")).toContainText("FKS Terminal");
     await expect(page.locator("p.subtitle")).toContainText(
@@ -582,10 +584,10 @@ test.describe("Login flow", () => {
     page,
   }) => {
     await page.goto("/login");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const passwordInput = page.locator("#password");
-    const submitBtn = page.locator('button[type="submit"]');
+    const submitBtn = page.locator('.gate button[type="submit"]');
 
     await expect(submitBtn).toBeDisabled();
     await passwordInput.fill("anything");
@@ -601,7 +603,7 @@ test.describe("Login flow", () => {
     );
 
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page).toHaveURL(/\/login/);
     await expect(page.locator("#password")).toBeVisible();
@@ -616,7 +618,7 @@ test.describe("Login flow", () => {
     );
 
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page).toHaveURL(/\/login/);
     await expect(page.locator("#password")).toBeVisible();
@@ -631,7 +633,7 @@ test.describe("Login flow", () => {
     );
 
     await page.goto("/janus-ai");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page).toHaveURL(/\/login\?next=/);
   });
@@ -642,7 +644,7 @@ test.describe("Login flow", () => {
     test.skip(authEnabled, "Auth is active — this test is for dev mode only");
 
     await page.goto("/");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page).not.toHaveURL(/\/login/);
   });

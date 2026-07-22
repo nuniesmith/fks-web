@@ -169,7 +169,7 @@ test.describe("Charts Page", () => {
 test.describe("Multi-Chart Grid", () => {
   test("grid page loads with layout controls", async ({ page }) => {
     await page.goto("/charts/grid");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Toolbar with MULTI-CHART label
     await expect(page.locator(".grid-toolbar")).toBeVisible();
@@ -184,7 +184,7 @@ test.describe("Multi-Chart Grid", () => {
 
   test("layout switch changes grid", async ({ page }) => {
     await page.goto("/charts/grid");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Default should be 2x2 (4 charts) — use web-first toHaveCount
     await expect(page.locator(".mini-chart")).toHaveCount(4);
@@ -204,7 +204,7 @@ test.describe("Multi-Chart Grid", () => {
 
   test("symbol slot is editable", async ({ page }) => {
     await page.goto("/charts/grid");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Wait for the grid to fully render
     await expect(page.locator(".mini-chart").first()).toBeVisible();
