@@ -115,16 +115,22 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
 ## Gotchas
 
 - **No vite dev proxies — the `hooks.server.ts` adapter is the seam in both dev and prod.** Upstream defaults are in-container Docker-network hostnames (`fks_janus`, `fks_bot_spawner`, `fks_prometheus`, `fks_questdb`); override each via its `*_INTERNAL_URL` env var for dev outside Docker. Adding a `server.proxy` to `vite.config.ts` would shadow the hook and break that path.
-- **Auth (Phase 1 — DB-backed sessions; design `research-2026-07-17/design-user-management.md`).** Three layers, three jobs, no replacement relationship:
+- **Auth (Phase 1 sessions + Phase 2A RBAC — design `research-2026-07-17/design-user-management.md`, plan 01).** Three layers, three jobs, no replacement relationship:
   - **L0 tailnet/loopback** — *can you reach the socket?* Unchanged outer wall; the webui must never leave loopback/tailnet for the public internet.
   - **L1 webui sessions (this layer)** — *which human is acting?* On first startup, if `webui_users` is empty, one `admin` is created with a **CSPRNG bootstrap password printed once to the container log** (`docker logs fks_webui`) and `must_change_credentials=TRUE`. There is **NO static/shipped default credential** — a fresh clone cannot be logged into by anyone without the log line. First login forces a username+password change at `/setup` before the app or any mutation is reachable. Passwords are **scrypt** (`node:crypto`, PHC strings, per-user salt) — never a fast/unsalted hash, never logged. Sessions are opaque 32-byte tokens in the HTTP-only `fks_session` cookie; the server stores only `sha256(token)`, so sessions are **revocable** (logout / change) and expiring (7d idle / 30d absolute). Login is rate-limited (per-IP token bucket) + per-user lockout (10 fails → 15 min, doubling).
   - **L2 `X-Internal-Token` / janus Bearer** — *did the request come through the front door?* The **adapter** now mints `X-Internal-Token` on the outbound proxy call (`hooks.server.ts` `withInternalToken`) and **strips any client-supplied copy** at the seam (`adapter.ts` HOP set) — the token means "passed the session-checked adapter", not "reached nginx". Spawner still fail-closes on it; janus still uses its own Bearer.
   - **FAIL CLOSED:** `routeRequest` (pure, unit-tested in `adapter.ts`) is the single decision core — missing config is **bootstrap-then-enforce, never an open door**. The ONLY bypass is an explicit `WEBUI_AUTH=disabled`. Backend/mutating routes require a valid session (401 without; 403 while `mustChange`); pages redirect to `/login`. If the auth store (Postgres via `WEBUI_DATABASE_URL`) is unreachable, requests 503 (health probes excepted) — they never fail open. **DO add browser-side credential handling — that is now the policy** (this bullet supersedes the old "Tailscale + shared token is the policy" line, which predated the roadmap's pre-mobile-mutation tripwire).
+  - **Phase 2A — RBAC ENFORCED at the `routeRequest` seam** (roles are live, not just modelled). Rank order `viewer < operator < admin` (`roleRank` in `adapter.ts`, fail-closed: any unknown/garbage role → viewer rank 0). The §1.1 rule table is a set of exported prefix constants evaluated top-down in `roleDenies` (backend, 403 `role_denied`) + `routeRequest` (pages redirect home, never 403):
+    - **R1 `ADMIN_ONLY_BACKEND_PREFIXES`** (`/api/users`, `/api/invites`) — admin-only for ANY method incl. GET (the list itself leaks). These routes don't exist yet; the seam is future-proofed on purpose.
+    - **R2 `ADMIN_ONLY_MUTATION_RULES`** (non-GET only) — config/credential/live-arming surfaces: `/api/cockpit/rearm`, the `*-keys` routes, `/api/settings/notifications`, `/api/settings/risk`, `/api/janus/config`. Re-arming a halted live bot is the DANGEROUS direction → admin-only.
+    - **R3** — every OTHER backend mutation is operator+ (viewer denied). The **kill** button (`/api/cockpit/kill`) is deliberately here, NOT R2: halt is the SAFE direction, so an operator can panic-stop without admin.
+    - **R5 `ADMIN_ONLY_PAGE_PREFIXES`** (`/users`) — non-admins get a redirect to `/`.
+    - **Solo-admin default is unchanged:** with zero non-admin users every session is admin, so nothing here alters single-operator behaviour. The **`/users` management page + invite flow are still UNBUILT** (plan 01 Phase B/C) — the enforcement seam ships first so the tab/page can't be reached before the gate exists. Pinned by `adapter.test.ts` + `roleGating` tests.
 - **Exchange API keys are submit-only (server-side storage).** The `/settings`
   form covers Kraken, KuCoin (+ passphrase), and Crypto.com; each card POSTs
   `{api_key, api_secret[, api_passphrase]}` to the generic
   `/api/settings/{exchange}-keys` route; the adapter forwards to the spawner's
-  `POST /secrets`, which persists them in Postgres (`ruby_db.exchange_secrets`)
+  `POST /secrets`, which persists them in Postgres (`fks_db.exchange_secrets`)
   behind `X-Internal-Token` — **encrypted at rest** (spawner-side
   ChaCha20-Poly1305 via `SPAWNER_SECRETS_KEY`; fks #161). The secret is **never
   returned** to the browser — `/api/settings/{exchange}-status` only reports
@@ -139,7 +145,7 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   "Notifications" section manages Discord webhooks: each channel POSTs
   `{name, kind, url, events}` to `/api/settings/notifications`; the adapter
   forwards to the spawner's `POST /notifications`, which stores it in Postgres
-  (`ruby_db.notification_channels`) with the **webhook URL encrypted at rest**
+  (`fks_db.notification_channels`) with the **webhook URL encrypted at rest**
   (same cipher as exchange keys — a webhook URL is a bearer capability). The
   URL is **never returned**: `GET /api/settings/notifications` lists only
   name/kind/events. `events: []` = catch-all. Each channel row has a **Test**
@@ -156,7 +162,21 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   `/settings` checkboxes and the adapter's POST validation read — the adapter
   400s any submitted `events[]` id that isn't a real wire kind, so a scoped
   channel can't store a filter (e.g. the old `spawn`/`stop`/`pnl_digest`) that
-  silently matches nothing. Adding a Phase-C kind is a one-line edit there.
+  silently matches nothing. This id-parity between the UI checkboxes and the
+  real `ALL_EVENT_KINDS` wire enum was the **webui M0 fix** (the old list
+  offered phantom kinds that matched nothing). Adding a Phase-C kind is a
+  one-line edit there.
+- **Installable PWA, but NO service worker (webui M1).** The app ships a web
+  app manifest (`static/manifest.webmanifest`) + icon set (`static/icon-192`,
+  `icon-512`, the two `icon-maskable-*`, `apple-touch-icon.png`, `favicon.svg`)
+  and iOS `<meta>`/safe-area wiring, so it installs to an iPhone home screen as
+  a standalone app. There is **deliberately NO service worker / offline cache
+  yet** — that is scoped to M7. Do not add one incidentally (it would cache the
+  authenticated shell and fight the fail-closed session seam). The manifest +
+  its icon filenames are on the adapter's **explicit static-asset allowlist**
+  (`adapter.ts` — filenames, NOT an `/icons/*` wildcard), so they load
+  pre-login; adding a new top-level static asset that must be reachable before
+  auth means adding its exact name to that allowlist.
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the
@@ -198,5 +218,35 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   `candles_futures` charting, and a read-only Rithmic positions panel via
   `/api/rithmic/positions` (degrades to `connected:false` when the connector
   profile is down).
+- **`/cockpit`** (M2 + M3) — the armed-futures co-pilot for the live
+  funding-reversion bot: read panels + the ONE money-critical mutation (the
+  durable kill sentinel). Full detail in `docs/COCKPIT.md`. M3 additions now
+  live:
+  - **Live-twin `/status` feed (M3 Phase A):** `GET /api/cockpit/live-status`
+    is a **three-state honest payload** — `{configured:false}` (env unset) /
+    `{configured:true, reachable:false, reason}` (armed-but-down = amber
+    outage, never `n/a`) / `{…, mode_mismatch:true}` (pointed at the PAPER
+    container → red flag, PnL suppressed) / live `BotStatus` (real `ret_pct` +
+    mark px). The **mode-mismatch guard** (`isLiveMode`) exists so a
+    mis-pointed `CRYPTO_FUNDING_LIVE_INTERNAL_URL` can never render paper as
+    live. Live unrealized PnL **is now wired** (was previously paper-only).
+  - **Alert-ack inbox (M3 Phase B):** `/monitoring` is **no longer read-only**
+    — it carries an acknowledgement mutation. Incident identity is
+    `sha256(labels + activeAt)` (`src/lib/server/alertAck/`); the store PROBES
+    `to_regclass` and degrades to `configured:false` (honest, read-only) when
+    the `webui_alert_acks` table / grants are absent. The cockpit's armed-path
+    ack panel restricts which alerts render via the **`ARMED_ALERTNAMES`
+    allowlist const in `src/routes/cockpit/+page.svelte`** (mirrors
+    `armed-path.yml`) — plus any `mode="live"` alert. The ack route is
+    operator+ (R3), so a viewer can never silence an armed-path page.
+- **E2E suite (`tests/e2e/`, Playwright).** Hermetic: `cockpit.spec.ts` mocks
+  the three cockpit polls + the kill route via `page.route`, so every
+  honest-empty / kill-guard branch runs with **no DB or Prometheus**. The
+  **kill-flow guards** assert the KILLED badge + KILL→RE-ARM button swap and
+  that `WEBUI_AUTH=disabled` still 403s the kill/re-arm mutations. The
+  viewport spec anchors "last node reachable / page owns the only scroll" to a
+  **structural `.cockpit-page > :last-child`** locator (not a named panel), so
+  it keeps testing "whatever is genuinely last" as panels are added (the
+  Armed-path alerts panel is last since M3).
 - Phase-by-phase buildout detail lives in the **fks** repo at
   `docs/architecture/WEBUI_BUILDOUT_PLAN.md`.

@@ -8,12 +8,12 @@
 -- 010_webui_auth.sql — prefer applying THAT (existence-guarded, idempotent).
 -- This recipe must stay in sync with it:
 --   CREATE ROLE fks_webui LOGIN PASSWORD :'WEBUI_DB_PASSWORD';
---   GRANT CONNECT ON DATABASE ruby_db TO fks_webui;
+--   GRANT CONNECT ON DATABASE fks_db TO fks_webui;
 --   GRANT USAGE ON SCHEMA public TO fks_webui;
 --   GRANT SELECT,INSERT,UPDATE,DELETE ON webui_users, webui_sessions,
 --         webui_auth_audit TO fks_webui;
 --   -- Sequence USAGE scoped to the three webui BIGSERIAL id sequences BY NAME
---   -- (auth-chain L2). NEVER "ALL SEQUENCES IN SCHEMA public" — ruby_db is
+--   -- (auth-chain L2). NEVER "ALL SEQUENCES IN SCHEMA public" — fks_db is
 --   -- shared with the spawner, so that would sweep in every spawner-owned
 --   -- sequence (exchange_secrets, transfers, bot_configs …), letting the webui
 --   -- role read last_value / burn ids on them.
@@ -21,7 +21,7 @@
 --   GRANT USAGE,SELECT ON SEQUENCE webui_sessions_id_seq   TO fks_webui;
 --   GRANT USAGE,SELECT ON SEQUENCE webui_auth_audit_id_seq TO fks_webui;
 -- Deliberately NOT granted: exchange_secrets, transfers, accounts, bot_configs,
--- and everything else in ruby_db. Empty WEBUI_DB_PASSWORD → role cannot log in
+-- and everything else in fks_db. Empty WEBUI_DB_PASSWORD → role cannot log in
 -- (fail closed), identical to 009_backtest_role.sql.
 
 CREATE TABLE IF NOT EXISTS webui_users (
