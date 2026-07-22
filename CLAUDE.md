@@ -155,18 +155,35 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   decrypts the stored webhook, sends a synthetic event, and reports only the
   outcome ({ok:true} sent · {ok:false,status} webhook non-2xx · 404 no channel ·
   503 no DB) — the URL never returns to the browser. **Dispatch on real events
-  is LIVE** in the spawner for the five lifecycle kinds — `bot_spawned`,
-  `bot_stopped`, `bot_removed`, `bot_error`, `bot_crashed` (`ALL_EVENT_KINDS` in
-  `fks-spawner` `crates/spawner/src/notifications.rs`); `bot_crashed` is
-  always-delivered (bypasses the `events[]` filter). Those wire ids are the
-  single source of truth in `$lib/types/notifications.ts`, which both the
-  `/settings` checkboxes and the adapter's POST validation read — the adapter
-  400s any submitted `events[]` id that isn't a real wire kind, so a scoped
-  channel can't store a filter (e.g. the old `spawn`/`stop`/`pnl_digest`) that
-  silently matches nothing. This id-parity between the UI checkboxes and the
-  real `ALL_EVENT_KINDS` wire enum was the **webui M0 fix** (the old list
-  offered phantom kinds that matched nothing). Adding a Phase-C kind is a
-  one-line edit there.
+  is LIVE** in the spawner for the full `ALL_EVENT_KINDS` wire vocabulary
+  (`fks-spawner` `crates/spawner/src/notifications.rs`) — the five lifecycle
+  kinds `bot_spawned`/`bot_stopped`/`bot_removed`/`bot_error`/`bot_crashed` plus
+  the plan-03 Phase-C/D kinds `bot_restarted`, `live_flip`, `key_rotation`,
+  `net_worth_milestone`, `risk_halt`, `edge_decay`. `bot_crashed`,
+  `bot_restarted`, `live_flip`, and `risk_halt` are **always-delivered** (bypass
+  the `events[]` filter — page-worthy), so their `/settings` checkboxes render
+  checked+disabled. Those wire ids are the single source of truth in
+  `$lib/types/notifications.ts`, which both the `/settings` checkboxes and the
+  adapter's POST validation read — the adapter 400s any submitted `events[]` id
+  that isn't a real wire kind, so a scoped channel can't store a filter (e.g. the
+  old `spawn`/`stop`/`pnl_digest`) that silently matches nothing. This id-parity
+  between the UI checkboxes and the real `ALL_EVENT_KINDS` wire enum was the
+  **webui M0 fix** (the old list offered phantom kinds that matched nothing).
+  Adding a new wire kind is a one-line edit there.
+- **Notification delivery history (plan-03 Phase E).** A "Notification history"
+  panel under the Notifications section reads the spawner's delivery ledger via
+  `GET /api/settings/notifications/history?limit=&event=` → `notificationsHistory`
+  in `hooks.server.ts` → spawner `GET /notifications/history` (`notification_log`,
+  fks 013). One row per webhook send ATTEMPT (real fires + `test` probes) with a
+  green/red outcome dot, so "did the 3am crash page actually send?" is answerable
+  without `docker logs`. The adapter DEFENSIVELY reshapes via the pure
+  `coerceNotificationHistory` (bad JSON / non-2xx / malformed rows →
+  `{db_enabled:false, entries:[]}`); the panel is honest about
+  `db_enabled:false` (amber "013 not applied" line, NOT a fake-empty list),
+  loading (skeleton), and genuinely-empty (EmptyState). Refreshes on a 30s
+  `createPoll`; the ledger detail is URL-free by the spawner contract. Badge
+  variant + outcome-ok mapping are pure exported helpers
+  (`kindBadgeVariant`/`outcomeIsOk`) in `$lib/types/notifications.ts`.
 - **Installable PWA, but NO service worker (webui M1).** The app ships a web
   app manifest (`static/manifest.webmanifest`) + icon set (`static/icon-192`,
   `icon-512`, the two `icon-maskable-*`, `apple-touch-icon.png`, `favicon.svg`)
