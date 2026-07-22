@@ -16,6 +16,7 @@
   import Panel from '$components/ui/Panel.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import ProfitCard from '$components/treasury/ProfitCard.svelte';
+  import TotalProfitCard from '$components/treasury/TotalProfitCard.svelte';
   import RegistryPanel from '$components/treasury/RegistryPanel.svelte';
   import SnapshotForm from '$components/treasury/SnapshotForm.svelte';
   import TransferForm from '$components/treasury/TransferForm.svelte';
@@ -23,9 +24,11 @@
   import TreasuryHeadline from '$components/treasury/TreasuryHeadline.svelte';
   import { spawner } from '$api/spawner';
   import { ApiError } from '$api/client';
-  import { groupSnapshots, type AccountSeries } from '$lib/treasury/rollup';
+  import { groupSnapshots, staleAccounts, type AccountSeries } from '$lib/treasury/rollup';
   import { paperAccountIds, selectProfitAccounts } from '$lib/treasury/cards';
-  import type { TransferRow, TreasuryAccount } from '$lib/types/spawner';
+  import { aggregateProfitTotals } from '$lib/treasury/aggregate';
+  import { PROFIT_WINDOWS, windowToSince, type ProfitWindow } from '$lib/treasury/windows';
+  import type { ProfitResponse, TransferRow, TreasuryAccount } from '$lib/types/spawner';
 
   function errMsg(e: unknown): string {
     return e instanceof ApiError ? `${e.status} ${e.statusText}` : String(e);
@@ -106,12 +109,78 @@
   let cardsLoading = $derived(accountsLoading || netWorthLoading);
   let hasCards = $derived(cardAccounts.real.length + cardAccounts.paper.length > 0);
 
-  /** Per-account bump tokens: a transfer/snapshot re-fetches that card only. */
-  let profitRefresh = $state<Record<string, number>>({});
+  // ── Per-account /profit fetches (lifted out of ProfitCard so the TOTAL card
+  //    sums the SAME responses the cards render — D5 by-construction equality) ─
+
+  interface AccountProfitState {
+    profits: Partial<Record<ProfitWindow, ProfitResponse>>;
+    loading: boolean;
+    error: string | null;
+  }
+
+  /** Keyed by account_id — one entry per visible profit card. */
+  let profitStates = $state<Record<string, AccountProfitState>>({});
+  const profitSeq: Record<string, number> = {};
+
+  async function loadProfit(accountId: string) {
+    const seq = (profitSeq[accountId] = (profitSeq[accountId] ?? 0) + 1);
+    const prev = profitStates[accountId];
+    profitStates[accountId] = { profits: prev?.profits ?? {}, loading: true, error: null };
+    try {
+      const res = await Promise.all(
+        PROFIT_WINDOWS.map((w) => spawner.profit(accountId, windowToSince(w))),
+      );
+      if (seq !== profitSeq[accountId]) return;
+      const next: Partial<Record<ProfitWindow, ProfitResponse>> = {};
+      PROFIT_WINDOWS.forEach((w, i) => (next[w] = res[i]));
+      profitStates[accountId] = { profits: next, loading: false, error: null };
+    } catch (e) {
+      if (seq !== profitSeq[accountId]) return;
+      profitStates[accountId] = {
+        profits: profitStates[accountId]?.profits ?? {},
+        loading: false,
+        error: errMsg(e),
+      };
+    }
+  }
+
+  /** Fetch /profit once for every card account that appears; bumps force reload. */
+  $effect(() => {
+    for (const a of [...cardAccounts.real, ...cardAccounts.paper]) {
+      if (!(a.account_id in profitStates)) void loadProfit(a.account_id);
+    }
+  });
 
   function bumpProfit(accountId: string) {
-    profitRefresh[accountId] = (profitRefresh[accountId] ?? 0) + 1;
+    void loadProfit(accountId);
   }
+
+  // ── Aggregate TOTAL over REAL accounts (D5) ───────────────────────────────
+  let realProfitMaps = $derived(
+    cardAccounts.real.map((a) => profitStates[a.account_id]?.profits ?? {}),
+  );
+  let profitTotals = $derived(aggregateProfitTotals(realProfitMaps));
+  // The total is honest only once every contributing card has loaded.
+  let totalsLoading = $derived(
+    cardAccounts.real.some((a) => {
+      const s = profitStates[a.account_id];
+      return !s || s.loading;
+    }),
+  );
+  let totalsCurrency = $derived(
+    seriesById.get(cardAccounts.real[0]?.account_id ?? '')?.currency ?? 'USD',
+  );
+  // Stale propagation: a real account whose newest snapshot is stale still
+  // carries its frozen balance into the total, so surface the same ⚠ caveat
+  // the headline does. Series are the source (age), not /profit.
+  let realStale = $derived(
+    staleAccounts(
+      cardAccounts.real
+        .map((a) => seriesById.get(a.account_id))
+        .filter((s): s is AccountSeries => s != null),
+    ),
+  );
+  let realStaleValue = $derived(realStale.reduce((sum, s) => sum + s.value, 0));
 
   /** Optimistic prepend from the form's 201, then refresh the touched card. */
   function handleRecorded(row: TransferRow) {
@@ -183,12 +252,22 @@
       />
     {:else}
       {#if cardAccounts.real.length > 0}
+        <TotalProfitCard
+          totals={profitTotals}
+          currency={totalsCurrency}
+          accountCount={cardAccounts.real.length}
+          loading={totalsLoading}
+          stale={realStale}
+          staleValue={realStaleValue}
+        />
         <div class="cards">
           {#each cardAccounts.real as a (a.account_id)}
             <ProfitCard
               account={a}
               series={seriesById.get(a.account_id)}
-              refreshToken={profitRefresh[a.account_id] ?? 0}
+              profits={profitStates[a.account_id]?.profits ?? {}}
+              loading={profitStates[a.account_id]?.loading ?? true}
+              error={profitStates[a.account_id]?.error ?? null}
             />
           {/each}
         </div>
@@ -200,7 +279,9 @@
             <ProfitCard
               account={a}
               series={seriesById.get(a.account_id)}
-              refreshToken={profitRefresh[a.account_id] ?? 0}
+              profits={profitStates[a.account_id]?.profits ?? {}}
+              loading={profitStates[a.account_id]?.loading ?? true}
+              error={profitStates[a.account_id]?.error ?? null}
             />
           {/each}
         </div>
