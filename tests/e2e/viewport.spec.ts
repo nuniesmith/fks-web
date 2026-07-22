@@ -79,9 +79,11 @@ test.describe("Cockpit viewport reachability (1366x768)", () => {
     );
     expect(["auto", "scroll", "overlay"]).toContain(overflowY);
 
-    // 2) The deferred-note is the very last node on the page. If the page
-    //    clips (no scroll region) it can never be scrolled into view.
-    const lastNode = page.locator(".deferred-note");
+    // 2) The very last node on the page (the Armed-path alerts panel since M3
+    //    Phase B replaced the deferred-note) must be reachable. Structural
+    //    :last-child keeps this anchored to "whatever is last" rather than a
+    //    specific panel, so future additions don't silently retire the guard.
+    const lastNode = page.locator(".cockpit-page > :last-child");
     await lastNode.scrollIntoViewIfNeeded();
     await expect(lastNode).toBeInViewport();
 
@@ -118,8 +120,9 @@ test.describe("Cockpit viewport reachability (390x844 phone)", () => {
     );
     expect(["auto", "scroll", "overlay"]).toContain(overflowY);
 
-    // 2) The last node (deferred-note) is reachable by scrolling the page.
-    const lastNode = page.locator(".deferred-note");
+    // 2) The last node (Armed-path alerts panel — structural :last-child, see
+    //    the laptop spec) is reachable by scrolling the page.
+    const lastNode = page.locator(".cockpit-page > :last-child");
     await lastNode.scrollIntoViewIfNeeded();
     await expect(lastNode).toBeInViewport();
 

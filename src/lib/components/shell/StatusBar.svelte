@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$api/client';
+  import { alertInbox, unackedCount, chipState } from '$lib/stores/alertInbox';
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -86,8 +87,15 @@
     // Fetch immediately so dots are not stuck on grey at boot.
     fetchHealth();
 
+    // Keep the shared alert-inbox poll warm app-wide so the unacked chip is
+    // live on every page (the /monitoring page + cockpit panel share this poll).
+    alertInbox.start();
+
     const interval = setInterval(fetchHealth, 15_000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      alertInbox.stop();
+    };
   });
 </script>
 
@@ -127,6 +135,18 @@
       <span class="health-val">{health.feed}</span>
     {/if}
   </span>
+
+  {#if $chipState}
+    <a
+      class="alert-chip"
+      class:critical={$chipState === 'critical'}
+      class:warning={$chipState === 'warning'}
+      href="/monitoring"
+      title="{$unackedCount} unacknowledged alert{$unackedCount === 1 ? '' : 's'} — open the inbox"
+    >
+      ⚠ {$unackedCount} unacked
+    </a>
+  {/if}
 
   <span class="status-right">
     FKS Terminal · SvelteKit
@@ -190,6 +210,32 @@
     font-size: 9px;
     color: var(--t3);
     opacity: 0.7;
+  }
+
+  .alert-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 2px 6px;
+    border-radius: var(--r);
+    text-decoration: none;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    transition: filter 0.15s ease;
+  }
+  .alert-chip:hover { filter: brightness(1.15); }
+  .alert-chip.critical {
+    color: var(--red);
+    background: var(--red-dim, rgba(220, 60, 60, 0.12));
+    border-color: var(--red-brd, rgba(220, 60, 60, 0.4));
+  }
+  .alert-chip.warning {
+    color: var(--amber);
+    background: var(--amber-dim, rgba(200, 150, 0, 0.1));
+    border-color: var(--amber-brd, rgba(200, 150, 0, 0.35));
   }
 
   .status-right {
