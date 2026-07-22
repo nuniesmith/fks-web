@@ -69,10 +69,21 @@ export function isPublicStatic(pathname: string): boolean {
 /** The forced-credential-change page (and its form action). */
 export const SETUP_PREFIX = "/setup";
 
+/**
+ * Segment-boundary prefix match: `/invite` opens `/invite` and `/invite/x`
+ * but NOT `/invitefoo`. A raw startsWith would silently widen the public
+ * surface to any route that merely shares the prefix spelling.
+ */
+export function matchesPublicPrefix(pathname: string): boolean {
+  return PUBLIC_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(prefix + "/"),
+  );
+}
+
 /** Whether a (non-backend) path bypasses the session-auth gate. */
 export function isPublic(pathname: string): boolean {
   if (PUBLIC_EXACT.includes(pathname)) return true;
-  return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  return matchesPublicPrefix(pathname);
 }
 
 // Headers not forwarded to (or streamed back from) an upstream:
@@ -398,7 +409,7 @@ export function outageRoute(pathname: string): OutageDisposition {
   // `/invite` rides this same render-degraded path: the page shell renders while
   // the store is down (its load surfaces the "unavailable" state), and the claim
   // ACTION still fails closed — claimInvite needs the store, which is down.
-  if (!backend && PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) {
+  if (!backend && matchesPublicPrefix(pathname)) {
     return "open-page";
   }
   return backend ? "deny-backend" : "deny-page";

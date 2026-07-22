@@ -119,6 +119,16 @@ describe("/invite — public claim page across postures", () => {
     expect(outageRoute(token)).toBe("open-page");
     expect(outageRoute("/invite")).toBe("open-page");
   });
+  it("segment boundary: a path merely SHARING the prefix spelling is NOT public", () => {
+    // /invitefoo must not ride /invite's bypass — same for the older prefixes.
+    for (const impostor of ["/invitefoo", "/invited", "/invite-admin", "/loginx", "/logoutte"]) {
+      expect(routeRequest(impostor, "", "GET", noSession)).toEqual({
+        kind: "redirect",
+        location: `/login?next=${encodeURIComponent(impostor)}`,
+      });
+      expect(outageRoute(impostor)).toBe("deny-page");
+    }
+  });
 });
 
 describe("routeRequest — health probes are always open", () => {
