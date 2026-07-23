@@ -21,6 +21,7 @@
     type AccountSeries,
   } from '$lib/treasury/rollup';
   import { fmtMoney } from '$lib/treasury/cards';
+  import { hasCurrencyMismatch } from '$lib/treasury/aggregate';
 
   let { series, paperIds, loading, error, onRefresh } = $props<{
     series: AccountSeries[];
@@ -39,8 +40,14 @@
   let latest = $derived(
     totalPoints.length > 0 ? totalPoints[totalPoints.length - 1].value : null,
   );
-  // The sampler denominates every row in one currency (USD today).
+  // The sampler denominates every row in one currency (USD today), but that is
+  // an assumption, not a guarantee — once a second denomination exists (e.g. the
+  // M4 BTC treasury) carryForwardTotal would silently sum unlike currencies into
+  // one meaningless figure. Guard the way the D5 profit total does (aggregate.ts
+  // hasCurrencyMismatch): if the summed accounts span >1 currency, suppress the
+  // number rather than present a bogus total as authoritative money.
   let currency = $derived(inputs[0]?.currency ?? 'USD');
+  let currencyMismatch = $derived(hasCurrencyMismatch(inputs.map((s) => s.currency)));
   let hasPaper = $derived((series as AccountSeries[]).some((s) => paperIds.has(s.accountId)));
   let hasData = $derived(series.length > 0);
 
@@ -140,14 +147,17 @@
   <div class="body">
     <div class="figures">
       <span class="label">{includePaper ? 'Net worth (incl. paper)' : 'Real net worth'}</span>
-      <span class="value">{latest != null ? fmtMoney(latest, currency) : '—'}</span>
+      <span class="value">{currencyMismatch ? '—' : latest != null ? fmtMoney(latest, currency) : '—'}</span>
+      {#if currencyMismatch}
+        <span class="mismatch">⚠ accounts span multiple currencies — total hidden (cannot sum unlike denominations)</span>
+      {/if}
       {#if hasData}
         <span class="sub">
           across {inputs.length} account{inputs.length === 1 ? '' : 's'}
           {#if hasPaper && !includePaper}· paper excluded{/if}
         </span>
       {/if}
-      {#if stale.length > 0}
+      {#if stale.length > 0 && !currencyMismatch}
         <span class="stale" title={stale.map((s) => `${s.accountId} — as of ${formatStaleAge(s.ageSeconds)} ago`).join('\n')}>
           ⚠ includes {fmtMoney(staleValue, currency)} from {stale.length} stale
           account{stale.length === 1 ? '' : 's'} — oldest as of {formatStaleAge(stale[0].ageSeconds)} ago
@@ -214,6 +224,10 @@
     font-size: 10px;
     color: var(--amber, #f0a500);
     cursor: help;
+  }
+  .mismatch {
+    font-size: 10px;
+    color: var(--amber, #f0a500);
   }
   .spark-wrap {
     position: relative;
