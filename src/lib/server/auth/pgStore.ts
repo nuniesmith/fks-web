@@ -5,6 +5,7 @@
 import postgres from "postgres";
 import { SCHEMA_SQL } from "./schema";
 import type {
+  AdminGuardOutcome,
   AuditEntry,
   AuditView,
   AuthStore,
@@ -236,6 +237,60 @@ export class PgStore implements AuthStore {
       UPDATE webui_users
       SET role = ${role}, updated_at = now()
       WHERE id = ${userId}`;
+  }
+
+  async disableUserGuarded(userId: number): Promise<AdminGuardOutcome> {
+    return this.sql.begin(async (tx) => {
+      // Lock the CURRENT enabled-admin set for the length of the txn. A
+      // concurrent guarded mutation blocks here until we commit, then re-reads
+      // the (now smaller) set — so two disables can't each see >1 and both go to
+      // zero. A plain conditional UPDATE would NOT suffice: under READ COMMITTED
+      // each statement's subquery reads its own snapshot and misses the other's
+      // uncommitted change.
+      const admins = await tx<{ id: string }[]>`
+        SELECT id FROM webui_users
+        WHERE role = 'admin' AND disabled = FALSE
+        FOR UPDATE`;
+      const target = await tx<{ role: string; disabled: boolean }[]>`
+        SELECT role, disabled FROM webui_users WHERE id = ${userId} LIMIT 1`;
+      const t = target[0];
+      if (!t) return "not_found";
+      if (t.role === "admin" && t.disabled === false && admins.length <= 1) {
+        return "would_orphan";
+      }
+      await tx`
+        UPDATE webui_users
+        SET disabled = TRUE, updated_at = now()
+        WHERE id = ${userId}`;
+      return "applied";
+    }) as Promise<AdminGuardOutcome>;
+  }
+
+  async setUserRoleGuarded(
+    userId: number,
+    role: string,
+  ): Promise<AdminGuardOutcome> {
+    return this.sql.begin(async (tx) => {
+      const admins = await tx<{ id: string }[]>`
+        SELECT id FROM webui_users
+        WHERE role = 'admin' AND disabled = FALSE
+        FOR UPDATE`;
+      const target = await tx<{ role: string; disabled: boolean }[]>`
+        SELECT role, disabled FROM webui_users WHERE id = ${userId} LIMIT 1`;
+      const t = target[0];
+      if (!t) return "not_found";
+      const demotingLastAdmin =
+        t.role === "admin" &&
+        role !== "admin" &&
+        t.disabled === false &&
+        admins.length <= 1;
+      if (demotingLastAdmin) return "would_orphan";
+      await tx`
+        UPDATE webui_users
+        SET role = ${role}, updated_at = now()
+        WHERE id = ${userId}`;
+      return "applied";
+    }) as Promise<AdminGuardOutcome>;
   }
 
   async setFailedLogins(

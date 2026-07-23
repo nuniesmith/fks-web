@@ -3,6 +3,7 @@
 // against it is the same logic that runs against Postgres.
 
 import type {
+  AdminGuardOutcome,
   AuditEntry,
   AuditView,
   AuthStore,
@@ -34,6 +35,13 @@ export class MemoryStore implements AuthStore {
    * interleave two claims deterministically and prove exactly one wins.
    */
   onRedeemInvite: ((id: number) => Promise<void>) | null = null;
+  /**
+   * Test seam for the last-admin race: an async hook awaited INSIDE the atomic
+   * `disableUserGuarded` / `setUserRoleGuarded` (before the decision+write), so a
+   * test can interleave two demotions deterministically and prove exactly one
+   * wins (≥1 admin always remains). Mirrors `onRedeemInvite`.
+   */
+  onGuardedAdminMutation: ((userId: number) => Promise<void>) | null = null;
 
   async init(): Promise<void> {
     /* no schema to apply */
@@ -142,6 +150,49 @@ export class MemoryStore implements AuthStore {
   async setUserRole(userId: number, role: string): Promise<void> {
     const u = this.users.get(userId);
     if (u) u.role = role;
+  }
+
+  async disableUserGuarded(userId: number): Promise<AdminGuardOutcome> {
+    if (this.onGuardedAdminMutation) await this.onGuardedAdminMutation(userId);
+    // Read the enabled-admin set and decide+write with NO await in between —
+    // the single-threaded event loop can't interleave here, so this is the
+    // MemoryStore analogue of PgStore's `SELECT … FOR UPDATE` + txn. A
+    // concurrent guarded mutation that already committed its write is visible
+    // in `this.users`, so the second caller sees the reduced count and refuses.
+    const u = this.users.get(userId);
+    if (!u) return "not_found";
+    if (u.role === "admin" && !u.disabled && this.enabledAdminCount() <= 1) {
+      return "would_orphan";
+    }
+    u.disabled = true;
+    return "applied";
+  }
+
+  async setUserRoleGuarded(
+    userId: number,
+    role: string,
+  ): Promise<AdminGuardOutcome> {
+    if (this.onGuardedAdminMutation) await this.onGuardedAdminMutation(userId);
+    const u = this.users.get(userId);
+    if (!u) return "not_found";
+    const demotingLastAdmin =
+      u.role === "admin" &&
+      role !== "admin" &&
+      !u.disabled &&
+      this.enabledAdminCount() <= 1;
+    if (demotingLastAdmin) return "would_orphan";
+    u.role = role;
+    return "applied";
+  }
+
+  /** Synchronous enabled-admin count, read under the "lock" (no await) by the
+   *  guarded mutations above so their decision+write stays atomic. */
+  private enabledAdminCount(): number {
+    let n = 0;
+    for (const u of this.users.values()) {
+      if (u.role === "admin" && !u.disabled) n++;
+    }
+    return n;
   }
 
   async setFailedLogins(

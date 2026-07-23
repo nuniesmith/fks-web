@@ -115,6 +115,15 @@ export interface InviteSummary {
   revokedAt: Date | null;
 }
 
+/**
+ * Outcome of an atomic last-admin-guarded mutation (`disableUserGuarded` /
+ * `setUserRoleGuarded`):
+ *   - `applied`      → the change was made;
+ *   - `would_orphan` → refused: it would remove the LAST enabled admin;
+ *   - `not_found`    → the target row no longer exists.
+ */
+export type AdminGuardOutcome = "applied" | "would_orphan" | "not_found";
+
 export interface AuthStore {
   /** Apply the (idempotent) schema migration. */
   init(): Promise<void>;
@@ -145,6 +154,23 @@ export interface AuthStore {
   ): Promise<void>;
   setUserDisabled(userId: number, disabled: boolean): Promise<void>;
   setUserRole(userId: number, role: string): Promise<void>;
+  /**
+   * ATOMIC last-admin-guarded disable: set `disabled=TRUE` for `userId` ONLY if
+   * doing so would not remove the last enabled admin. Closes the check-then-
+   * mutate race where two concurrent disables each read `countEnabledAdmins()>1`
+   * and both proceed to zero (recoverable only via psql). PgStore locks the
+   * enabled-admin rows `FOR UPDATE` inside a transaction so a concurrent guarded
+   * mutation serializes behind it; MemoryStore decides+writes with no await gap
+   * (atomic under the single-threaded event loop). Returns the outcome.
+   */
+  disableUserGuarded(userId: number): Promise<AdminGuardOutcome>;
+  /**
+   * ATOMIC last-admin-guarded role change: set `role` for `userId` ONLY if it
+   * would not demote the last enabled admin (a lateral/promotion to `admin`, or
+   * any change to a non-admin / already-disabled target, always applies). Same
+   * serialization contract as `disableUserGuarded`.
+   */
+  setUserRoleGuarded(userId: number, role: string): Promise<AdminGuardOutcome>;
   setFailedLogins(
     userId: number,
     failedLogins: number,

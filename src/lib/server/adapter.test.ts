@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTH_DISABLED_BLOCKED_MUTATIONS,
   type AuthState,
   type SessionInfo,
   isBackend,
   isPublic,
+  matchesBlockedMutation,
   originAllowed,
   outageRoute,
   roleDenies,
@@ -146,6 +148,93 @@ describe("routeRequest — disabled (explicit opt-in bypass)", () => {
   it("passes pages and proxies backend without a session", () => {
     expect(routeRequest("/settings", "", "GET", disabled)).toEqual({ kind: "pass" });
     expect(routeRequest("/api/spawner/x", "", "POST", disabled)).toEqual({ kind: "backend" });
+  });
+});
+
+// M1 — the WEBUI_AUTH=disabled bypass must NOT expose the money-path config
+// mutations (raise exposure / delete a live key / register an exfil webhook),
+// exactly like the cockpit kill/re-arm carve-out. These are the backend paths
+// routeRequest sees (traced through hooks.server.ts dispatch).
+describe("routeRequest — disabled mode blocks money-path mutations (M1)", () => {
+  const blocked = [
+    "/api/settings/risk", // risk-config PUT (raise max_gross_exposure)
+    "/api/settings/exchange-keys", // exchange-keys POST (write live creds)
+    "/api/settings/exchange-keys/kraken", // per-exchange DELETE (dynamic segment)
+    "/api/settings/kraken-keys", // legacy fixed-venue write
+    "/api/settings/kucoin-keys",
+    "/api/settings/cryptocom-keys",
+    "/api/settings/notifications", // notifications POST (register exfil webhook)
+    "/api/settings/notifications/discord", // channel DELETE (segment sub-path)
+    "/api/settings/notifications/discord/test", // channel test POST
+  ];
+
+  it("403s each money mutation in disabled mode (any non-GET method)", () => {
+    for (const p of blocked) {
+      for (const m of ["POST", "PUT", "DELETE"]) {
+        expect(routeRequest(p, "", m, disabled)).toEqual({
+          kind: "forbidden",
+          reason: "live_mutation_requires_auth",
+        });
+      }
+    }
+  });
+
+  it("still lets the GET read counterparts through in disabled mode", () => {
+    // The block is mutation-only: status/list/history reads keep today's
+    // disabled-mode behaviour so the dashboard still renders.
+    for (const p of [
+      "/api/settings/exchange-keys/status",
+      "/api/settings/notifications",
+      "/api/settings/notifications/history",
+    ]) {
+      expect(routeRequest(p, "", "GET", disabled)).toEqual({ kind: "backend" });
+    }
+  });
+
+  it("does not over-match a prefix-sharing sibling path", () => {
+    // Segment-boundary match: `/api/settings/riskier` must NOT be blocked just
+    // because it shares the `/api/settings/risk` spelling.
+    expect(matchesBlockedMutation("/api/settings/riskier")).toBe(false);
+    expect(matchesBlockedMutation("/api/settings/risk")).toBe(true);
+    expect(matchesBlockedMutation("/api/settings/exchange-keys/kraken")).toBe(true);
+  });
+
+  it("in ENABLED mode an admin still reaches the backend for each (auth is the wall, not the path)", () => {
+    for (const p of blocked) {
+      // Admin, full session → the mutation proxies (routeRequest returns
+      // backend; RBAC R2 admin-only is satisfied). Uses DELETE for the
+      // delete-shaped paths and POST otherwise so the method is a real one.
+      const m = p.endsWith("/kraken") || p.endsWith("/discord") ? "DELETE" : "POST";
+      expect(routeRequest(p, "", m, enabled(good))).toEqual({ kind: "backend" });
+    }
+  });
+
+  it("in ENABLED mode a viewer is denied these mutations (RBAC R2/R3, unchanged)", () => {
+    expect(routeRequest("/api/settings/risk", "", "POST", enabled(viewer))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+    expect(routeRequest("/api/settings/exchange-keys", "", "POST", enabled(viewer))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+  });
+
+  it("keeps unrelated backend mutations proxying in disabled mode", () => {
+    expect(routeRequest("/api/spawner/x", "", "POST", disabled)).toEqual({ kind: "backend" });
+  });
+
+  it("the money paths are present in AUTH_DISABLED_BLOCKED_MUTATIONS", () => {
+    for (const p of [
+      "/api/settings/risk",
+      "/api/settings/exchange-keys",
+      "/api/settings/kraken-keys",
+      "/api/settings/kucoin-keys",
+      "/api/settings/cryptocom-keys",
+      "/api/settings/notifications",
+    ]) {
+      expect(AUTH_DISABLED_BLOCKED_MUTATIONS).toContain(p);
+    }
   });
 });
 

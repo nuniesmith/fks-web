@@ -138,6 +138,75 @@ describe("adminSetRole — last-admin demotion guard", () => {
   });
 });
 
+// M2 — the last-admin guard must be ATOMIC: two admins concurrently demoting
+// (or disabling) each other must not both slip past a stale count to zero
+// admins (recoverable only via psql). The MemoryStore `onGuardedAdminMutation`
+// seam parks the first caller until the second arrives, then both race the
+// atomic decide+write — the same barrier pattern the invite-claim race uses.
+describe("adminSetRole / adminSetDisabled — last-admin race is atomic (M2)", () => {
+  /** Barrier: entrant #1 parks until #2 arrives, then both race the decision. */
+  function installBarrier(store: MemoryStore): void {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let entered = 0;
+    store.onGuardedAdminMutation = async () => {
+      entered += 1;
+      if (entered === 1) await gate;
+      else release();
+    };
+  }
+
+  it("two admins demoting each other → exactly ONE succeeds, ≥1 admin remains", async () => {
+    const { store, svc, actor } = await setup();
+    // Exactly TWO enabled admins to start.
+    const boss = await svc.adminCreateUser("boss", "admin", actor, CTX);
+    if (!boss.ok) throw new Error("create failed");
+    const bossActor: SessionInfo = {
+      userId: boss.user.id,
+      username: "boss",
+      role: "admin",
+      mustChange: false,
+    };
+    expect(await store.countEnabledAdmins()).toBe(2);
+
+    installBarrier(store);
+    const [a, b] = await Promise.all([
+      svc.adminSetRole(boss.user.id, "operator", actor, CTX), // demote boss
+      svc.adminSetRole(actor.userId, "operator", bossActor, CTX), // demote actor
+    ]);
+
+    const oks = [a, b].filter((r) => r.ok);
+    const losers = [a, b].filter((r) => !r.ok);
+    expect(oks).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect((losers[0] as { error: string }).error).toMatch(/last enabled admin/i);
+    // The invariant that matters: never zero admins.
+    expect(await store.countEnabledAdmins()).toBe(1);
+  });
+
+  it("two concurrent disables of the two admins → exactly ONE succeeds, ≥1 remains", async () => {
+    const { store, svc, actor } = await setup();
+    const boss = await svc.adminCreateUser("boss", "admin", actor, CTX);
+    if (!boss.ok) throw new Error("create failed");
+    const bossActor: SessionInfo = {
+      userId: boss.user.id,
+      username: "boss",
+      role: "admin",
+      mustChange: false,
+    };
+
+    installBarrier(store);
+    const [a, b] = await Promise.all([
+      svc.adminSetDisabled(boss.user.id, true, actor, CTX),
+      svc.adminSetDisabled(actor.userId, true, bossActor, CTX),
+    ]);
+
+    expect([a, b].filter((r) => r.ok)).toHaveLength(1);
+    expect([a, b].filter((r) => !r.ok)).toHaveLength(1);
+    expect(await store.countEnabledAdmins()).toBe(1);
+  });
+});
+
 describe("adminResetPassword", () => {
   it("issues a new temp pw, flips mustChange, and kills all sessions", async () => {
     const { store, svc, actor } = await setup();

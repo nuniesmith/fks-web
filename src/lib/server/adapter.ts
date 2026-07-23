@@ -158,13 +158,19 @@ export type AdapterRoute =
 
 /**
  * Live-money mutations the `disabled` dev bypass must NOT expose. The
- * WEBUI_AUTH=disabled opt-out is app-wide, but the cockpit kill/re-arm
- * sentinel writes halt (or re-arm!) a REAL-MONEY bot — a deploy accidentally
- * left in disabled mode must not turn tailnet reachability into the only wall
- * between any unauthenticated client and a live-money halt (the CSRF origin
- * check passes for requests with no Origin header, so a bare curl reaches
- * these). Refused with 403 even in disabled mode; every other route keeps
- * today's disabled-mode behaviour.
+ * WEBUI_AUTH=disabled opt-out is app-wide, but these paths write (or arm!) a
+ * REAL-MONEY bot or its credential/notification/risk config — a deploy
+ * accidentally left in disabled mode must not turn tailnet reachability into
+ * the only wall between any unauthenticated client and a live-money halt, a
+ * raised `max_gross_exposure`, a deleted exchange key, or a registered exfil
+ * webhook (the CSRF origin check passes for requests with no Origin header, so
+ * a bare curl reaches these). Refused with 403 even in disabled mode; every
+ * other route keeps today's disabled-mode behaviour.
+ *
+ * Matched by `matchesBlockedMutation` at a SEGMENT boundary (like
+ * `matchesPublicPrefix`), so `/api/settings/exchange-keys` also covers the
+ * dynamic per-exchange DELETE (`/api/settings/exchange-keys/kraken`) and the
+ * notifications channel DELETE/test — but NOT a merely prefix-sharing path.
  */
 export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
   "/api/cockpit/kill",
@@ -174,7 +180,30 @@ export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
   // unauthenticated `curl -XPOST .../api/alerts/ack` and the operator's pager
   // going quiet — refused with 403 even in disabled mode (webui plan 04 OD-3).
   "/api/alerts/ack",
+  // Money-path config mutations (M1): raising `max_gross_exposure`, deleting a
+  // live exchange key, or registering an exfil notification webhook are every
+  // bit as dangerous as a kill/re-arm. `exchange-keys` covers the POST write +
+  // the dynamic per-exchange DELETE; the three `*-keys` entries cover the
+  // legacy fixed-venue write routes; `notifications` covers the POST write (and
+  // its channel DELETE/test); `risk` covers the risk-config PUT.
+  "/api/settings/risk",
+  "/api/settings/exchange-keys",
+  "/api/settings/kraken-keys",
+  "/api/settings/kucoin-keys",
+  "/api/settings/cryptocom-keys",
+  "/api/settings/notifications",
 ];
+
+/**
+ * Whether a path is (or is a sub-path of) a `disabled`-mode blocked mutation.
+ * Segment-boundary match so `/api/settings/exchange-keys` covers
+ * `/api/settings/exchange-keys/kraken` but never a prefix-sharing sibling.
+ */
+export function matchesBlockedMutation(pathname: string): boolean {
+  return AUTH_DISABLED_BLOCKED_MUTATIONS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
+}
 
 function isGetLike(method: string): boolean {
   return method === "GET" || method === "HEAD";
@@ -324,7 +353,7 @@ export function routeRequest(
   //    Even here, live-money cockpit mutations stay refused — the dev bypass
   //    must never arm an unauthenticated kill/re-arm route.
   if (auth.mode === "disabled") {
-    if (!get && AUTH_DISABLED_BLOCKED_MUTATIONS.includes(pathname)) {
+    if (!get && matchesBlockedMutation(pathname)) {
       return { kind: "forbidden", reason: "live_mutation_requires_auth" };
     }
     return backend ? { kind: "backend" } : { kind: "pass" };
