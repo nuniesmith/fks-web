@@ -476,18 +476,20 @@ export class AuthService {
           status: 400,
         };
       }
-      if (
-        target.role === "admin" &&
-        !target.disabled &&
-        (await this.store.countEnabledAdmins()) <= 1
-      ) {
+      // Atomic check+mutate: the last-admin guard and the disable happen inside
+      // one store operation (PgStore txn + row lock; MemoryStore single-tick), so
+      // two concurrent disables can't each pass the guard and reach zero admins.
+      const outcome = await this.store.disableUserGuarded(targetId);
+      if (outcome === "not_found") {
+        return { ok: false, error: "No such user.", status: 404 };
+      }
+      if (outcome === "would_orphan") {
         return {
           ok: false,
           error: "Cannot disable the last enabled admin.",
           status: 400,
         };
       }
-      await this.store.setUserDisabled(targetId, true);
       await this.store.deleteUserSessions(targetId);
       this.purgeUserFromCache(targetId);
       await this.store.audit({
@@ -510,10 +512,11 @@ export class AuthService {
 
   /**
    * Change a user's role. Guard: cannot demote the last enabled admin (a
-   * self-demotion is allowed ONLY while another enabled admin remains — the
-   * `countEnabledAdmins() <= 1` check covers both, since that lone admin is the
-   * actor). Sweeps the resolve cache so the new role is authoritative on the
-   * target's next in-process request (no 60s stale window).
+   * self-demotion is allowed ONLY while another enabled admin remains). The
+   * guard + write are one atomic store op (`setUserRoleGuarded`) so two admins
+   * demoting each other can't both slip past a stale count to zero admins.
+   * Sweeps the resolve cache so the new role is authoritative on the target's
+   * next in-process request (no 60s stale window).
    */
   async adminSetRole(
     targetId: number,
@@ -527,17 +530,22 @@ export class AuthService {
     const target = await this.store.getUserById(targetId);
     if (!target) return { ok: false, error: "No such user.", status: 404 };
 
-    const demotingAdmin =
-      target.role === "admin" && role !== "admin" && !target.disabled;
-    if (demotingAdmin && (await this.store.countEnabledAdmins()) <= 1) {
+    const from = target.role;
+    // Atomic check+mutate: the last-admin demotion guard and the role write
+    // happen inside one store operation (PgStore txn + `FOR UPDATE` on the
+    // enabled-admin rows; MemoryStore single-tick), so two admins concurrently
+    // demoting each other can't both pass the guard and reach zero admins.
+    const outcome = await this.store.setUserRoleGuarded(targetId, role);
+    if (outcome === "not_found") {
+      return { ok: false, error: "No such user.", status: 404 };
+    }
+    if (outcome === "would_orphan") {
       return {
         ok: false,
         error: "Cannot demote the last enabled admin.",
         status: 400,
       };
     }
-    const from = target.role;
-    await this.store.setUserRole(targetId, role);
     this.purgeUserFromCache(targetId);
     await this.store.audit({
       username: target.username,

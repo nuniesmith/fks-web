@@ -420,6 +420,9 @@ async function queryCandles(
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
       headers: { accept: "application/json" },
+      // Bound the request so a HUNG QuestDB can't wedge the SvelteKit handler
+      // (adapter-node has no default per-request timeout). Matches proxyBackend.
+      signal: AbortSignal.timeout(15_000),
     });
     const j: any = await r.json();
     return mapCandleRows(j?.dataset);
@@ -506,6 +509,9 @@ async function questdbRows(sql: string): Promise<any[]> {
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
       headers: { accept: "application/json" },
+      // Bound the request so a HUNG QuestDB can't wedge the SvelteKit handler
+      // (adapter-node has no default per-request timeout). Matches proxyBackend.
+      signal: AbortSignal.timeout(15_000),
     });
     const j: any = await r.json();
     return Array.isArray(j?.dataset) ? j.dataset : [];
@@ -577,6 +583,7 @@ async function riskConfigPost(event: RequestEvent): Promise<Response> {
       method: "PUT",
       headers,
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!r.ok) return json({ ok: false, message: `risk update rejected (${r.status})` }, 502);
     return json({ ok: true });
@@ -626,6 +633,7 @@ async function exchangeKeysPost(event: RequestEvent, exchange?: string): Promise
       method: "POST",
       headers,
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
     if (r.status === 503) {
       return json({ ok: false, message: "Secret storage (spawner DB) is not configured" }, 503);
@@ -641,7 +649,10 @@ async function exchangeKeysPost(event: RequestEvent, exchange?: string): Promise
 async function exchangeKeysStatus(event: RequestEvent, exchange: string): Promise<Response> {
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
+    const r = await fetch(`${SPAWNER_URL}/secrets/status`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!r.ok) return json({ configured: false, db_enabled: false });
     const j: any = await r.json();
     const list: any[] = Array.isArray(j?.exchanges) ? j.exchanges : [];
@@ -661,7 +672,10 @@ async function exchangeKeysStatus(event: RequestEvent, exchange: string): Promis
 async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
+    const r = await fetch(`${SPAWNER_URL}/secrets/status`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!r.ok) return json({ db_enabled: false, exchanges: [] });
     const j: any = await r.json();
     const list: any[] = Array.isArray(j?.exchanges) ? j.exchanges : [];
@@ -685,7 +699,10 @@ async function capabilities(event: RequestEvent): Promise<Response> {
   let stored: string[] = [];
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/secrets/status`, { headers });
+    const r = await fetch(`${SPAWNER_URL}/secrets/status`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (r.ok) {
       const j: any = await r.json();
       stored = (Array.isArray(j?.exchanges) ? j.exchanges : []).map((e: any) =>
@@ -706,6 +723,9 @@ async function futuresSymbols(): Promise<Response> {
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
       headers: { accept: "application/json" },
+      // Bound the request so a HUNG QuestDB can't wedge the SvelteKit handler
+      // (adapter-node has no default per-request timeout). Matches proxyBackend.
+      signal: AbortSignal.timeout(15_000),
     });
     const j: any = await r.json();
     const symbols = Array.isArray(j?.dataset) ? j.dataset.map((row: any[]) => row[0]) : [];
@@ -757,7 +777,11 @@ async function exchangeKeysDelete(event: RequestEvent, exchangeRaw: string): Pro
   }
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/secrets/${exch}`, { method: "DELETE", headers });
+    const r = await fetch(`${SPAWNER_URL}/secrets/${exch}`, {
+      method: "DELETE",
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!r.ok) return json({ ok: false, message: `Delete rejected by spawner (${r.status})` }, 502);
     const j: any = await r.json().catch(() => ({}));
     return json({ ok: j?.ok === true, exchange: exch, db_enabled: j?.db_enabled !== false });
@@ -789,7 +813,10 @@ function sanitizeChannelName(raw: unknown): string {
 async function notificationsList(event: RequestEvent): Promise<Response> {
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/notifications`, { headers });
+    const r = await fetch(`${SPAWNER_URL}/notifications`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!r.ok) return json({ db_enabled: false, channels: [] });
     const j: any = await r.json();
     const list: any[] = Array.isArray(j?.channels) ? j.channels : [];
@@ -826,7 +853,10 @@ async function notificationsHistory(event: RequestEvent): Promise<Response> {
   const url = `${SPAWNER_URL}/notifications/history${query ? `?${query}` : ""}`;
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(url, { headers });
+    const r = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!r.ok) return json({ db_enabled: false, entries: [] });
     const j: unknown = await r.json().catch(() => null);
     return json(coerceNotificationHistory(j));
@@ -882,6 +912,7 @@ async function notificationsPost(event: RequestEvent): Promise<Response> {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
     if (r.status === 503) {
       return json(
@@ -908,6 +939,7 @@ async function notificationsDelete(event: RequestEvent, nameRaw: string): Promis
     const r = await fetch(`${SPAWNER_URL}/notifications/${encodeURIComponent(name)}`, {
       method: "DELETE",
       headers,
+      signal: AbortSignal.timeout(15_000),
     });
     if (!r.ok) return json({ ok: false, message: `Delete rejected by spawner (${r.status})` }, 502);
     const j: any = await r.json().catch(() => ({}));
@@ -938,6 +970,7 @@ async function notificationsTest(event: RequestEvent, nameRaw: string): Promise<
     const r = await fetch(`${SPAWNER_URL}/notifications/${encodeURIComponent(name)}/test`, {
       method: "POST",
       headers,
+      signal: AbortSignal.timeout(15_000),
     });
     if (r.status === 503) {
       return json({ ok: false, message: "Notification storage (spawner DB) is not configured" });
@@ -1206,6 +1239,7 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     try {
       const r = await fetch(`${BACKWARD_URL}/api/v1/experiences/sample${search}`, {
         headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(15_000),
       });
       if (r.ok) {
         return new Response(r.body, {
