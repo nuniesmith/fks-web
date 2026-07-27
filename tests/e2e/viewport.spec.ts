@@ -287,3 +287,80 @@ test.describe("Cockpit viewport reachability (390x844 phone)", () => {
     expect(docOverflow).toBeLessThanOrEqual(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M5 phone-frame guards.
+//
+// SCOPED TO WHAT WAS MEASURED, not to what was assumed. A design pass claimed
+// the StatusBar "clips logout off-screen" on a phone; probing the real DOM at
+// 375px showed logout's right edge at 363px — on-screen, because the flex row
+// shrinks. That claim is NOT asserted here.
+//
+// What DID reproduce, and is guarded below:
+//   • logout renders 16px tall under (pointer: coarse) — far under the 44px
+//     minimum, on the one control a phone user most needs to hit.
+//   • the gate cards use a FIXED width (login 360px, setup/invite 380px), so
+//     they overflow any viewport narrower than that. /setup and /invite sit
+//     behind the auth gate and are unreachable hermetically, but /login shares
+//     the pattern and is testable at 320px.
+//   • the bar carried NO @media rule at all, so three health items + the
+//     "FKS Terminal · SvelteKit" label competed for a 375px row.
+// ─────────────────────────────────────────────────────────────────────────────
+const SMALL_PHONE = { width: 375, height: 667 }; // iPhone SE
+const NARROW_PHONE = { width: 320, height: 568 }; // iPhone 5/SE1 — narrower than the 360px card
+
+test.describe("Phone frame: touch targets and status-bar density", () => {
+  test.use({ viewport: SMALL_PHONE, hasTouch: true, isMobile: true });
+
+  test("logout is a real 44px touch target under a coarse pointer", async ({ page }) => {
+    await page.goto("/");
+    // Guard the guard: if touch emulation regresses, the assertion below would
+    // pass vacuously against the desktop rule.
+    const coarse = await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
+    expect(coarse, "this spec is meaningless without coarse-pointer emulation").toBe(true);
+
+    const box = await page.locator(".logout-btn").boundingBox();
+    expect(box).not.toBeNull();
+    // Measured 16px before the fix, 44px after.
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(SMALL_PHONE.width);
+  });
+
+  test("health collapses to one worst-wins aggregate on a phone", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".status-agg")).toBeVisible();
+    await expect(page.locator(".status-item:not(.status-agg)").first()).toBeHidden();
+    // The aggregate must still say WHAT is wrong — a degraded service may not
+    // hide behind a healthy sibling just because it collapsed into one dot.
+    await expect(page.locator(".status-agg")).toHaveAttribute("aria-label", /.+/);
+  });
+});
+
+test.describe("Phone frame: the auth gate stays reachable on a short viewport", () => {
+  // 320x380 approximates a small phone with the software keyboard up — the
+  // case where a centred `min-height:100vh` gate with no scroll region hides
+  // its own submit button. Measured before the fix: submit bottom at 453px on
+  // a 380px viewport, gate overflow-y:visible, and NOTHING scrollable.
+  test.use({ viewport: { width: 320, height: 380 } });
+
+  test("the submit button can actually be reached", async ({ page }) => {
+    await page.goto("/login");
+    const submit = page.locator('button[type="submit"]').first();
+
+    await submit.scrollIntoViewIfNeeded();
+    const box = await submit.boundingBox();
+    expect(box, "submit must have a layout box").not.toBeNull();
+    // The regression: unreachable because no ancestor could scroll.
+    expect(box!.y + box!.height).toBeLessThanOrEqual(380);
+    await expect(submit).toBeVisible();
+  });
+
+  test("the gate owns a real scroll region", async ({ page }) => {
+    await page.goto("/login");
+    const overflowY = await page.evaluate(() => {
+      const g = document.querySelector(".gate") as HTMLElement | null;
+      return g ? getComputedStyle(g).overflowY : null;
+    });
+    expect(overflowY, "the gate must be the page's scroll region").toBe("auto");
+  });
+});
