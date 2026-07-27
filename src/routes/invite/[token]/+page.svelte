@@ -172,11 +172,22 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    /* This page owns the ONLY scroll region (see the one-scroll rule in
+       app.css). Without overflow-y the centred card is clipped at both ends
+       on a short viewport — with the keyboard up, that hides the submit
+       button. padding + `margin:auto` on the child keeps it centred when it
+       fits and scrollable when it does not. */
+    overflow-y: auto;
+    padding: 16px;
     min-height: 100vh;
+    max-height: 100vh;
     background: var(--bg0);
   }
   .panel {
-    width: 380px;
+    /* min() so the card never exceeds a 375px phone viewport, where a fixed
+       width overflowed horizontally and pushed the submit button out of
+       reach. */
+    width: min(380px, 100%);
     padding: 32px 28px 24px;
     background: var(--bg1);
     border: 1px solid var(--b2);
