@@ -235,3 +235,65 @@ describe("createPoll shared/deduped pollers", () => {
     expect(apiGet).toHaveBeenCalledTimes(2); // fully torn down
   });
 });
+
+describe("updatedAt — freshness must track TRUTH, not attempts", () => {
+  it("advances on a successful fetch", async () => {
+    apiGet.mockResolvedValue({ v: 1 });
+    const poll = createPoll<{ v: number }>("/api/fresh-ok", 10_000);
+    expect(readStore(poll.updatedAt)).toBeNull();
+
+    poll.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(readStore(poll.updatedAt)).toBeTypeOf("number");
+    poll.stop();
+  });
+
+  it("does NOT advance on a failed fetch — a dead feed must not look current", async () => {
+    apiGet.mockResolvedValueOnce({ v: 1 });
+    const poll = createPoll<{ v: number }>("/api/fresh-fail", 10_000);
+    poll.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const afterSuccess = readStore(poll.updatedAt);
+    expect(afterSuccess).toBeTypeOf("number");
+
+    // The backend dies. Attempts keep happening on every tick; TRUTH must not
+    // advance, or a dead feed renders as perfectly current.
+    apiGet.mockRejectedValue(new Error("upstream down"));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(readStore(poll.error)).toBe("upstream down");
+    expect(
+      readStore(poll.updatedAt),
+      "a failing poll must leave updatedAt at the last GOOD fetch",
+    ).toBe(afterSuccess);
+    poll.stop();
+  });
+
+  it("recovers: a later success advances it again", async () => {
+    apiGet.mockRejectedValueOnce(new Error("down"));
+    const poll = createPoll<{ v: number }>("/api/fresh-recover", 10_000);
+    poll.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readStore(poll.updatedAt)).toBeNull(); // never succeeded yet
+
+    apiGet.mockResolvedValue({ v: 2 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(readStore(poll.updatedAt)).toBeTypeOf("number");
+    poll.stop();
+  });
+
+  it("is shared across handles on the same (url, interval) key", async () => {
+    apiGet.mockResolvedValue({ v: 1 });
+    const a = createPoll<{ v: number }>("/api/fresh-shared", 10_000);
+    const b = createPoll<{ v: number }>("/api/fresh-shared", 10_000);
+
+    a.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(readStore(b.updatedAt)).toBe(readStore(a.updatedAt));
+    expect(readStore(b.updatedAt)).toBeTypeOf("number");
+    a.stop();
+  });
+});
