@@ -66,6 +66,32 @@
   let janusState  = $derived(classify(health.janus));
   let feedState   = $derived(classify(health.feed));
 
+  /**
+   * Worst-wins aggregate for the phone layout, where three separate health
+   * items do not fit (they pushed the logout button off a 375px viewport).
+   * Severity order down > warn > unknown > ok — a degraded service must never
+   * be hidden behind a healthy sibling just because it sorts later.
+   */
+  const SEVERITY: Record<DotState, number> = { down: 3, warn: 2, unknown: 1, ok: 0 };
+
+  let worstState = $derived(
+    [redisState, janusState, feedState].reduce<DotState>(
+      (worst, s) => (SEVERITY[s] > SEVERITY[worst] ? s : worst),
+      'ok'
+    )
+  );
+
+  /** Names the services that are NOT ok, so the phone dot still says what broke. */
+  let worstLabel = $derived.by(() => {
+    const bad = [
+      ['Redis', redisState],
+      ['Janus', janusState],
+      ['Feed', feedState]
+    ].filter(([, s]) => s !== 'ok');
+    if (bad.length === 0) return 'All systems healthy';
+    return bad.map(([name, s]) => dotLabel(name as string, s as DotState)).join(', ');
+  });
+
   // ─── Data Fetching ────────────────────────────────────────────────────────
 
   async function fetchHealth(): Promise<void> {
@@ -100,6 +126,17 @@
 </script>
 
 <footer class="statusbar" role="status" aria-live="polite" aria-label="System health status">
+  <!-- Phone-only aggregate. The three per-service items below do not fit on a
+       375px viewport and pushed the logout control off-screen entirely. -->
+  <span class="status-item status-agg" aria-label={worstLabel}>
+    <span
+      class="dot"
+      class:dot-pulse={worstState === 'ok'}
+      style="background: {dotColor(worstState)}"
+    ></span>
+    {worstState === 'ok' ? 'OK' : 'DEGRADED'}
+  </span>
+
   <span class="status-item" aria-label={dotLabel('Redis', redisState)}>
     <span
       class="dot"
@@ -281,5 +318,56 @@
   .logout-label {
     text-transform: uppercase;
     letter-spacing: 0.06em;
+  }
+
+  /* The aggregate is desktop-hidden; the phone layout below swaps them. */
+  .status-agg {
+    display: none;
+  }
+
+  /* ── Phone frame ───────────────────────────────────────────────────────────
+     Without this breakpoint the bar had NO responsive rule at all: three
+     health items plus "FKS Terminal · SvelteKit" overflowed a 375px viewport
+     and pushed logout — the only sign-out control in the app — off-screen.
+     Mirrors the proven Strip fallback (Strip.svelte:175-193). */
+  @media (max-width: 640px) {
+    .status-agg {
+      display: inline-flex;
+    }
+    /* The three per-service items collapse into .status-agg above. */
+    .status-item:not(.status-agg) {
+      display: none;
+    }
+    /* Frees the row for the alert chip + logout. */
+    .status-right {
+      display: none;
+    }
+    .logout-form {
+      margin-left: auto;
+    }
+  }
+
+  /* Touch targets. The logout button is 16px tall — well under the 44px
+     minimum — and is the one control a phone user genuinely needs to hit.
+     The bar itself is only --status-h (24px), so it has to grow to hold a
+     real target. Safe: the shell sizes the workspace with `flex:1;
+     min-height:0` (+layout.svelte), so it simply yields the extra pixels,
+     and --status-h has no other consumer in the tree. */
+  @media (pointer: coarse) {
+    .statusbar {
+      height: auto;
+      min-height: calc(44px + env(safe-area-inset-bottom, 0px));
+    }
+    .logout-btn {
+      height: 44px;
+      min-width: 44px;
+      padding: 0 10px;
+      font-size: 11px;
+    }
+    .alert-chip {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+    }
   }
 </style>
