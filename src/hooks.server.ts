@@ -24,6 +24,7 @@ import {
   outageRoute,
   routeRequest,
   upstreamHeaders,
+  isGetLike,
 } from "$lib/server/adapter";
 import {
   AuthStoreUnavailable,
@@ -1334,7 +1335,13 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // /performance trade history — janus has no closed-trade ledger here; the
   // demo bot keeps fills on its MockExchange. Honest empty until that's exposed.
   if (pathname === "/api/trades") {
-    return json({ trades: [] });
+    // GET = trade history: honest empty (janus exposes no closed-trade ledger
+    // here yet). POST = the /trading order ticket, which previously landed on
+    // this same read stub, got a 200, and made the UI report the order as
+    // submitted. Fall through so the mutation guard below answers 501.
+    if (isGetLike(event.request.method)) {
+      return json({ trades: [] });
+    }
   }
 
   // ── PHASE 2: front-page panels janus now serves natively ────────────────────
@@ -1450,6 +1457,22 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   }
 
   // ── Everything else under a backend prefix → degrade quietly ────────────────
+  // ...but ONLY for reads. Degrading a MUTATION to an empty 200 is a fake
+  // success: the UI awaits the call, sees no error, and tells the operator the
+  // action worked when nothing was wired at all (2026-07-26 review — the
+  // /trading order ticket reported "BUY order submitted" against a stub, and
+  // trade-close / signal approve-reject / janus-ai session start-stop were
+  // silent no-ops by the same route). An unimplemented write must SAY so.
+  if (!isGetLike(event.request.method)) {
+    return json(
+      {
+        error: "not_implemented",
+        detail: `No backend is wired for ${event.request.method} ${pathname}. ` +
+          `This action did NOT happen — it is not implemented, not failed-silently.`,
+      },
+      501,
+    );
+  }
   return gracefulEmpty(pathname);
 }
 
