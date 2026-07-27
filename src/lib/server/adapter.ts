@@ -205,7 +205,9 @@ export function matchesBlockedMutation(pathname: string): boolean {
   );
 }
 
-function isGetLike(method: string): boolean {
+/** GET/HEAD — i.e. a read. Exported so the hook can refuse to degrade a
+ *  MUTATION into an empty-200 (a fake success). */
+export function isGetLike(method: string): boolean {
   return method === "GET" || method === "HEAD";
 }
 
