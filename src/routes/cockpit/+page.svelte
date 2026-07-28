@@ -22,6 +22,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import Modal from '$lib/components/ui/Modal.svelte';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { api, ApiError } from '$api/client';
   import {
@@ -102,6 +103,23 @@
   // Live-twin /status feed (M3 Phase A). Three-state, honest: {configured:false}
   // until the live funding bot is spawned (Gate-A ~Aug 1), then reachable/down.
   const liveStatusPoll = createPoll<LiveStatusResp>('/api/cockpit/live-status', 10_000);
+
+  // Freshness of the cockpit's own state feed (M4). The panels below render bot
+  // state, positions and gate rows from THIS poll; if it stops succeeding they
+  // keep showing the last values with no visual difference at all, which is the
+  // failure this indicator exists to remove.
+  //
+  // 3x the 5s interval: two missed ticks is jitter, three means something is
+  // wrong. Deliberately NOT keyed off `loading` — a poll that is busy is not a
+  // poll that is current.
+  const STATE_STALE_AFTER_MS = 15_000;
+  const stateUpdatedAt = statePoll.updatedAt;
+  // NOTE: deliberately no `consecutiveErrors` here. Mapping "error is set" to
+  // the component's persistence threshold would report a single transient blip
+  // as a sustained failure and defeat the flap resistance. It is unnecessary
+  // anyway: a failing poll stops advancing updatedAt, so the age grows and
+  // crosses staleAfterMs on its own — an error that matters becomes visible
+  // after 15s, and one that does not, never does.
   $effect(() => {
     statePoll.start();
     telemetry.start();
@@ -246,6 +264,14 @@
 
   <!-- ── Instance selector + mode banner ─────────────────────────────────── -->
   <div class="mode-row">
+    <!-- M4: the age of the feed every panel below is drawn from. A frozen
+         cockpit is indistinguishable from a calm one without this. -->
+    <Freshness
+      updated={$stateUpdatedAt}
+      unit="ms"
+      staleAfterMs={STATE_STALE_AFTER_MS}
+      label="state"
+    />
     <div class="inst-tabs" role="tablist" aria-label="Bot instance">
       {#each ['paper', 'live'] as const as i (i)}
         <button

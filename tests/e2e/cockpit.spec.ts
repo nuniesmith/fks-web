@@ -403,3 +403,34 @@ test.describe("live-server seam (unmocked)", () => {
     ).toBeVisible();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M4: the cockpit must show the AGE of the feed its panels are drawn from.
+// A frozen cockpit is otherwise indistinguishable from a calm one — the
+// 2026-07-22 failure mode, one layer up.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("Cockpit freshness indicator", () => {
+  test("renders the state feed's age once the poll succeeds", async ({ page }) => {
+    await installCockpitMocks(page);
+    await gotoCockpit(page);
+    const fresh = page.locator(".freshness").first();
+    await expect(fresh).toBeVisible();
+    // A successful poll must render an age, never "age unknown".
+    await expect(fresh).toContainText(/state \d+s ago/);
+    await expect(fresh).not.toHaveClass(/warn/);
+  });
+
+  test("goes amber when the feed stops succeeding", async ({ page }) => {
+    // The indicator needs to cross staleAfterMs (15s) in real time, so this
+    // spec is deliberately slower than the default per-test budget.
+    test.setTimeout(90_000);
+    await installCockpitMocks(page);
+    await gotoCockpit(page);
+    await expect(page.locator(".freshness").first()).toBeVisible();
+
+    // Kill the state feed. updatedAt stops advancing, so the age crosses
+    // staleAfterMs (15s) on its own — no error-count plumbing involved.
+    await page.route("**/api/cockpit/state", (r) => r.abort());
+    await expect(page.locator(".freshness.warn").first()).toBeVisible({ timeout: 30_000 });
+  });
+});
