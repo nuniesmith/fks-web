@@ -11,12 +11,24 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
   import { normalizeFuturesEvent } from '$lib/utils/tradeEvents';
   import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Aliased at top level so Svelte auto-subscribes ($statusUpdatedAt).
+  const statusUpdatedAt = status.updatedAt;
+
+  // 3x the 10s poll, matching the overview and the cockpit precedent.
+  //
+  // On the FUNDING venue's page this is deliberately the only freshness signal
+  // there can be: that bot marks its book on trade events, so its own per-venue
+  // stamp is legitimately hours old and any threshold on it would false-alarm
+  // permanently. The page poll answers a different, answerable question — is
+  // this page's data arriving at all?
+  const PAGE_STALE_AFTER_MS = 30_000;
   $effect(() => {
     status.start();
     return () => status.stop();
@@ -96,6 +108,13 @@
     <div class="head-row">
       <h2 class="venue-name">{venue.exchange}</h2>
       <Badge variant={modeVariant(venue.mode)}>{venue.mode}</Badge>
+      <Freshness
+        updated={$statusUpdatedAt}
+        unit="ms"
+        staleAfterMs={PAGE_STALE_AFTER_MS}
+        label="page"
+        compact
+      />
       {#if venue.triggered}
         <Badge variant="amber">rebalance triggered</Badge>
       {/if}

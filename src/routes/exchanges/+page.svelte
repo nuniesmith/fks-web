@@ -13,12 +13,25 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
   import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
   import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Aliased at top level so Svelte auto-subscribes ($statusUpdatedAt).
+  // `$status.updatedAt` would read a field off the DATA, not the store.
+  const statusUpdatedAt = status.updatedAt;
+
+  // 3x the 10s poll — the cockpit precedent (3x its 5s poll). Two missed ticks
+  // is jitter; three means the page is showing a frozen snapshot.
+  //
+  // This is load-bearing: the `{#if !spot}` EmptyState only covers a poll that
+  // has NEVER succeeded. After one success the store holds the last payload
+  // forever with no visual difference, so a dead status server renders as a
+  // calm one.
+  const PAGE_STALE_AFTER_MS = 30_000;
   $effect(() => {
     status.start();
     return () => status.stop();
@@ -75,6 +88,12 @@
       hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it. Futures status lives on /futures."
     />
   {:else}
+    <Freshness
+      updated={$statusUpdatedAt}
+      unit="ms"
+      staleAfterMs={PAGE_STALE_AFTER_MS}
+      label="page"
+    />
     <div class="stat-row">
       <StatCard
         label={hasRealVenue ? 'Net worth (real venues)' : 'Net worth (paper only)'}
