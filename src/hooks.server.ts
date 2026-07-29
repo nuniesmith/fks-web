@@ -11,6 +11,7 @@ import {
   reshapeRiskConfig,
   resampleCandles,
   resolveCandleTable,
+  riskConfigRecognized,
   sanitizeInterval,
   sanitizeSymbol,
   signalStatus,
@@ -561,9 +562,51 @@ async function assetInfo(event: RequestEvent, shortRaw: string): Promise<Respons
 // PortfolioRiskConfig: max_daily_loss ≤ 0, max_concurrent_positions,
 // max_gross_exposure). The UI works in positive USD for the daily-loss limit; we
 // flip the sign on write. The save is honest now (a real PUT) — no fake "Saved".
+//
+// R1 — this GET deliberately does NOT use `janusJson`. `janusJson` swallows
+// every failure into `{}` (and doesn't even check `r.ok`, so a janus 4xx with a
+// JSON body flows through as data), `reshapeRiskConfig({})` is three
+// `undefined`s, and the panel then renders its own seeded numbers as though
+// they were the live limits — with Save enabled to write those fabrications
+// over the real config. "janus said X" and "janus did not answer" must be
+// distinguishable at this seam, so failure is a 502 the client can see.
 async function riskConfigGet(event: RequestEvent): Promise<Response> {
-  const c = await janusJson(event, JANUS_FORWARD_URL, "/api/v1/risk/config");
-  return json(reshapeRiskConfig(c));
+  let raw: unknown;
+  try {
+    const r = await fetch(`${JANUS_FORWARD_URL}/api/v1/risk/config`, {
+      headers: withJanusAuth(JANUS_FORWARD_URL, upstreamHeaders(event.request.headers)),
+      // Bound the read so a hung janus can't wedge the panel that awaits it.
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!r.ok) {
+      return json(
+        {
+          error: "risk_config_unreachable",
+          message: `the risk service answered ${r.status}`,
+        },
+        502,
+      );
+    }
+    raw = await r.json();
+  } catch {
+    return json(
+      { error: "risk_config_unreachable", message: "the risk service is unreachable" },
+      502,
+    );
+  }
+  const c = reshapeRiskConfig(raw);
+  // A 200 carrying no recognizable field is a schema change or a stub, not a
+  // config — passing it on reproduces the exact fabrication with janus fully up.
+  if (!riskConfigRecognized(c)) {
+    return json(
+      {
+        error: "risk_config_unrecognized",
+        message: "the risk service returned no recognizable limits",
+      },
+      502,
+    );
+  }
+  return json(c);
 }
 
 async function riskConfigPost(event: RequestEvent): Promise<Response> {
