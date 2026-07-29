@@ -1,7 +1,22 @@
 # fks-web — TODO
 
 > **Repo:** `github.com/nuniesmith/fks-web` (standalone — split out of `fks/src/web/`)
-> **Last synced:** 2026-07-13
+> **Last synced:** 2026-07-29
+>
+> **This file holds only micro-items.** The forward roadmap lives in
+> `~/github/FKS_WEB_ROADMAP_2026-07-27.md` (stages M4–M10 plus an explicit
+> **NOT DOING** list), with the robustness/integration backlog in
+> `~/github/FKS_WEB_ROBUSTNESS_PLAN_2026-07-29.md`. If an item here and a
+> roadmap stage disagree, the roadmap wins — put new planning there, not here.
+>
+> **2026-07-29 fossil sweep.** Everything below was re-checked against the
+> tree. Removed: SVK-20 (`/accounts`) and SVK-21 (`/modules`), which depended
+> on ACCT-*/MOD-* in **fks-ruby — a backend that no longer exists**; SVK-22,
+> which planned to split `src/routes/analysis/+page.svelte` — **there is no
+> `src/routes/analysis/`**; the "replace iframes" item for DOM / Positions /
+> Paper Trading, whose routes were removed in the janus migration. If you are
+> looking for one of those, it is gone on purpose — do not resurrect it from
+> this file's history without checking the backend still exists.
 
 ---
 
@@ -14,19 +29,30 @@
       hydration warning on the tasks page — were closed by wrapping the
       context value in `untrack(() => …)` and refactoring the task row
       to a `role="button"` div with keyboard handlers. `npm run check`
-      now reports 0 errors, 0 warnings across 270 files.
+      now reports 0 errors, 0 warnings across 270 files. *(That file count is
+      the 2026-07 figure; the tree has grown since. The standing gate is
+      "0 errors / 0 warnings", not a particular file count — read the live
+      number off `npm run check`, and never weaken the gate to keep it.)*
 
 ---
 
 ## P0 — Visual QA (WEBUI-B)
 
-- [ ] Test all workspaces at 1920×1080 and 1440×900
+Pruned 2026-07-29: the four `/dom` · `/posint` · `/paper-trading` · `/trainer`
+redirect + standalone checks are **deleted, not deferred** — those fks_ruby-era
+routes no longer exist. The primary viewport is now the **phone** (390×844),
+not the desktop sizes this list was written for.
+
+- [ ] Test all workspaces at 390×844 (the installed PWA target) — desktop
+      1920×1080 / 1440×900 second
 - [ ] Verify strip cells update independently
 - [ ] Verify SSE reconnect + toast notifications
-- [ ] Verify responsive collapse at 1024px breakpoint
-- ~~Verify redirects: `/dom`, `/posint`, `/paper-trading`, `/trainer` → terminal tabs~~ **obsolete** — those fks_ruby-era routes were removed (archived under `archive/legacy-fks-ruby/`)
-- ~~Verify standalone routes: `/dom/standalone`, `/posint/standalone`, `/paper-trading/standalone`, `/trainer/standalone`~~ **obsolete** — same removal
-- [ ] End-to-end browser test — dashboard loads, API responds, SSE streams, paper trading works
+- [ ] Verify the responsive collapse at the **640px** breakpoint — the only one
+      that exists (`StatusBar.svelte` health-dot aggregate + `Strip.svelte`).
+      There is no 1024px breakpoint in `src/`; the old item named a
+      breakpoint that was never implemented.
+- [ ] End-to-end browser test — dashboard loads, API responds, SSE streams,
+      `/cockpit` renders its sentinel + armed-path alerts
 
 ---
 
@@ -75,36 +101,9 @@
 - [ ] **SVK-19g:** Bot actions toolbar: Start/Stop/Restart/Delete/Clone
 - [ ] Add `/bots` to TabBar under **Trading** group
 
-### SVK-20: Accounts Workspace — `/accounts`
-> Depends on ACCT-A/B/C in fks-ruby
-
-- [ ] **SVK-20a:** Left pane — account list (30s poll): exchange type badge, mode badge, credential masking, Add Account form
-- [ ] **SVK-20b:** Left pane — test connection per account
-- [ ] **SVK-20c:** Right pane — account detail: balance snapshot, activate/deactivate toggle
-- [ ] **SVK-20d:** Right pane — asset routing table: editable rows, drag-to-reorder, Preview button
-- [ ] **SVK-20e:** Right pane — profit sweep config panel: source account, threshold, targets with allocation %
-- [ ] Add `/accounts` to TabBar under **System** group
-
-### SVK-21: Module Browser — `/modules`
-> Depends on MOD-A/B/C in fks-ruby
-
-- [ ] **SVK-21a:** Left sidebar — module registry browser: category filter chips, module list, search input
-- [ ] **SVK-21b:** Right pane — module manifest panel: ID/version/category, supported types/timeframes, JSON Schema config viewer
-- [ ] **SVK-21c:** Right pane — module test runner: symbol/TF/date selector, config editor, run button, result display
-- [ ] **SVK-21d:** Right pane — module pipeline builder (bonus): drag-and-drop chain, save as named pipeline
-- [ ] **SVK-21e:** Right pane — module health panel (60s poll): all loaded modules with latency + error counts
-- [ ] Add `/modules` to TabBar under **System** (or Analysis)
-
----
-
-## P1 — SVK-22: Analysis Route Split
-
-> `src/routes/analysis/+page.svelte` is ~66k lines — split into sub-routes.
-
-- [ ] **SVK-22a:** Audit current page — map 5 inner-tab sections (Briefing, Correlation, Scanner, Checklist, Rotation + Labs)
-- [ ] **SVK-22b:** Create sub-routes: `/analysis` (hub), `/analysis/technical`, `/analysis/correlation`, `/analysis/scanner`, `/analysis/sentiment`, `/analysis/chain`
-- [ ] **SVK-22c:** Add inner-nav (horizontal pill tabs) to `/analysis` landing
-- [ ] **SVK-22d:** Update TabBar — `/analysis` stays as Shift+1, sub-routes via in-page nav
+*(SVK-20 `/accounts` and SVK-21 `/modules` deleted 2026-07-29 — both were
+gated on ACCT-*/MOD-* work in **fks-ruby**, which is deleted. The account
+registry that did survive is the spawner's, already surfaced on `/treasury`.)*
 
 ---
 
@@ -112,8 +111,10 @@
 
 - [ ] **SVK-15b:** Binance WS integration — `@kline_1m` streams (public, no auth) — Kraken downtime fallback
 - [ ] **SVK-15c:** Bybit WS integration — `kline.1.{symbol}` for Bybit-listed assets
-- [ ] **SVK-15d:** Multi-chart grid layout (2×1, 2×2 configurable)
-- [ ] **SVK-15e:** Drawing tools — trendline, horizontal line, fib retracement (DrawingTools.svelte exists, wire into charts page)
+- [x] **SVK-15d:** Multi-chart grid layout — **SHIPPED**: `/charts/grid`
+      offers configurable 1×1 / 1×2 / 2×2 via `ChartGrid.svelte`
+- [x] **SVK-15e:** Drawing tools — **SHIPPED**: `DrawingTools.svelte` is
+      mounted in `src/routes/charts/+page.svelte`, not merely present
 - [ ] Quick-pick configurable from registry categories (currently hardcoded buttons)
 
 ---
@@ -132,8 +133,13 @@
 - [ ] `/factory/status/json` endpoint audit — if only HTML variant exists, add JSON version
 - [ ] Audit remaining endpoint JSON responses needed for any workspace
 - [ ] Journal replay — trade replay with entry/exit chart markers
-- [ ] DOM / Positions / Paper Trading: native Svelte rebuild (replace iframes, lower priority)
-- [ ] OSS-C: Impeccable — run `/harden checkout` on Trading order entry form; `/normalize` on Charts and Analysis pages
+- [ ] OSS-C: Impeccable — run `/harden checkout` on the Trading order-entry form; `/normalize` on the Charts page
+
+*(Deleted 2026-07-29: "DOM / Positions / Paper Trading: native Svelte rebuild
+(replace iframes)" — all three routes were removed in the janus migration, as
+the strikethroughs in the P0 list already recorded. There are no iframes left
+to replace. The `/normalize` target "Analysis page" is dropped for the same
+reason: `src/routes/analysis/` does not exist.)*
 
 ---
 
@@ -156,7 +162,9 @@
 - ✅ SVK-1 through SVK-17 (all 19 workspaces, all components, all stores)
 - ✅ Panel.svelte refactor (header snippet, badge, noPad, fill) + full migration across 14 pages
 - ✅ All 20 pages with per-page `<title>` tags
-- ✅ Playwright E2E rebuilt — 55 tests across 6 describe blocks
+- ✅ Playwright E2E rebuilt — 55 tests across 6 describe blocks *(count as of
+  that commit; the suite has grown well past it — `npx playwright test --list`
+  is the live number, and no doc should quote a fixed one)*
 - ✅ News: Live SSE push (SVK-4d partial — raw EventSource, connection dot, flash animation)
 - ✅ DB Explorer: Janus tab + lazy tab loading
 - ✅ StatusBar reactive dots, clock, error boundary, EmbedPage component

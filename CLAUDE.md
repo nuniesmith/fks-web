@@ -91,7 +91,7 @@ fks-web/
 - **API calls go through `$lib/api/*`.** The `api` export from `$lib/api/client.ts` is an *object* with `.get / .post / .put / .delete` methods — **not a callable function**. Calling `api(url, opts)` is a common mistake.
 - **Polls live in `$stores/poll.ts`.** Don't reinvent `setInterval` in components.
 - **SSE lives in `$stores/sse.ts`** (or open `EventSource` directly when you need per-row control like the `/bots` log viewer does).
-- **Styling:** dark theme via CSS variables (`var(--bg1)`, `var(--t1)`, `var(--cyan)`, `var(--accent)`, `var(--green-dim)`, …) defined in `app.css`. Use the existing palette before introducing new colours.
+- **Styling:** dark theme via CSS variables (`var(--bg1)`, `var(--t1)`, `var(--cyan)`, `var(--accent)`, `var(--green-dim)`, …) defined in **`src/styles/tokens.css`** — `app.css` only `@import`s it and then adds utility classes + the two page archetypes. Use the existing palette before introducing new colours.
 
 ## Common workflows
 
@@ -195,6 +195,46 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   (`adapter.ts` — filenames, NOT an `/icons/*` wildcard), so they load
   pre-login; adding a new top-level static asset that must be reachable before
   auth means adding its exact name to that allowlist.
+- **Truth & freshness (M4) — the rules that keep "looks fine" from being a
+  lie.**
+  - **Unmapped READS degrade; unmapped MUTATIONS do not.** A backend-prefixed
+    path with no dispatch falls to `gracefulEmpty` → `200 {}`/`[]`/an idle SSE
+    stub, but only for GET/HEAD. Any other method returns **501
+    `not_implemented`** with "This action did NOT happen"
+    (`hooks.server.ts`, the `if (!isGetLike(...))` branch just above the
+    `gracefulEmpty` fall-through). Degrading a write to an empty 200 is a
+    **fake success** — the UI awaits it, sees no error, and tells the operator
+    the order/close/approve landed against nothing. Do **not** "restore
+    graceful degradation" on writes.
+  - **`updatedAt` is the last SUCCESSFUL fetch, never the last attempt**
+    (`src/lib/stores/poll.ts`). A backend that has been failing for ten
+    minutes still produces attempts every interval, so keying a freshness
+    indicator off attempts renders a dead feed as perfectly current.
+  - **`$lib/utils/freshness.ts` auto-detects epoch-s vs epoch-ms.** The
+    platform publishes both (`/exchanges` `v.updated` is SECONDS from the
+    bots' `/status`; the cockpit's `generated_at` and `poll.updatedAt` are
+    MILLISECONDS). Mixing them does not throw — it renders an age wrong by
+    1000×. Default `unit="auto"`; pass an explicit unit only when you know.
+  - **Wiring + thresholds:** `Freshness.svelte` sits beside the cockpit
+    sentinel badge (`STATE_STALE_AFTER_MS = 15_000`) and on `/exchanges` +
+    `/exchanges/[exchange]` at two levels — page poll
+    `PAGE_STALE_AFTER_MS = 30_000` and per-venue
+    `VENUE_STALE_AFTER_MS = 900_000`. The 900s is **measured, not guessed**:
+    the live spot bot refreshes each venue every **300s** (12 intervals across
+    three venues, all 299–301s, 2026-07-28), so the threshold is 3× the true
+    period and is deliberate parity with the `BotVenueStale` Prometheus rule
+    (`> 900`). An earlier 90s estimate would have cried wolf every cycle —
+    pinned by `src/lib/utils/freshness.test.ts`.
+  - **The paper funding bot marks its book on TRADE EVENTS, so a 15+ hour
+    venue stamp is HEALTHY IDLE — never flag it.** It is already gated out in
+    code (`isFuturesVenue` in `src/routes/exchanges/[exchange]/+page.svelte`
+    skips the per-venue `Freshness`; `/futures` renders the same stamp as
+    neutral dim text) and pinned by the "funding bot would be permanently
+    stale under ANY of these" test. Any future Freshness sweep must key off
+    the **page poll's `updatedAt`**, never off `v.updated`, on those surfaces.
+  - **Three honest states, not two.** `Freshness.svelte` renders fresh /
+    stale / **unknown**, and unknown is GREY, not amber — "we have no stamp"
+    is not the same claim as "this data is old".
 - **`npm run check` is clean (0 errors / 0 warnings).** The de-navved Ruby
   routes that held the original type errors were deleted; the dashboard is now
   janus / Prometheus / QuestDB-backed via `hooks.server.ts`. Keep it at 0 — the
@@ -252,11 +292,39 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
     — it carries an acknowledgement mutation. Incident identity is
     `sha256(labels + activeAt)` (`src/lib/server/alertAck/`); the store PROBES
     `to_regclass` and degrades to `configured:false` (honest, read-only) when
-    the `webui_alert_acks` table / grants are absent. The cockpit's armed-path
-    ack panel restricts which alerts render via the **`ARMED_ALERTNAMES`
-    allowlist const in `src/routes/cockpit/+page.svelte`** (mirrors
-    `armed-path.yml`) — plus any `mode="live"` alert. The ack route is
-    operator+ (R3), so a viewer can never silence an armed-path page.
+    the `webui_alert_acks` table / grants are absent. The ack route is
+    operator+ (R3), so a viewer can never silence an armed-path page. An ack
+    silences the **webui** inbox + StatusBar chip only — there is no
+    Alertmanager integration in `src/`, so out-of-band paging is unaffected
+    and a re-fired alert returns under a new `activeAt`
+    (`src/lib/server/alertAck/logic.test.ts` "RE-FIRE = new activeAt").
+  - **The cockpit's armed-path filter is THREE clauses, and every one is
+    load-bearing (#75).** `isArmedAlert` in `src/routes/cockpit/+page.svelte`
+    renders an alert if **ANY** of:
+    1. `labels.mode === 'live'` — the rule explicitly stamps the live twin.
+    2. `labels.channel === 'money'` — **do not remove this clause.** Several
+       money-path rules AGGREGATE the `mode` label away and so can *never*
+       satisfy clause 1: `BotAllVenuesStale` is `count by (bot_id) (…)` and
+       `NetWorthSamplingPausedTooLong` is `increase(…_stale_skipped_total[30m])`
+       (`fks/infrastructure/config/prometheus/alerts/bot-alerts.yml`). Under
+       the old two-clause filter the CRITICAL `BotAllVenuesStale` — *"ALL
+       real-money venues stale — bot is blind … any position it holds is
+       unmanaged"* — was filtered **OUT** of the cockpit while its per-venue
+       WARNING sibling was shown: the exact inversion this panel exists to
+       prevent, and the shape a repeat of the 2026-07-22 DNS blackout would
+       take on the phone. It is also the only clause that catches
+       `BotVenueStale` on a **`dry-run`** venue — dry-run is REAL money (real
+       balances, no orders), and those rules select `{mode!="paper"}`, so
+       clause 1 alone would miss it. And it **self-maintains**: all four rules
+       in the `bot-venue-freshness` group stamp `channel: money`, so a new one
+       reaches the cockpit with no webui edit.
+    3. `ARMED_ALERTNAMES.has(labels.alertname)` — a hand-maintained allowlist
+       mirroring `armed-path.yml` + `crash-supervision.yml`, covering live
+       rules that stamp neither label. Keep it in sync when those files change.
+
+    **Never "restore" the two-clause form.** Narrowing this filter cannot fail
+    loudly: it silently hides a CRITICAL money alert on the one screen the
+    operator looks at during an incident.
 - **E2E suite (`tests/e2e/`, Playwright).** Hermetic: `cockpit.spec.ts` mocks
   the three cockpit polls + the kill route via `page.route`, so every
   honest-empty / kill-guard branch runs with **no DB or Prometheus**. The
@@ -266,5 +334,31 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   **structural `.cockpit-page > :last-child`** locator (not a named panel), so
   it keeps testing "whatever is genuinely last" as panels are added (the
   Armed-path alerts panel is last since M3).
+- **No-fake-success seam (#69).** Unmapped backend **mutations** now return
+  `501 not_implemented` instead of falling through to an empty `200`. This
+  closed the `/trading` order ticket reporting "BUY order submitted" against a
+  stub, plus trade-close, signal approve/reject and janus-ai session
+  start/stop, which were silent no-ops by the same route. Unmapped **reads**
+  still degrade quietly — see the "Truth & freshness" gotcha above.
+- **M4 — truth primitives (#71) + wiring (#73 cockpit, #74 `/exchanges`).**
+  `poll.updatedAt` (last *successful* fetch), `$lib/utils/freshness.ts`
+  (s-vs-ms auto-detect, fresh/stale/unknown), and `Freshness.svelte` (own 1s
+  ticker so the age counts up between fetches). Wired beside the cockpit
+  sentinel badge at 15s, and on `/exchanges` + `/exchanges/[exchange]` at 30s
+  page-level / 900s per-venue — the latter pinned to a **measured** 300s venue
+  cadence. The funding bot's trade-event stamp is deliberately excluded.
+- **M5 — phone frame (#72).** Three measured fixes: (1) the auth gate could
+  hide its own submit button at 320×380 (button at bottom=453px with nothing
+  scrollable) — `/login`, `/setup` and `/invite/[token]` are now the page's
+  single scroll region; (2) logout was a **16px** touch target against a 44px
+  minimum — the status bar grows under `(pointer: coarse)`; (3) the bar had no
+  `@media` rule at all, so below 640px the three health items collapse into one
+  **worst-wins** aggregate dot whose `aria-label` still NAMES the failing
+  services. Two design-review claims (logout clipped off-screen, gate cards
+  overflowing at 320px) did **not** reproduce against the real DOM and are
+  deliberately unguarded — do not re-add specs for them without re-measuring.
+  Remaining coarse-pointer gaps are real and unshipped: the cockpit
+  kill/re-arm buttons, the instance tabs, and the alert-inbox ack button.
 - Phase-by-phase buildout detail lives in the **fks** repo at
-  `docs/architecture/WEBUI_BUILDOUT_PLAN.md`.
+  `docs/architecture/WEBUI_BUILDOUT_PLAN.md`. Forward roadmap (M4–M10 + an
+  explicit NOT DOING list) lives at `~/github/FKS_WEB_ROADMAP_2026-07-27.md`.
