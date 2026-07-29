@@ -74,8 +74,28 @@ export function ageStr(iso: string | undefined, now: number = Date.now()): strin
 /** The subset of a Prometheus `/api/v1/alerts` entry we consume. */
 export interface PromAlertRaw {
   labels?: Record<string, string>;
+  annotations?: unknown;
   activeAt?: string;
   state?: string;
+}
+
+/**
+ * Keep only the string-valued annotation entries.
+ *
+ * Prometheus renders every annotation to a string, so in practice this is a
+ * pass-through — but the inbox prints these values straight at an operator who
+ * is reading them to decide what to do at 3am. A non-string that slipped
+ * through would render as `[object Object]` in the middle of a runbook, which
+ * is worse than the annotation being absent. Dropping it is the honest degrade:
+ * a missing runbook line is obviously missing.
+ */
+export function pickAnnotations(v: unknown): Record<string, string> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof val === "string" && val !== "") out[k] = val;
+  }
+  return out;
 }
 
 /** Pull the firing-alert list out of a Prometheus alerts response, defensively. */
@@ -96,12 +116,16 @@ export function reshapeAlerts(
   const alerts: InboxAlert[] = raw.map((a) => {
     const labels = a.labels ?? {};
     const activeAt = a.activeAt ?? "";
+    // NOTE: annotations are deliberately NOT hashed into the key. Identity is
+    // labels+activeAt; if a runbook edit changed the key, every acked incident
+    // on the box would silently re-open as unacked after a rules reload.
     const key = alertKey(labels, activeAt);
     return {
       key,
       labels,
       activeAt,
       age_str: ageStr(a.activeAt, now),
+      annotations: pickAnnotations(a.annotations),
       state: a.state ?? "firing",
       severity_color: severityColor(labels.severity),
       acked: acks.get(key) ?? null,

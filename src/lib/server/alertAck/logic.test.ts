@@ -4,6 +4,7 @@ import {
   alertKey,
   canonicalJson,
   extractPromAlerts,
+  pickAnnotations,
   reshapeAlerts,
   severityColor,
   type PromAlertRaw,
@@ -75,6 +76,20 @@ describe("extractPromAlerts", () => {
   });
 });
 
+describe("pickAnnotations", () => {
+  it("keeps string annotations and drops everything else", () => {
+    // A non-string would print as `[object Object]` in the middle of a runbook
+    // the operator is following at 3am. An absent line is honest; that isn't.
+    expect(
+      pickAnnotations({ summary: "s", runbook: "r", bad: { a: 1 }, n: 5, empty: "" }),
+    ).toEqual({ summary: "s", runbook: "r" });
+    expect(pickAnnotations(undefined)).toEqual({});
+    expect(pickAnnotations(null)).toEqual({});
+    expect(pickAnnotations(["summary"])).toEqual({});
+    expect(pickAnnotations("summary")).toEqual({});
+  });
+});
+
 describe("reshapeAlerts — LEFT JOIN acks", () => {
   const now = Date.parse("2026-07-21T10:05:00Z");
   const raw: PromAlertRaw[] = [
@@ -97,6 +112,51 @@ describe("reshapeAlerts — LEFT JOIN acks", () => {
     expect(alerts[0].key).toBe(alertKey(raw[0].labels!, raw[0].activeAt!));
     expect(alerts[0].age_str).toBe("5m");
     expect(alerts[0].severity_color).toBe("var(--red)");
+  });
+
+  // ── P1: the recovery procedure must survive the reshape ──────────────────
+  // BotAllVenuesStale's runbook is the four-step container-DNS check. It is
+  // written in the rule, shipped to Prometheus, and — before this — thrown away
+  // one hop before the human it was written for.
+  const withRunbook: PromAlertRaw[] = [
+    {
+      labels: { alertname: "BotAllVenuesStale", severity: "critical", bot_id: "crypto-spot" },
+      annotations: {
+        summary: "Bot crypto-spot: ALL real-money venues stale — bot is blind",
+        description: "Any position it holds is unmanaged until this clears.",
+        runbook: "1) docker exec <bot> getent hosts api.kraken.com",
+      },
+      activeAt: "2026-07-21T10:00:00Z",
+      state: "firing",
+    },
+  ];
+
+  it("carries annotations (summary/description/runbook) through VERBATIM", () => {
+    const { alerts } = reshapeAlerts(withRunbook, new Map(), now);
+    expect(alerts[0].annotations).toEqual(withRunbook[0].annotations);
+    // The sentence the operator reads at 3am, not the alertname.
+    expect(alerts[0].annotations?.summary).toContain("bot is blind");
+    expect(alerts[0].annotations?.runbook).toContain("getent hosts");
+  });
+
+  it("emits {} — never undefined — when a rule carries no annotations", () => {
+    const { alerts } = reshapeAlerts(raw, new Map(), now);
+    expect(alerts[0].annotations).toEqual({});
+  });
+
+  it("annotations do NOT change the incident key (a runbook edit can't un-ack)", () => {
+    // Same labels + activeAt, reworded runbook: identity must be unchanged, or
+    // every acked incident on the box silently re-opens after a rules reload.
+    const edited: PromAlertRaw[] = [
+      { ...withRunbook[0], annotations: { summary: "reworded", runbook: "new steps" } },
+    ];
+    const before = reshapeAlerts(withRunbook, new Map(), now).alerts[0];
+    const after = reshapeAlerts(edited, new Map(), now).alerts[0];
+    expect(after.key).toBe(before.key);
+
+    const ack: InboxAck = { by: "jordan", at: "2026-07-21T10:01:00Z", note: "" };
+    const acks = new Map([[before.key, ack]]);
+    expect(reshapeAlerts(edited, acks, now).unacked_count).toBe(0);
   });
 
   it("an acked alert joins its ack and drops out of unacked_count", () => {
