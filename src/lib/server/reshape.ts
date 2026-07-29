@@ -58,19 +58,45 @@ export function reshapePerformance(risk: any, dash: any): Record<string, number 
   };
 }
 
-// janus risk config → the /settings risk panel. The UI works in positive USD;
-// janus stores the daily-loss halt threshold as ≤ 0, so surface its magnitude.
-export function reshapeRiskConfig(c: any): {
+export interface RiskConfigView {
   max_daily_loss_usd: number | undefined;
   max_positions: number | undefined;
   max_gross_exposure_usd: number | undefined;
-} {
+}
+
+// janus risk config → the /settings risk panel. The UI works in positive USD;
+// janus stores the daily-loss halt threshold as ≤ 0, so surface its magnitude.
+export function reshapeRiskConfig(c: any): RiskConfigView {
   const dl = num(c?.max_daily_loss ?? c?.daily_loss ?? c?.max_daily_loss_usd);
   return {
     max_daily_loss_usd: dl != null ? Math.abs(dl) : undefined,
     max_positions: num(c?.max_concurrent_positions ?? c?.max_positions),
     max_gross_exposure_usd: num(c?.max_gross_exposure ?? c?.max_gross_exposure_usd),
   };
+}
+
+/**
+ * Did janus actually answer with a risk config?
+ *
+ * MONEY SAFETY (R1). `reshapeRiskConfig` maps *any* unrecognized body — `{}`
+ * from a swallowed fetch failure, a proxy's JSON error envelope, a rustrade
+ * field rename — to three `undefined`s. A caller that treats that as "config
+ * loaded" hands the panel nothing, the panel keeps its own seeded numbers, and
+ * fabricated limits render as the live risk config with Save enabled over
+ * them. So: a reply with none of the three fields is NOT config, and
+ * `riskConfigGet` must refuse it rather than pass it on.
+ *
+ * Deliberately "at least one" and not "all three": partial config is real
+ * config (the operator sees the fields janus does report) and the *client*
+ * separately refuses to enable Save until all three are known, so a missing
+ * field is never written back as a guess.
+ */
+export function riskConfigRecognized(c: RiskConfigView): boolean {
+  return (
+    c.max_daily_loss_usd !== undefined ||
+    c.max_positions !== undefined ||
+    c.max_gross_exposure_usd !== undefined
+  );
 }
 
 // /settings risk panel body → the rustrade `PortfolioRiskConfig` PUT payload.

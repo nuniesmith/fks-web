@@ -9,6 +9,7 @@ import {
   reshapeRiskConfig,
   resampleCandles,
   resolveCandleTable,
+  riskConfigRecognized,
   sanitizeInterval,
   sanitizeSymbol,
   signalStatus,
@@ -121,6 +122,43 @@ describe("reshapeRiskConfig", () => {
     const empty = reshapeRiskConfig({});
     expect(empty.max_daily_loss_usd).toBeUndefined();
     expect(empty.max_positions).toBeUndefined();
+  });
+});
+
+// R1 — the fabrication guard. `reshapeRiskConfig` cannot tell "janus reports no
+// limits" from "nothing recognizable came back"; both are three `undefined`s.
+// This predicate is what stops the second case reaching the /settings panel,
+// where the panel's own numbers would render in place of the live limits.
+describe("riskConfigRecognized", () => {
+  it("rejects every shape that carries no limit", () => {
+    // the exact value `janusJson` used to hand this route on ANY failure
+    expect(riskConfigRecognized(reshapeRiskConfig({}))).toBe(false);
+    expect(riskConfigRecognized(reshapeRiskConfig(null))).toBe(false);
+    // a janus error envelope parsed as JSON — a 200-shaped lie
+    expect(riskConfigRecognized(reshapeRiskConfig({ error: "not found" }))).toBe(false);
+    // schema drift: rustrade renames the fields, every mapping falls through
+    expect(
+      riskConfigRecognized(reshapeRiskConfig({ dailyLossLimit: -5000, positionCap: 10 })),
+    ).toBe(false);
+    // typed-JSON contract: strings are not numbers, so a stringly-typed body
+    // is not a config either
+    expect(riskConfigRecognized(reshapeRiskConfig({ max_daily_loss: "-5000" }))).toBe(false);
+  });
+
+  it("accepts a real config, including a partial one", () => {
+    expect(
+      riskConfigRecognized(
+        reshapeRiskConfig({
+          max_daily_loss: -5000,
+          max_concurrent_positions: 10,
+          max_gross_exposure: 2_000_000,
+        }),
+      ),
+    ).toBe(true);
+    // partial is still real — the client, not this seam, refuses to save it
+    expect(riskConfigRecognized(reshapeRiskConfig({ max_concurrent_positions: 10 }))).toBe(true);
+    // a genuine zero limit is a limit, not an absence
+    expect(riskConfigRecognized(reshapeRiskConfig({ max_daily_loss: 0 }))).toBe(true);
   });
 });
 

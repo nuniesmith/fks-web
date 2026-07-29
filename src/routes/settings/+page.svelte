@@ -193,12 +193,28 @@
   let venueTestVariant = $state<'green' | 'red' | 'default'>('default');
 
   // ─── Risk Controls State (rustrade PortfolioRiskConfig) ─────────────
-  let riskDailyLoss = $state(5000);          // max daily loss (USD; shown positive, stored ≤0)
-  let riskMaxPositions = $state(10);         // max concurrent positions
-  let riskGrossExposure = $state(5_000_000); // max gross exposure (USD)
+  // MONEY SAFETY (R1): these start as `null`, NOT as plausible-looking numbers.
+  // The panel used to seed 5000 / 10 / 5_000_000 and keep them whenever the
+  // load failed, so an unreachable risk service rendered $5,000 daily loss /
+  // 10 positions / $5,000,000 gross exposure as if they were the LIVE limits —
+  // with Save enabled to write those fabrications over the real config. A
+  // blank field plus a stated reason is the only honest "we don't know".
+  let riskDailyLoss = $state<number | null>(null);      // max daily loss (USD; shown positive, stored ≤0)
+  let riskMaxPositions = $state<number | null>(null);   // max concurrent positions
+  let riskGrossExposure = $state<number | null>(null);  // max gross exposure (USD)
   let riskSaving = $state(false);
-  let riskLoading = $state(false);
+  // Starts true: `loadRisk()` runs on mount, so "Loading…" is the truthful
+  // first paint. Starting false rendered a disabled Save with no explanation.
+  let riskLoading = $state(true);
   let riskFeedback = $state('');
+  // Why the live limits can't be shown (null = they are shown). Rendered
+  // verbatim — "blank" alone would read as "no limits set".
+  let riskLoadError = $state<string | null>(null);
+  // Set true ONLY by a load that came back with all three real limits. It is
+  // deliberately not derived from the field values: typing into the boxes must
+  // never unlock Save while the config on the other side is unknown, because
+  // writing over an unknown config is the harm this guard exists to stop.
+  let riskLoadedOk = $state(false);
 
   // ─── System Health State ───────────────────────────────────────────
   let healthData = $state<HealthResponse | null>(null);
@@ -570,23 +586,68 @@
 
   // ─── API: Risk Controls ────────────────────────────────────────────
 
+  /** Accept only a finite number off the wire; anything else is "unknown". */
+  const riskNumOrNull = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+
   async function loadRisk() {
     riskLoading = true;
+    riskFeedback = '';
     try {
       const c = await api.get<{ max_daily_loss_usd?: number; max_positions?: number; max_gross_exposure_usd?: number }>(
         '/api/settings/risk'
       );
-      if (c?.max_daily_loss_usd != null) riskDailyLoss = c.max_daily_loss_usd;
-      if (c?.max_positions != null) riskMaxPositions = c.max_positions;
-      if (c?.max_gross_exposure_usd != null) riskGrossExposure = c.max_gross_exposure_usd;
-    } catch {
-      // keep defaults if the risk service isn't reachable
+      riskDailyLoss = riskNumOrNull(c?.max_daily_loss_usd);
+      riskMaxPositions = riskNumOrNull(c?.max_positions);
+      riskGrossExposure = riskNumOrNull(c?.max_gross_exposure_usd);
+      const missing = [
+        riskDailyLoss === null ? 'max daily loss' : null,
+        riskMaxPositions === null ? 'max positions' : null,
+        riskGrossExposure === null ? 'max gross exposure' : null,
+      ].filter((m): m is string => m !== null);
+      riskLoadedOk = missing.length === 0;
+      // Partial config is still real config — show what janus reported, name
+      // what it didn't, and keep Save off so the gaps aren't written as guesses.
+      riskLoadError = riskLoadedOk
+        ? null
+        : `the risk service did not report ${missing.join(', ')}`;
+    } catch (err: any) {
+      // NEVER fall back to placeholder limits here. The old code kept the
+      // seeded 5000/10/5000000 with a bare `catch {}` and the panel presented
+      // them as the live config (R1).
+      riskDailyLoss = null;
+      riskMaxPositions = null;
+      riskGrossExposure = null;
+      riskLoadedOk = false;
+      riskLoadError = riskLoadReason(err);
     } finally {
       riskLoading = false;
     }
   }
 
+  /** The adapter's 502 envelope carries a human reason; fall back to the raw error. */
+  function riskLoadReason(err: any): string {
+    const raw = typeof err?.body === 'string' ? err.body : '';
+    if (raw) {
+      try {
+        const j = JSON.parse(raw);
+        if (typeof j?.message === 'string' && j.message) return j.message;
+      } catch {
+        /* not a JSON envelope */
+      }
+    }
+    return err?.message ?? 'the risk service is unreachable';
+  }
+
   async function saveRisk() {
+    // Belt-and-braces behind the disabled button: never PUT limits over a
+    // config we could not read (R1). The values in the boxes would be the
+    // operator's guess, not an edit of the live config.
+    if (!riskLoadedOk) {
+      riskFeedback = 'Error: the live risk limits are unknown — reload them before saving';
+      clearFeedbackAfter(v => riskFeedback = v, 5000);
+      return;
+    }
     riskSaving = true;
     riskFeedback = '';
     try {
@@ -1124,6 +1185,24 @@
 
     <!-- ── Panel 3: Risk Controls ─────────────────────────────────── -->
     <Panel title="Risk Controls">
+      <!-- R1: when the live limits can't be read, the fields stay BLANK and
+           say why. Never render a placeholder number here — it is
+           indistinguishable from the active limit. -->
+      {#if riskLoadError}
+        <div class="risk-unknown" role="alert" id="risk-load-error">
+          <strong>Live risk limits unavailable</strong> — {riskLoadError}. A blank field below
+          means <em>unknown</em>, not <em>unset</em>. Saving is disabled so an unknown config
+          can't be overwritten.
+          <button
+            class="btn-ghost risk-retry"
+            id="risk-retry"
+            onclick={loadRisk}
+            disabled={riskLoading}
+          >
+            {riskLoading ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      {/if}
       <div class="form-row">
         <div class="form-group form-grow">
           <label class="form-label" for="risk-daily-loss">Max Daily Loss ($)</label>
@@ -1133,6 +1212,9 @@
             type="number"
             min="0"
             step="100"
+            placeholder={riskLoadedOk ? '' : 'unknown'}
+            disabled={!riskLoadedOk}
+            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
             bind:value={riskDailyLoss}
           />
         </div>
@@ -1144,6 +1226,9 @@
             type="number"
             min="1"
             step="1"
+            placeholder={riskLoadedOk ? '' : 'unknown'}
+            disabled={!riskLoadedOk}
+            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
             bind:value={riskMaxPositions}
           />
         </div>
@@ -1155,12 +1240,23 @@
             type="number"
             min="0"
             step="1000"
+            placeholder={riskLoadedOk ? '' : 'unknown'}
+            disabled={!riskLoadedOk}
+            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
             bind:value={riskGrossExposure}
           />
         </div>
       </div>
       <div class="form-actions">
-        <button class="btn-primary" onclick={saveRisk} disabled={riskSaving || riskLoading || !canAdmin}>
+        <button
+          class="btn-primary"
+          id="risk-save"
+          onclick={saveRisk}
+          disabled={riskSaving || riskLoading || !canAdmin || !riskLoadedOk}
+          title={!riskLoadedOk && !riskLoading
+            ? 'the live risk limits are unknown — nothing to edit'
+            : undefined}
+        >
           {riskSaving ? 'Saving…' : riskLoading ? 'Loading…' : 'Save'}
         </button>
         {#if riskFeedback}
@@ -1524,6 +1620,32 @@
 
   .form-input::placeholder {
     color: var(--t3);
+  }
+
+  .form-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* R1 — "we cannot read the live limits". Amber (caution), not red (failure):
+     nothing is broken in the money path, the UI simply refuses to guess. */
+  .risk-unknown {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--amber, #e0a000);
+    border: 1px solid var(--amber, #e0a000);
+    border-radius: var(--r);
+    padding: 6px 8px;
+    margin-bottom: 8px;
+  }
+
+  .risk-unknown strong {
+    font-weight: 600;
+  }
+
+  .risk-retry {
+    margin-left: 8px;
+    vertical-align: middle;
   }
 
   .form-select {
