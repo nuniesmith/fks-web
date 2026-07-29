@@ -96,10 +96,16 @@ forced first-login credential change; passwords are **scrypt** (`node:crypto`,
 per-user salt), sessions are opaque tokens stored as `sha256(token)` in the
 HTTP-only `fks_session` cookie (revocable, 7d idle / 30d absolute). The old
 unsalted-`WEBUI_PASSWORD_HASH` gate is gone. Explicit `WEBUI_AUTH=disabled` is
-the only (loud, dev-only) bypass — and even it refuses **every money-path
-mutation**, not just kill/re-arm: alert-ack, risk config, exchange keys (incl.
-the legacy per-venue `*-keys` routes) and notification channels are all 403'd
-too. `AUTH_DISABLED_BLOCKED_MUTATIONS` in `src/lib/server/adapter.ts` is the
+the only (loud, dev-only) bypass. It refuses a **named list of nine paths**,
+not just kill/re-arm: alert-ack, risk config, exchange keys (incl. the legacy
+per-venue `*-keys` routes) and notification channels are 403'd too.
+It is **not** a blanket money-path block — every other backend mutation still
+proxies in disabled mode, including the spawner lifecycle routes
+(`/api/spawner/spawn`, `container/{id}/stop|restart`, `DELETE container/{id}`)
+and the treasury writes (`/api/spawner/transfers`, `/net-worth`). That is pinned
+by `adapter.test.ts` ("keeps unrelated backend mutations proxying in disabled
+mode"). Treat `WEBUI_AUTH=disabled` as *unauthenticated for everything except
+those nine*, and never run it where a live bot is reachable. `AUTH_DISABLED_BLOCKED_MUTATIONS` in `src/lib/server/adapter.ts` is the
 authoritative list — read it before concluding a 403 in disabled mode is a bug.
 **A 403 there is the guard working, not a defect to remove.** Full runbook in
 `docs/AUTH_PHASE1.md`; the permission model + role recovery is

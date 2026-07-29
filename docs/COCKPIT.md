@@ -25,6 +25,12 @@ armed-path **alert acknowledgement** (`POST /api/alerts/ack`, via the mounted
 `isArmedAlert` (`src/routes/cockpit/+page.svelte`) renders an alert if **ANY**
 of three clauses matches. All three are load-bearing; do not collapse them.
 
+> **Merge order:** this section describes the THREE-clause filter from PR #75.
+> If you are reading this and `src/routes/cockpit/+page.svelte` still has the
+> two-clause form (`mode === 'live' || ARMED_ALERTNAMES.has(...)`), #75 has not
+> landed yet and `BotAllVenuesStale` — severity CRITICAL, "ALL real-money venues
+> stale — bot is blind" — is NOT reaching this panel. Merge #75.
+
 1. `labels.mode === 'live'` — the rule explicitly stamps the live twin.
 2. `labels.channel === 'money'` — **do not remove.** Several money-path rules
    aggregate the `mode` label away and can never match clause 1:
@@ -76,11 +82,15 @@ irrevocable rows — there is no un-ack.
 1. **Session-gated** at the hooks seam (#47): `routeRequest` denies every
    backend call — reads and mutations — without a valid, fully-rotated
    session; fail-closed on an auth-store outage; CSRF origin check runs
-   before dispatch. **Even `WEBUI_AUTH=disabled` refuses every money-path
-   mutation** (403 `live_mutation_requires_auth`): the dev bypass is
-   app-wide, but it must never leave a live-money action reachable by
-   any unauthenticated tailnet client (the CSRF check passes for requests
-   with no `Origin` header, so a bare `curl` would otherwise get through).
+   before dispatch. **`WEBUI_AUTH=disabled` refuses a named list of NINE
+   paths** (403 `live_mutation_requires_auth`) — the cockpit's kill and
+   re-arm are on it, which is why this page stays safe under the bypass.
+   It is NOT a blanket money-path block: every other backend mutation still
+   proxies, including `/api/spawner/spawn` and `DELETE
+   /api/spawner/container/{id}` (which can force-remove the LIVE spot bot).
+   Pinned by `adapter.test.ts` ("keeps unrelated backend mutations proxying
+   in disabled mode"). The CSRF check passes for requests with no `Origin`
+   header, so a bare `curl` reaches everything outside those nine.
    The blocked set is **not** just kill/re-arm — it also covers
    `/api/alerts/ack` (silencing an armed-path page), `/api/settings/risk`,
    `/api/settings/exchange-keys` (+ its per-exchange DELETE and the three
