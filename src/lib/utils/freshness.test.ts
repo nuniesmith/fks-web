@@ -83,3 +83,43 @@ describe('shouldWarn — flap resistance', () => {
     expect(shouldWarn('unknown', 0)).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Thresholds pinned to the MEASURED cadence, so a future edit that changes one
+// without re-measuring trips a test instead of quietly crying wolf.
+//
+// Measurement (2026-07-28): the live spot bot sampled every 15s for 20 minutes
+// yielded 12 per-venue refresh intervals across three venues — all 299-301s.
+// True period = 300s. UI threshold = 3x = 900s, matching BotVenueStale (>900s).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('measured venue cadence', () => {
+  const PERIOD_MS = 300_000;
+  const VENUE_STALE_AFTER_MS = 900_000;
+  const now = 1_785_300_000_000;
+
+  it('a venue refreshing on its normal 300s cycle never reads stale', () => {
+    // Worst case within a healthy cycle: just before the next refresh lands.
+    expect(freshnessState(now - PERIOD_MS, now, VENUE_STALE_AFTER_MS)).toBe('fresh');
+    // Two missed cycles is still tolerated — jitter, not failure.
+    expect(freshnessState(now - 2 * PERIOD_MS, now, VENUE_STALE_AFTER_MS)).toBe('fresh');
+  });
+
+  it('three missed cycles reads stale', () => {
+    expect(freshnessState(now - 3 * PERIOD_MS - 1, now, VENUE_STALE_AFTER_MS)).toBe('stale');
+  });
+
+  it('the old 90s estimate would have cried wolf every single cycle', () => {
+    // Guards the mistake this measurement corrected: a threshold derived from
+    // the sampler's tick spacing rather than the venue's refresh period would
+    // flag a perfectly healthy venue on every normal cycle.
+    const WRONG = 3 * 95_000;
+    expect(freshnessState(now - PERIOD_MS, now, WRONG)).toBe('stale');
+  });
+
+  it('the funding bot would be permanently stale under ANY of these', () => {
+    // Which is why its venue is gated out of per-venue wiring entirely: it
+    // marks on trade events, so 15h idle is correct, not broken.
+    const FUNDING_IDLE_MS = 15 * 3_600_000;
+    expect(freshnessState(now - FUNDING_IDLE_MS, now, VENUE_STALE_AFTER_MS)).toBe('stale');
+  });
+});
