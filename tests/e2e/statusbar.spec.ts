@@ -128,7 +128,12 @@ test.describe("R5 — health dots must not freeze on last-good", () => {
     // Wait for a real success first — before one, Freshness correctly reads
     // "age unknown" (grey), which would make the flip below prove nothing.
     await expect(bar(page).locator('.status-item[aria-label="Redis: healthy"]')).toBeVisible();
-    await expect(fresh).toContainText("health");
+    // The StatusBar renders this Freshness `compact`, so the visible text is the
+    // AGE alone ("4s"); the "health" label lives in title=. Assert the label
+    // where it actually is, and the age separately — asserting visible "health"
+    // pinned a rendering the phone-width fix deliberately changed.
+    await expect(fresh).toHaveAttribute("title", /health/);
+    await expect(fresh).toContainText(/\d+s/);
     await expect(fresh).not.toHaveClass(/warn|unknown/);
 
     healthUp = false;
@@ -249,5 +254,64 @@ test.describe("R3 — the alert chip must not vanish when the pager is dead", ()
     await page.clock.runFor(31_000);
     await expect(chip(page)).toHaveClass(/unknown/);
     await expect(chip(page)).toHaveAttribute("href", "/monitoring");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /monitoring's ack cluster must be REACHABLE on a phone.
+//
+// The two Alert Inbox / Scrape Targets panels are both `fill`, and below 720px
+// .dual-row stacks them into one column — the case app.css warns against. Each
+// keeps `flex: 1 1 0; min-height: 0`, so they share a height neither has and
+// the sibling panel lands on top of the ack cluster: elementFromPoint over
+// .ack-btn returned .dual-row and a real click timed out. The operator could
+// not acknowledge an alert from /monitoring on a phone at all.
+//
+// Asserted with a REAL click, not visibility — `toBeVisible()` passes on a
+// button sitting under an overlay, which is exactly how this survived.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("/monitoring: the ack cluster is reachable on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("a real click on Ack lands on the button, not an overlay", async ({ page }) => {
+    await page.route("**/api/alerts/inbox", (route) =>
+      route.fulfill({
+        json: {
+          configured: true,
+          prom_available: true,
+          unacked_count: 1,
+          alerts: [
+            {
+              key: "phone-reachability",
+              labels: { alertname: "BotAllVenuesStale", severity: "critical", channel: "money" },
+              activeAt: "2026-07-29T00:00:00Z",
+              age_str: "5m",
+              state: "firing",
+              severity_color: "red",
+              acked: null,
+            },
+          ],
+        },
+      }),
+    );
+    await page.route("**/api/alerts/ack", (route) => route.fulfill({ json: { ok: true } }));
+
+    await page.goto("/monitoring");
+    const ack = page.locator(".ack-btn").first();
+    await ack.scrollIntoViewIfNeeded();
+
+    // The load-bearing assertion: what is actually at the button's centre?
+    const onTop = await page.evaluate(() => {
+      const a = document.querySelector(".ack-btn") as HTMLElement | null;
+      if (!a) return "missing";
+      const b = a.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      if (!hit) return "outside-viewport";
+      return a === hit || a.contains(hit as Node) ? "self" : (hit as HTMLElement).className;
+    });
+    expect(onTop, "something is covering the Ack button").toBe("self");
+
+    // And prove it end-to-end: a real click must not time out.
+    await ack.click({ timeout: 5000 });
   });
 });
