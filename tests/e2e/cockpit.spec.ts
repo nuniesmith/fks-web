@@ -434,3 +434,57 @@ test.describe("Cockpit freshness indicator", () => {
     await expect(page.locator(".freshness.warn").first()).toBeVisible({ timeout: 30_000 });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The armed-path panel must not filter OUT the critical money alerts.
+//
+// Several money-path rules aggregate away the `mode` label (BotAllVenuesStale
+// uses `count by (bot_id)`, NetWorthSamplingPausedTooLong wraps a counter), so
+// a mode==='live' filter can never match them. Before this guard the cockpit
+// showed the per-venue WARNING and silently omitted the CRITICAL "all venues
+// stale — bot is blind" — the inversion the panel exists to prevent.
+// ─────────────────────────────────────────────────────────────────────────────
+function inboxAlert(name: string, labels: Record<string, string>) {
+  return {
+    key: `k-${name}`,
+    labels: { alertname: name, ...labels },
+    activeAt: "2026-07-28T00:00:00Z",
+    age_str: "5m",
+    annotations: { summary: `${name} summary` },
+    state: "firing",
+    severity: labels.severity ?? "warning",
+    severity_color: "red",
+    acked: null,
+  };
+}
+
+test.describe("Cockpit armed-path alert filter", () => {
+  test("shows a money-channel alert that carries no mode label", async ({ page }) => {
+    await installCockpitMocks(page);
+    await page.route("**/api/alerts/inbox", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          configured: true,
+          prom_available: true,
+          unacked_count: 2,
+          alerts: [
+            // The CRITICAL one: no `mode` label at all, only channel+severity.
+            inboxAlert("BotAllVenuesStale", {
+              severity: "critical",
+              channel: "money",
+              bot_id: "crypto-spot",
+            }),
+            // Noise that must NOT appear: neither mode nor money channel.
+            inboxAlert("DiskSpaceLow", { severity: "warning" }),
+          ],
+        }),
+      }),
+    );
+    await gotoCockpit(page);
+    const alerts = panel(page, /Armed-path alerts/i);
+    await expect(alerts).toContainText("BotAllVenuesStale");
+    await expect(alerts).not.toContainText("DiskSpaceLow");
+  });
+});
