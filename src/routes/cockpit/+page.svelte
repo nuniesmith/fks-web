@@ -66,7 +66,22 @@
 
   /** Armed-path filter: an explicit live-mode label OR a known armed alertname. */
   function isArmedAlert(a: InboxAlert): boolean {
-    return a.labels.mode === 'live' || ARMED_ALERTNAMES.has(a.labels.alertname ?? '');
+    // `channel: money` is load-bearing, not decoration. Several money-path
+    // rules AGGREGATE AWAY the mode label and so can never match mode==='live':
+    //   BotAllVenuesStale          count by (bot_id) (...)  -> no mode
+    //   NetWorthSamplingPausedTooLong  increase(counter)    -> no mode
+    // Without this clause the CRITICAL "all venues stale — bot is blind" alert
+    // was filtered out of the cockpit while the per-venue WARNING was shown —
+    // the precise inversion this panel exists to prevent, and the shape a
+    // repeat of the 2026-07-22 blackout would take on the phone.
+    //
+    // It also catches BotVenueStale on a `dry-run` venue: dry-run is REAL money
+    // (real balances, no orders), so mode==='live' alone would miss it.
+    return (
+      a.labels.mode === 'live' ||
+      a.labels.channel === 'money' ||
+      ARMED_ALERTNAMES.has(a.labels.alertname ?? '')
+    );
   }
   import { page } from '$app/stores';
 
