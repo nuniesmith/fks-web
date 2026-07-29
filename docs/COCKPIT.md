@@ -1,8 +1,10 @@
 # /cockpit — armed-futures co-pilot (M2)
 
 The live-futures dashboard + kill switch for the funding-reversion bot
-(`fks-state bots/crypto-futures`). Read panels + exactly ONE mutating control
-(the durable kill sentinel). No order entry, no strategy config — by design.
+(`fks-state bots/crypto-futures`). Read panels + **two** mutating controls:
+the durable kill sentinel (`POST /api/cockpit/kill` · `/rearm`) and the
+armed-path **alert acknowledgement** (`POST /api/alerts/ack`, via the mounted
+`AlertInbox` — M3 Phase B). No order entry, no strategy config — by design.
 
 ## Data sources (per panel)
 
@@ -15,6 +17,43 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 | Armed-path telemetry (halt / breaker / resting-stop divergence / order errors / open notional) | Prometheus (`fks_prometheus:9090`) | the #18 `:9092` exporter series (`fks_bot_session_halt_active`, `fks_bot_circuit_breaker_tripped`, `fks_bot_resting_stop_present/expected`, `fks_bot_order_errors_total`, `fks_bot_open_positions`, `fks_bot_open_notional_usd`, `fks_bot_open_position_entry_unix`), all selected `{mode="live"}` — the scrape job (`fks-bots-risk`) only targets live funding bots |
 | Unrealized ret% (paper) | the paper twin's `/status` via the existing `/api/exchanges/status` proxy | per-symbol `ret_pct` on open paper positions |
 | Unrealized ret% + mark px (live) | the live twin's `/status` via `/api/cockpit/live-status` (M3 Phase A) | three-state honest feed — see "Live-twin /status feed" below; `configured:false` until the live funding bot is spawned (Gate-A ~Aug 1) |
+| Armed-path alerts (+ inline Ack) | Prometheus `/api/v1/alerts` via `GET /api/alerts/inbox`, LEFT-JOINed to the Postgres `webui_alert_acks` table | shared with `/monitoring` + the StatusBar chip (one poll, three surfaces). Which alerts render is the **three-clause** `isArmedAlert` filter — see "Which alerts reach this panel" below. Missing table/grants ⇒ `configured:false`: the inbox still shows live alerts, read-only, never fake-quiet |
+| Feed age (M4) | the cockpit state poll's own `updatedAt` | a `Freshness` indicator beside the sentinel badge; amber past `STATE_STALE_AFTER_MS` (15s). It is the age of the **successful** fetch, so a dead poll counts up instead of freezing — the panels below it are only as true as this number |
+
+## Which alerts reach this panel
+
+`isArmedAlert` (`src/routes/cockpit/+page.svelte`) renders an alert if **ANY**
+of three clauses matches. All three are load-bearing; do not collapse them.
+
+> **Merge order:** this section describes the THREE-clause filter from PR #75.
+> If you are reading this and `src/routes/cockpit/+page.svelte` still has the
+> two-clause form (`mode === 'live' || ARMED_ALERTNAMES.has(...)`), #75 has not
+> landed yet and `BotAllVenuesStale` — severity CRITICAL, "ALL real-money venues
+> stale — bot is blind" — is NOT reaching this panel. Merge #75.
+
+1. `labels.mode === 'live'` — the rule explicitly stamps the live twin.
+2. `labels.channel === 'money'` — **do not remove.** Several money-path rules
+   aggregate the `mode` label away and can never match clause 1:
+   `BotAllVenuesStale` is `count by (bot_id) (…)`, and
+   `NetWorthSamplingPausedTooLong` is `increase(…_stale_skipped_total[30m])`.
+   With only clauses 1+3, the CRITICAL `BotAllVenuesStale` ("ALL real-money
+   venues stale — bot is blind") was filtered **out** of the cockpit while its
+   per-venue WARNING sibling was shown. This clause also catches
+   `BotVenueStale` on a **`dry-run`** venue — dry-run is REAL money (real
+   balances, no orders), and the venue rules select `{mode!="paper"}`. It
+   self-maintains: all four rules in the `bot-venue-freshness` group of
+   `fks/infrastructure/config/prometheus/alerts/bot-alerts.yml` stamp
+   `channel: money`, so new ones arrive here with no webui edit.
+3. `ARMED_ALERTNAMES.has(labels.alertname)` — a hand-maintained allowlist
+   mirroring `armed-path.yml` + `crash-supervision.yml`, for live rules that
+   stamp neither label. Keep it in sync when those files change.
+
+**Blast radius of an Ack, stated accurately:** there is **no Alertmanager
+integration in `src/`**. An ack silences the webui inbox + the StatusBar chip
+only; Alertmanager keeps firing and out-of-band paging is unaffected, and the
+alert re-surfaces here under a new `activeAt` (incident identity is
+`sha256(labels + activeAt)`, pinned by `alertAck/logic.test.ts`). Acks are
+irrevocable rows — there is no un-ack.
 
 ## Honest-empty rules
 
@@ -43,13 +82,25 @@ The live-futures dashboard + kill switch for the funding-reversion bot
 1. **Session-gated** at the hooks seam (#47): `routeRequest` denies every
    backend call — reads and mutations — without a valid, fully-rotated
    session; fail-closed on an auth-store outage; CSRF origin check runs
-   before dispatch. **Even `WEBUI_AUTH=disabled` refuses these two
-   mutations** (403 `live_mutation_requires_auth`): the dev bypass is
-   app-wide, but it must never leave a live-money kill/re-arm reachable by
-   any unauthenticated tailnet client (the CSRF check passes for requests
-   with no `Origin` header, so a bare `curl` would otherwise get through).
-   Cockpit reads still work in disabled mode. Pinned by
-   `src/lib/server/cockpitAuth.test.ts`.
+   before dispatch. **`WEBUI_AUTH=disabled` refuses a named list of NINE
+   paths** (403 `live_mutation_requires_auth`) — the cockpit's kill and
+   re-arm are on it, which is why this page stays safe under the bypass.
+   It is NOT a blanket money-path block: every other backend mutation still
+   proxies, including `/api/spawner/spawn` and `DELETE
+   /api/spawner/container/{id}` (which can force-remove the LIVE spot bot).
+   Pinned by `adapter.test.ts` ("keeps unrelated backend mutations proxying
+   in disabled mode"). The CSRF check passes for requests with no `Origin`
+   header, so a bare `curl` reaches everything outside those nine.
+   The blocked set is **not** just kill/re-arm — it also covers
+   `/api/alerts/ack` (silencing an armed-path page), `/api/settings/risk`,
+   `/api/settings/exchange-keys` (+ its per-exchange DELETE and the three
+   legacy `{kraken,kucoin,cryptocom}-keys` routes) and
+   `/api/settings/notifications` (+ its channel DELETE/test). **The
+   authoritative list is `AUTH_DISABLED_BLOCKED_MUTATIONS` in
+   `src/lib/server/adapter.ts` — read it before concluding a 403 in disabled
+   mode is a bug.** It is the guard working; removing it to "fix" a dev 403
+   deletes a live-money wall. Cockpit reads still work in disabled mode.
+   Pinned by `src/lib/server/cockpitAuth.test.ts`.
 2. **Typed confirmation**: the body must carry `confirm: "KILL"` (re-arm:
    `"REARM"`) exactly — case-sensitive, untrimmed — and an **explicit**
    `instance: "paper" | "live"` (no default target). Validation runs strictly
@@ -105,8 +156,35 @@ The live-futures dashboard + kill switch for the funding-reversion bot
   ```sql
   GRANT SELECT ON funding_open_trades, funding_paper_records, framework_risk_state TO fks_webui;
   GRANT SELECT, INSERT, UPDATE ON funding_kill_switch TO fks_webui;
+  -- Alert-ack inbox (M3 Phase B). NO UPDATE/DELETE by design — acks are
+  -- irrevocable audit rows. The sequence grant is required: without it the
+  -- INSERT fails on the serial id even though the table grant is present.
+  GRANT SELECT, INSERT ON webui_alert_acks TO fks_webui;
+  GRANT USAGE, SELECT ON SEQUENCE webui_alert_acks_id_seq TO fks_webui;
   ```
 
+- **Migration `011_webui_alert_acks.sql` creates that table.** It is baked into
+  the postgres image as `/docker-entrypoint-initdb.d/34-webui-alert-acks.sql`,
+  so a **fresh volume** gets it automatically — but initdb scripts do not run
+  on an existing volume, so an already-deployed host needs it applied **once,
+  by hand**. It is existence-guarded, so a re-run is a no-op. Run from the
+  **`fks` repo root**; copied verbatim from 011's own header (note
+  `-d postgres`, **not** the `-d fks_db` that `AUTH_PHASE2.md` uses for 012:
+  this script does `\getenv fks_db RUBY_DB` then `\connect :fks_db` itself,
+  which needs `RUBY_DB` present in the `fks_postgres` container env — it is,
+  on the deployed compose):
+
+  ```
+  docker exec -i fks_postgres \
+    sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres' \
+    < src/sql/spawner/011_webui_alert_acks.sql
+  ```
+
+  Until it is applied, the failure mode is **honest degradation, never a
+  lie**: the webui probes `to_regclass('public.webui_alert_acks')` and reports
+  `configured:false`, so the armed-path panel still renders every live
+  Prometheus alert — read-only, with Ack unavailable. It never fake-quiets and
+  never runs the DDL itself (the scoped `fks_webui` role has no CREATE).
 - If `funding_kill_switch` is absent in the connected DB (wrong database /
   bot never ran there) the cockpit reports not-configured and REFUSES to
   write a sentinel — it will not create tables or write into the wrong DB.
@@ -154,5 +232,6 @@ carries no per-position notional).
   fks-web survey recs).
 
 (Shipped since this list was first written: the live-twin `/status` feed
-(M3 Phase A, above) and the alert-acknowledgement inbox (M3 Phase B) — the
-`/monitoring` page is no longer read-only, it carries the ack mutation.)
+(M3 Phase A, above), the alert-acknowledgement inbox (M3 Phase B) — mounted on
+BOTH `/monitoring` and `/cockpit`, which is why the header above says two
+mutating controls, not one — and the M4 feed-age indicator.)

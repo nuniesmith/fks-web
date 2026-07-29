@@ -18,7 +18,10 @@ file wins** — update it here and nowhere else.
 Ordering: `viewer < operator < admin`. Unknown/garbage role string ⇒ treated as
 `viewer` (**fail closed**). `mustChange` confinement and bootstrap/disabled modes
 are **unchanged** and always win **before** role rules. The
-`AUTH_DISABLED_BLOCKED_MUTATIONS` list is untouched.
+`AUTH_DISABLED_BLOCKED_MUTATIONS` list is untouched **by Phase 2** (its
+*contents* were later extended by #67 from kill/re-arm to all nine money-path
+mutations — `src/lib/server/adapter.ts` is authoritative for the membership;
+this statement is only about what Phase 2A did and did not change).
 
 ### 1.1 Rule table (evaluated top-down inside `routeRequest`, only for `mode:"enabled"` with a full session)
 
@@ -167,6 +170,15 @@ docker exec -i fks_postgres \
   sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d fks_db' \
   < src/sql/spawner/012_webui_invites.sql
 ```
+
+*(Deliberate disagreement, both correct: 012's own header comment says
+`-d postgres`. The script opens with `\getenv fks_db RUBY_DB` +
+`\connect :fks_db`, so it lands in the right database from either entry point —
+`-d fks_db` just starts where it ends up. The `\getenv` form requires `RUBY_DB`
+to be set in the `fks_postgres` container env; it is on the deployed compose.
+Sibling migration `011_webui_alert_acks.sql` — the alert-ack inbox table — has
+the same shape and the same hand-apply need; its runbook lives in
+[`COCKPIT.md`](./COCKPIT.md#deploy-configuration).)*
 
 ### (b) Repin `WEB_COMMIT` + rebuild `fks:webui`
 
