@@ -26,6 +26,20 @@ export interface InboxAlert {
   activeAt: string;
   /** Compact age string derived from activeAt ("5m" / "2h" / "3d"). */
   age_str: string;
+  /**
+   * Prometheus rule `annotations`, rendered by Prometheus (labels already
+   * substituted) and passed through VERBATIM. This is where the operator's
+   * recovery procedure lives — `summary` (what is actually wrong, in words),
+   * `description` (the failure shape), `runbook` (the diagnostic steps). The
+   * platform's best operational writing used to stop at Prometheus; the inbox
+   * is the surface it was written for.
+   *
+   * DELIBERATELY NOT part of `key` (see alertKey): identity is
+   * labels+activeAt, so rewording a runbook must never re-open every acked
+   * incident. Optional on the type because older payloads (and hand-built
+   * fixtures) predate the field; the server always emits at least `{}`.
+   */
+  annotations?: Record<string, string>;
   /** Prometheus alert state ("firing" / "pending"). */
   state: string;
   /** CSS colour var for the severity badge ('' when unknown). */
