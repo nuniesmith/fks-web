@@ -25,11 +25,6 @@ armed-path **alert acknowledgement** (`POST /api/alerts/ack`, via the mounted
 `isArmedAlert` (`src/routes/cockpit/+page.svelte`) renders an alert if **ANY**
 of three clauses matches. All three are load-bearing; do not collapse them.
 
-> **Merge order:** this section describes the THREE-clause filter from PR #75.
-> If you are reading this and `src/routes/cockpit/+page.svelte` still has the
-> two-clause form (`mode === 'live' || ARMED_ALERTNAMES.has(...)`), #75 has not
-> landed yet and `BotAllVenuesStale` — severity CRITICAL, "ALL real-money venues
-> stale — bot is blind" — is NOT reaching this panel. Merge #75.
 
 1. `labels.mode === 'live'` — the rule explicitly stamps the live twin.
 2. `labels.channel === 'money'` — **do not remove.** Several money-path rules
