@@ -11,7 +11,7 @@
    */
   import Panel from '$lib/components/ui/Panel.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
-  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import AsyncSection from '$lib/components/ui/AsyncSection.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import Freshness from '$lib/components/ui/Freshness.svelte';
   import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
@@ -24,14 +24,19 @@
   // Aliased at top level so Svelte auto-subscribes ($statusUpdatedAt).
   // `$status.updatedAt` would read a field off the DATA, not the store.
   const statusUpdatedAt = status.updatedAt;
+  // Q-1: `updatedAt` alone cannot tell "still asking" from "asked and was
+  // refused" — both leave it null. Without the error store, a status server that
+  // is permanently refusing would shimmer a skeleton forever instead of raising
+  // the outage. See AsyncSection's "bounded by construction" note.
+  const statusError = status.error;
 
   // 3x the 10s poll — the cockpit precedent (3x its 5s poll). Two missed ticks
   // is jitter; three means the page is showing a frozen snapshot.
   //
-  // This is load-bearing: the `{#if !spot}` EmptyState only covers a poll that
-  // has NEVER succeeded. After one success the store holds the last payload
-  // forever with no visual difference, so a dead status server renders as a
-  // calm one.
+  // This is load-bearing: AsyncSection's error branch only covers a poll that
+  // has never produced a spot document. After one success the store holds the
+  // last payload forever with no visual difference, so a dead status server
+  // renders as a calm one.
   const PAGE_STALE_AFTER_MS = 30_000;
 
   // Per-venue account-snapshot age. MEASURED, not assumed: sampling the live
@@ -83,95 +88,107 @@
     <a class="detail-link" href="/futures">Futures →</a>
   </p>
 
-  {#if !spot}
-    <!-- This page renders spot venues only, so gate on the spot document
-         alone — with funding up but spot down, `!spot && !funding` used to
-         render a silent $0.00 net worth instead of flagging the outage. -->
-    <EmptyState
-      icon="🛰"
-      title="No spot-portfolio bot status available"
-      hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it. Futures status lives on /futures."
-    />
-  {:else}
-    <Freshness
-      updated={$statusUpdatedAt}
-      unit="ms"
-      staleAfterMs={PAGE_STALE_AFTER_MS}
-      label="page"
-    />
-    <div class="stat-row">
-      <StatCard
-        label={hasRealVenue ? 'Net worth (real venues)' : 'Net worth (paper only)'}
-        value={usd(realNetWorth)}
-        color="cyan"
+  <!-- Q-1: three-way, not two-way. `{#if !spot}` alone made the outage copy the
+       GUARANTEED first paint — it was in the first byte of SSR HTML, before any
+       fetch was attempted, on every single load. That trains the operator to
+       read "status server didn't respond" as startup noise, which is the one
+       reading that must never become habitual.
+
+       Still gated on the SPOT document alone: this page renders spot venues
+       only, and with funding up but spot down, `!spot && !funding` used to
+       render a silent $0.00 net worth instead of flagging the outage. -->
+  <AsyncSection
+    data={spot}
+    updatedAt={$statusUpdatedAt}
+    error={$statusError}
+    errorIcon="🛰"
+    errorTitle="No spot-portfolio bot status available"
+    errorHint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it. Futures status lives on /futures."
+    lines={3}
+    height="52px"
+  >
+    {#snippet children(spotDoc)}
+      <Freshness
+        updated={$statusUpdatedAt}
+        unit="ms"
+        staleAfterMs={PAGE_STALE_AFTER_MS}
+        label="page"
       />
-      {#if spot}
-        <StatCard label="Spot PnL (since start)" value={fmtDollar(spot.pnl_usd)} color={spot.pnl_usd >= 0 ? 'green' : 'red'} />
-      {/if}
-    </div>
+      <div class="stat-row">
+        <StatCard
+          label={hasRealVenue ? 'Net worth (real venues)' : 'Net worth (paper only)'}
+          value={usd(realNetWorth)}
+          color="cyan"
+        />
+        <!-- `spotDoc` is AsyncSection's non-null hand-back, so the old
+             redundant `{#if spot}` type guard is gone. Do not reintroduce it:
+             it existed only to re-narrow what the outer branch already knew. -->
+        <StatCard label="Spot PnL (since start)" value={fmtDollar(spotDoc.pnl_usd)} color={spotDoc.pnl_usd >= 0 ? 'green' : 'red'} />
+      </div>
 
-    <!-- History panel: the spot bot's net worth over time, straight from
-         Prometheus (fks_bot_net_worth_usd) via the /api/metrics/query_range
-         proxy — complements the live StatCard above with a trend. -->
-    <NetWorthHistory />
+      <!-- History panel: the spot bot's net worth over time, straight from
+           Prometheus (fks_bot_net_worth_usd) via the /api/metrics/query_range
+           proxy — complements the live StatCard above with a trend. -->
+      <NetWorthHistory />
 
-    <div class="venue-grid">
-      {#each venues as v (venueKey(v))}
-        <Panel title={v.exchange}>
+      <div class="venue-grid">
+        {#each venues as v (venueKey(v))}
+          <Panel title={v.exchange}>
+            <div class="venue-head">
+              <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
+              <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
+              <span class="venue-total">{usd(v.total_value)}</span>
+            </div>
+            <div class="venue-meta">
+              <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
+              <span>drift {fmtPct(v.max_drift * 100)}</span>
+              <Freshness
+                updated={v.updated}
+                unit="s"
+                staleAfterMs={VENUE_STALE_AFTER_MS}
+                label="updated"
+              />
+            </div>
+            {#if v.holdings.length > 0}
+              <table class="holdings">
+                <thead>
+                  <tr><th>Asset</th><th>Qty</th><th>Value</th><th>Weight / target</th></tr>
+                </thead>
+                <tbody>
+                  {#each v.holdings as h (h.asset)}
+                    <tr>
+                      <td>{h.asset}</td>
+                      <td>{fmtFixed(h.qty, 6)}</td>
+                      <td>{usd(h.value)}</td>
+                      <td>{fmtPct(h.weight * 100)} / {fmtPct(h.target_weight * 100)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {:else}
+              <p class="dim">No holdings (cash only).</p>
+            {/if}
+          </Panel>
+        {/each}
+
+        <!-- Hardware wallet — placeholder until the integration exists. The
+             BTC cold-storage backbone sits alongside the exchange venues. -->
+        <Panel title="Hardware wallet">
           <div class="venue-head">
-            <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
-            <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-            <span class="venue-total">{usd(v.total_value)}</span>
+            <Badge variant="default">not connected</Badge>
+            <span class="venue-total dim">—</span>
           </div>
           <div class="venue-meta">
-            <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
-            <span>drift {fmtPct(v.max_drift * 100)}</span>
-            <Freshness
-              updated={v.updated}
-              unit="s"
-              staleAfterMs={VENUE_STALE_AFTER_MS}
-              label="updated"
-            />
+            <span>BTC cold storage</span>
           </div>
-          {#if v.holdings.length > 0}
-            <table class="holdings">
-              <thead>
-                <tr><th>Asset</th><th>Qty</th><th>Value</th><th>Weight / target</th></tr>
-              </thead>
-              <tbody>
-                {#each v.holdings as h (h.asset)}
-                  <tr>
-                    <td>{h.asset}</td>
-                    <td>{fmtFixed(h.qty, 6)}</td>
-                    <td>{usd(h.value)}</td>
-                    <td>{fmtPct(h.weight * 100)} / {fmtPct(h.target_weight * 100)}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {:else}
-            <p class="dim">No holdings (cash only).</p>
-          {/if}
+          <p class="dim">
+            Planned: read-only balance via xpub/descriptor — the long-term BTC
+            backbone the exchange accounts feed into. No integration yet.
+          </p>
         </Panel>
-      {/each}
-
-      <!-- Hardware wallet — placeholder until the integration exists. The
-           BTC cold-storage backbone sits alongside the exchange venues. -->
-      <Panel title="Hardware wallet">
-        <div class="venue-head">
-          <Badge variant="default">not connected</Badge>
-          <span class="venue-total dim">—</span>
-        </div>
-        <div class="venue-meta">
-          <span>BTC cold storage</span>
-        </div>
-        <p class="dim">
-          Planned: read-only balance via xpub/descriptor — the long-term BTC
-          backbone the exchange accounts feed into. No integration yet.
-        </p>
-      </Panel>
-    </div>
-  {/if}
+      </div>
+    {/snippet}
+  </AsyncSection>
 </div>
 
 <style>
