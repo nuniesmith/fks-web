@@ -11,12 +11,34 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
   import { normalizeFuturesEvent } from '$lib/utils/tradeEvents';
   import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Aliased at top level so Svelte auto-subscribes ($statusUpdatedAt).
+  const statusUpdatedAt = status.updatedAt;
+
+  // 3x the 10s poll, matching the overview and the cockpit precedent.
+  //
+  // On the FUNDING venue's page this is deliberately the only freshness signal
+  // there can be: that bot marks its book on trade events, so its own per-venue
+  // stamp is legitimately hours old and any threshold on it would false-alarm
+  // permanently. The page poll answers a different, answerable question — is
+  // this page's data arriving at all?
+  const PAGE_STALE_AFTER_MS = 30_000;
+
+  // Per-venue account-snapshot age, for SPOT venues only. MEASURED: 12 refresh
+  // intervals across the live spot bot's three venues, all 299-301s -> a 300s
+  // period, and this is 3x it (matching the BotVenueStale rule at >900s).
+  //
+  // Gated on market !== 'futures' below: the funding bot marks its book on
+  // TRADE EVENTS, so its snapshot is legitimately hours old while idle. A
+  // threshold there would be permanently amber on a perfectly healthy bot,
+  // which teaches the operator to ignore the indicator everywhere else.
+  const VENUE_STALE_AFTER_MS = 900_000;
   $effect(() => {
     status.start();
     return () => status.stop();
@@ -96,6 +118,13 @@
     <div class="head-row">
       <h2 class="venue-name">{venue.exchange}</h2>
       <Badge variant={modeVariant(venue.mode)}>{venue.mode}</Badge>
+      <Freshness
+        updated={$statusUpdatedAt}
+        unit="ms"
+        staleAfterMs={PAGE_STALE_AFTER_MS}
+        label="page"
+        compact
+      />
       {#if venue.triggered}
         <Badge variant="amber">rebalance triggered</Badge>
       {/if}
@@ -137,7 +166,21 @@
       {:else}
         <p class="dim">No holdings (cash only).</p>
       {/if}
-      <p class="dim">Snapshot updated {epochLabel(venue.updated)}.</p>
+      <p class="dim">
+        Snapshot updated {epochLabel(venue.updated)}.
+        {#if !isFuturesVenue}
+          <!-- Absolute time + a counting relative age are complementary, not a
+               duplicated signal: one says WHEN, the other says HOW LONG AGO
+               and keeps ticking while you watch it. -->
+          <Freshness
+            updated={venue.updated}
+            unit="s"
+            staleAfterMs={VENUE_STALE_AFTER_MS}
+            label="age"
+            compact
+          />
+        {/if}
+      </p>
     </Panel>
 
     {#if isFuturesVenue}

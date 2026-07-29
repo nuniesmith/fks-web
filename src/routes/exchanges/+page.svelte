@@ -13,12 +13,38 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
   import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
   import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Aliased at top level so Svelte auto-subscribes ($statusUpdatedAt).
+  // `$status.updatedAt` would read a field off the DATA, not the store.
+  const statusUpdatedAt = status.updatedAt;
+
+  // 3x the 10s poll — the cockpit precedent (3x its 5s poll). Two missed ticks
+  // is jitter; three means the page is showing a frozen snapshot.
+  //
+  // This is load-bearing: the `{#if !spot}` EmptyState only covers a poll that
+  // has NEVER succeeded. After one success the store holds the last payload
+  // forever with no visual difference, so a dead status server renders as a
+  // calm one.
+  const PAGE_STALE_AFTER_MS = 30_000;
+
+  // Per-venue account-snapshot age. MEASURED, not assumed: sampling the live
+  // spot bot every 15s for 20 minutes gave 12 refresh intervals across its
+  // three venues, every one 299-301s. So the true period is 300s and this is
+  // 3x it — matching the BotVenueStale Prometheus rule (>900s) so the UI and
+  // the pager tell the same story.
+  //
+  // An earlier estimate of "~90-95s" was wrong: it read the SAMPLER's tick
+  // spacing as the venue's refresh cadence. Two monotonically-growing age
+  // observations bound the period only from below and cannot tell a healthy
+  // long cycle from a stalled one, which is the failure this very indicator
+  // exists to catch.
+  const VENUE_STALE_AFTER_MS = 900_000;
   $effect(() => {
     status.start();
     return () => status.stop();
@@ -46,13 +72,6 @@
     return 'cyan'; // dry-run: real balances, no orders
   }
 
-  function agoSecs(epochSecs: number): string {
-    const s = Math.max(0, Math.floor(Date.now() / 1000 - epochSecs));
-    if (s < 90) return `${s}s ago`;
-    if (s < 5400) return `${Math.round(s / 60)}m ago`;
-    return `${Math.round(s / 3600)}h ago`;
-  }
-
   function venueKey(v: VenueStatus): string {
     return `${v.exchange}:${v.mode}`;
   }
@@ -75,6 +94,12 @@
       hint="The spot-portfolio bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_SPOT_INTERNAL_URL points at it. Futures status lives on /futures."
     />
   {:else}
+    <Freshness
+      updated={$statusUpdatedAt}
+      unit="ms"
+      staleAfterMs={PAGE_STALE_AFTER_MS}
+      label="page"
+    />
     <div class="stat-row">
       <StatCard
         label={hasRealVenue ? 'Net worth (real venues)' : 'Net worth (paper only)'}
@@ -102,7 +127,12 @@
           <div class="venue-meta">
             <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
             <span>drift {fmtPct(v.max_drift * 100)}</span>
-            <span class="dim">updated {agoSecs(v.updated)}</span>
+            <Freshness
+              updated={v.updated}
+              unit="s"
+              staleAfterMs={VENUE_STALE_AFTER_MS}
+              label="updated"
+            />
           </div>
           {#if v.holdings.length > 0}
             <table class="holdings">
