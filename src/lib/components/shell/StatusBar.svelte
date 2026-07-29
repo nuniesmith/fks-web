@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$api/client';
-  import { alertInbox, unackedCount, chipState } from '$lib/stores/alertInbox';
+  import { alertInbox, describeChip, promDownStreak } from '$lib/stores/alertInbox';
+  import Freshness from '$lib/components/ui/Freshness.svelte';
+  import { formatAge, freshnessState, toEpochMs } from '$lib/utils/freshness';
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -13,8 +15,36 @@
     feed: string;
   }
 
+  const HEALTH_POLL_MS = 15_000;
+
+  /**
+   * R5 — after this long with no SUCCESSFUL /api/health, the dots stop
+   * asserting anything and go grey. Three missed 15s ticks: one dropped
+   * response is not an outage, but a dead adapter or a phone that lost the
+   * network is visible in under a minute instead of never.
+   */
+  const HEALTH_STALE_AFTER_MS = 45_000;
+
   let health = $state<HealthState>({ redis: '—', janus: '—', feed: '—' });
   let lastFetch = $state<Date | null>(null);
+  /** Consecutive failed health fetches; reset by any success. */
+  let healthErrors = $state(0);
+
+  /**
+   * Local clock so ages count UP between fetches. Without it a frozen feed
+   * renders a frozen age, which is the same lie one level further down — the
+   * exact reason `Freshness.svelte` carries its own ticker.
+   */
+  let now = $state(Date.now());
+
+  /**
+   * Fallback reference for the alert chip before its first successful poll, so
+   * the chip does not flash grey during the ~200ms before the first response.
+   * Read at component init (not onMount) so SSR renders the quiet state too.
+   */
+  const mountedAt = Date.now();
+
+  const inboxUpdatedAt = alertInbox.updatedAt;
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -62,9 +92,26 @@
 
   // ─── Derived ─────────────────────────────────────────────────────────────
 
-  let redisState  = $derived(classify(health.redis));
-  let janusState  = $derived(classify(health.janus));
-  let feedState   = $derived(classify(health.feed));
+  /**
+   * R5 — how old the health snapshot is. `lastFetch` advances on SUCCESS only
+   * (same rule as `poll.updatedAt`), so this grows without bound while
+   * /api/health is unanswered and there is nothing else to key off: a dead
+   * adapter never sends a payload to classify.
+   */
+  let healthMs = $derived(toEpochMs(lastFetch?.getTime() ?? null, 'ms'));
+  let healthFreshness = $derived(freshnessState(healthMs, now, HEALTH_STALE_AFTER_MS));
+
+  /**
+   * True once the last-good values can no longer be vouched for. The dots then
+   * render GREY (`unknown`) rather than keeping their last colour — "we cannot
+   * tell" is not the same claim as "healthy", and it is not "broken" either, so
+   * it is deliberately not red. Matches `Freshness.svelte`'s three states.
+   */
+  let healthUnknown = $derived(healthFreshness !== 'fresh');
+
+  let redisState  = $derived<DotState>(healthUnknown ? 'unknown' : classify(health.redis));
+  let janusState  = $derived<DotState>(healthUnknown ? 'unknown' : classify(health.janus));
+  let feedState   = $derived<DotState>(healthUnknown ? 'unknown' : classify(health.feed));
 
   /**
    * Worst-wins aggregate for the phone layout, where three separate health
@@ -81,8 +128,17 @@
     )
   );
 
-  /** Names the services that are NOT ok, so the phone dot still says what broke. */
+  /**
+   * Names the services that are NOT ok, so the phone dot still says what broke
+   * — and, when the feed itself has gone quiet, says THAT instead of reciting
+   * three stale per-service verdicts as if they were current.
+   */
   let worstLabel = $derived.by(() => {
+    if (healthUnknown) {
+      return healthMs == null
+        ? 'health status unknown — no successful check yet; the dashboard cannot see the backends'
+        : `health data stale ${formatAge(now - healthMs)} — the dashboard cannot see the backends`;
+    }
     const bad = [
       ['Redis', redisState],
       ['Janus', janusState],
@@ -91,6 +147,28 @@
     if (bad.length === 0) return 'All systems healthy';
     return bad.map(([name, s]) => dotLabel(name as string, s as DotState)).join(', ');
   });
+
+  /** Aggregate text. Unknown is its own glyph — it is not a claim of DEGRADED. */
+  let aggText = $derived(
+    worstState === 'ok' ? 'OK' : worstState === 'unknown' ? '?' : 'DEGRADED'
+  );
+
+  // ─── Alert chip (R3) ─────────────────────────────────────────────────────
+
+  /**
+   * Three states, not two: a count, `unknown` (grey — Prometheus or our own
+   * poll is dead, so a quiet chip would be a lie on every page), or hidden.
+   * All the honesty rules live in `describeChip` so they are unit-testable.
+   */
+  let chip = $derived(
+    describeChip({
+      inbox: $alertInbox,
+      updatedAt: $inboxUpdatedAt,
+      since: mountedAt,
+      promDownStreak: $promDownStreak,
+      nowMs: now
+    })
+  );
 
   // ─── Data Fetching ────────────────────────────────────────────────────────
 
@@ -103,9 +181,16 @@
         feed:  String((data as any).feed  ?? '—'),
       };
       lastFetch = new Date();
+      healthErrors = 0;
     } catch {
-      // Network or parse error — leave current values; dots will amber/grey out
-      // on the next successful fetch cycle or after restart.
+      // R5: a failure must not be silent. The values stay put for one grace
+      // period, but `lastFetch` deliberately does NOT advance — so once the
+      // gap passes HEALTH_STALE_AFTER_MS every dot greys out and the Freshness
+      // line reports the age. Only a real success can turn a dot green again;
+      // the old comment here claimed the dots would recover "on the next
+      // successful fetch cycle or after restart", which meant a dead adapter
+      // or a backgrounded phone showed a green footer forever.
+      healthErrors += 1;
     }
   }
 
@@ -117,9 +202,13 @@
     // live on every page (the /monitoring page + cockpit panel share this poll).
     alertInbox.start();
 
-    const interval = setInterval(fetchHealth, 15_000);
+    const interval = setInterval(fetchHealth, HEALTH_POLL_MS);
+    // 1s tick so the staleness thresholds above fire on their own, without
+    // waiting for a fetch that may never come back.
+    const tick = setInterval(() => (now = Date.now()), 1_000);
     return () => {
       clearInterval(interval);
+      clearInterval(tick);
       alertInbox.stop();
     };
   });
@@ -134,7 +223,7 @@
       class:dot-pulse={worstState === 'ok'}
       style="background: {dotColor(worstState)}"
     ></span>
-    {worstState === 'ok' ? 'OK' : 'DEGRADED'}
+    {aggText}
   </span>
 
   <span class="status-item" aria-label={dotLabel('Redis', redisState)}>
@@ -144,7 +233,9 @@
       style="background: {dotColor(redisState)}"
     ></span>
     Redis
-    {#if health.redis !== '—'}
+    <!-- The value is suppressed while unknown: a frozen "ok" beside a grey dot
+         is the very claim we just withdrew. -->
+    {#if !healthUnknown && health.redis !== '—'}
       <span class="health-val">{health.redis}</span>
     {/if}
   </span>
@@ -156,7 +247,7 @@
       style="background: {dotColor(janusState)}"
     ></span>
     Janus
-    {#if health.janus !== '—'}
+    {#if !healthUnknown && health.janus !== '—'}
       <span class="health-val">{health.janus}</span>
     {/if}
   </span>
@@ -168,28 +259,41 @@
       style="background: {dotColor(feedState)}"
     ></span>
     Feed
-    {#if health.feed !== '—'}
+    {#if !healthUnknown && health.feed !== '—'}
       <span class="health-val">{health.feed}</span>
     {/if}
   </span>
 
-  {#if $chipState}
+  <!-- R5: the age of the health snapshot itself, on screen next to the dots.
+       Amber once stale (the age IS old and we can measure it) while the dots go
+       grey (the verdicts are no longer claims we can make) — the same split
+       Freshness draws between 'stale' and 'unknown'. -->
+  <span class="status-item">
+    <Freshness
+      updated={lastFetch?.getTime() ?? null}
+      unit="ms"
+      staleAfterMs={HEALTH_STALE_AFTER_MS}
+      consecutiveErrors={healthErrors}
+      label="health"
+    />
+  </span>
+
+  {#if chip.state}
     <a
       class="alert-chip"
-      class:critical={$chipState === 'critical'}
-      class:warning={$chipState === 'warning'}
+      class:critical={chip.state === 'critical'}
+      class:warning={chip.state === 'warning'}
+      class:unknown={chip.state === 'unknown'}
       href="/monitoring"
-      title="{$unackedCount} unacknowledged alert{$unackedCount === 1 ? '' : 's'} — open the inbox"
+      title={chip.title}
+      aria-label={chip.title}
     >
-      ⚠ {$unackedCount} unacked
+      {chip.label}
     </a>
   {/if}
 
   <span class="status-right">
     FKS Terminal · SvelteKit
-    {#if lastFetch}
-      <span class="last-fetch" title="Last health check: {lastFetch.toLocaleTimeString()}">·</span>
-    {/if}
   </span>
 
   <form method="POST" action="/logout" class="logout-form">
@@ -274,15 +378,19 @@
     background: var(--amber-dim, rgba(200, 150, 0, 0.1));
     border-color: var(--amber-brd, rgba(200, 150, 0, 0.35));
   }
+  /* Honest grey. "We cannot see the alert feed" is not an alarm and must not
+     compete with a real one — but it must not be invisible either, which is
+     what it was before R3. */
+  .alert-chip.unknown {
+    color: var(--t3);
+    background: transparent;
+    border-color: var(--b1);
+    font-weight: 500;
+  }
 
   .status-right {
     margin-left: auto;
     color: var(--t3);
-  }
-
-  .last-fetch {
-    cursor: help;
-    opacity: 0.5;
   }
 
   .logout-form {

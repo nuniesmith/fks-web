@@ -1,5 +1,15 @@
 import { defineConfig, devices } from '@playwright/test';
 
+/**
+ * Dev-server port. Overridable because `reuseExistingServer` will happily
+ * attach to whatever is ALREADY listening on 5173 — including a dev server
+ * started from a different git worktree of this repo. When that happens the
+ * suite silently tests someone else's build and reports green (or red) for
+ * code that is not on disk here. Set `WEB_E2E_PORT` to a free port to get a
+ * private server; unset it and CI/solo runs behave exactly as before.
+ */
+const PORT = Number(process.env.WEB_E2E_PORT ?? 5173);
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -9,7 +19,7 @@ export default defineConfig({
   reporter: 'html',
   timeout: 15_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: `http://localhost:${PORT}`,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -20,8 +30,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    // The trailing --port wins over the one baked into the npm script, and
+    // --strictPort makes a busy port a loud failure instead of a silent drift
+    // to 5174 that would leave `url` below unreachable.
+    command: `npm run dev -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
     // The documented dev bypass (adapter.ts step 3): without it the hook can't
