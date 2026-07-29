@@ -268,13 +268,20 @@
        Amber once stale (the age IS old and we can measure it) while the dots go
        grey (the verdicts are no longer claims we can make) — the same split
        Freshness draws between 'stale' and 'unknown'. -->
-  <span class="status-item">
+  <!-- `status-fresh` keeps this OUT of the 640px collapse below. The three
+       per-service items fold into the aggregate dot on a phone, but the AGE is
+       the one thing the aggregate cannot express: a grey "unknown" dot says the
+       verdicts are stale, and only this says for how long. Hiding it on the
+       primary platform would leave the phone with exactly the ambiguity R5
+       exists to remove. Rendered `compact` so it costs ~4 characters. -->
+  <span class="status-item status-fresh">
     <Freshness
       updated={lastFetch?.getTime() ?? null}
       unit="ms"
       staleAfterMs={HEALTH_STALE_AFTER_MS}
       consecutiveErrors={healthErrors}
       label="health"
+      compact
     />
   </span>
 
@@ -442,8 +449,10 @@
     .status-agg {
       display: inline-flex;
     }
-    /* The three per-service items collapse into .status-agg above. */
-    .status-item:not(.status-agg) {
+    /* The three per-service items collapse into .status-agg above.
+       .status-fresh is exempt: the aggregate dot cannot express AGE, and the
+       phone is the platform where a silently-frozen health read matters most. */
+    .status-item:not(.status-agg):not(.status-fresh) {
       display: none;
     }
     /* Frees the row for the alert chip + logout. */
