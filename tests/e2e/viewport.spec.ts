@@ -364,3 +364,29 @@ test.describe("Phone frame: the auth gate stays reachable on a short viewport", 
     expect(overflowY, "the gate must be the page's scroll region").toBe("auto");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The health-freshness age must survive the 640px StatusBar collapse.
+//
+// M5 folds the three per-service items into one aggregate dot on a phone. That
+// dot can say "degraded" but it cannot say HOW LONG the reading has been
+// unverifiable — which is exactly what R5 added the age for. Hiding it below
+// 640px would leave the phone, the primary platform, with the ambiguity R5
+// exists to remove.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("Phone frame: health freshness stays visible", () => {
+  test.use({ viewport: { width: 375, height: 667 } });
+
+  test("the age is rendered on a phone, alongside the collapsed aggregate", async ({ page }) => {
+    await page.goto("/");
+    // The per-service items are collapsed...
+    await expect(page.locator(".status-agg")).toBeVisible();
+    // ...but the freshness age is NOT.
+    const fresh = page.locator(".status-fresh");
+    await expect(fresh).toBeVisible();
+
+    const box = await fresh.boundingBox();
+    expect(box, "freshness must have a layout box on a phone").not.toBeNull();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+  });
+});
