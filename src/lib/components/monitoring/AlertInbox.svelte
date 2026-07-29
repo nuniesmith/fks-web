@@ -385,10 +385,20 @@
       align-items: center;
       justify-content: center;
     }
-    /* The runbook expander gets the same floor: it is the SAFE control, it
-       lives on its own line left-aligned, and it grows DOWNWARD — so enlarging
-       it adds distance to the next incident's card instead of crowding Ack. */
+    /* The runbook expander gets the same floor. It is the SAFE control, so the
+       point of enlarging it is reachability — but MEASURED, it does not "grow
+       downward away from Ack" as first assumed: it sits in the meta row
+       directly above the action row, and at 44px its bottom edge lands 3px
+       from Ack. Ack has no confirm and no undo, so 3px is a mis-tap that
+       silences an armed-path alert.
+       The floor therefore ships WITH explicit separation below. */
     .detail-toggle { min-height: 44px; padding: 4px 10px; }
+    /* The expander renders BELOW the action row (.alert-actions is emitted
+       first), so the separation has to go on the toggle itself. Guarded by a
+       2D separation spec that measures every sibling in the card rather than a
+       named pair, so the next control added here is covered automatically. */
+    .detail-toggle { margin-top: 14px; }
+
   }
 
   .note-input {

@@ -297,3 +297,68 @@ test.describe("P1 reaches the cockpit armed-path panel", () => {
     await expect(row.locator(".detail-runbook")).toContainText("getent hosts api.kraken.com");
   });
 });
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ack has NO confirm and NO undo — the row leaves for history on success. Every
+// control that lands next to it must therefore keep a thumb's separation, and
+// that has to be measured in TWO DIMENSIONS: the action row wraps on a narrow
+// panel, and a horizontal-only formula (ack.x - (other.x + other.w)) silently
+// returns a meaningless number the moment it does. P1 added .detail-toggle as a
+// new neighbour with no guard of its own; this covers every sibling generically
+// so the NEXT button added here is covered without anyone remembering to.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("Ack keeps its separation from every neighbour", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("no sibling control comes within 12px of Ack, in either axis", async ({ page }) => {
+    await installInbox(page, [ALL_VENUES_STALE]);
+    await page.goto("/monitoring");
+    await awaitInboxStyles(page);
+
+    const coarse = await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
+    expect(coarse, "spec is meaningless without coarse-pointer emulation").toBe(true);
+
+    const worst = await page.evaluate(() => {
+      const ack = document.querySelector(".ack-btn") as HTMLElement | null;
+      if (!ack) return { found: false, min: -1, who: "" };
+      const A = ack.getBoundingClientRect();
+      // True 2D edge distance: 0 when the rects overlap on both axes.
+      const dist = (B: DOMRect) => {
+        const dx = Math.max(0, Math.max(A.left - B.right, B.left - A.right));
+        const dy = Math.max(0, Math.max(A.top - B.bottom, B.top - A.bottom));
+        return Math.hypot(dx, dy);
+      };
+      // Scope to the alert's OWN card. Unrelated page furniture (the /monitoring
+      // query Run button, panel chrome) is not what a thumb aiming at Ack can
+      // hit by accident, and including it made the guard fail for the wrong
+      // reason.
+      const card =
+        ack.closest(".alert-item, .alert-row, .alert-card, li") ??
+        ack.parentElement?.parentElement ??
+        document.body;
+      let min = Infinity;
+      let who = "";
+      for (const el of Array.from(
+        card.querySelectorAll("button, a[href], [role=button]"),
+      ) as HTMLElement[]) {
+        if (el === ack) continue;
+        const B = el.getBoundingClientRect();
+        if (B.width === 0 || B.height === 0) continue;
+        const d = dist(B);
+        if (d < min) {
+          min = d;
+          who = el.className || el.tagName;
+        }
+      }
+      return { found: true, min: min === Infinity ? 999 : min, who, card: card.className };
+    });
+
+    expect(worst.found, ".ack-btn must render").toBe(true);
+    expect(
+      worst.min,
+      `nearest control to Ack was "${worst.who}" at ${worst.min}px — an irreversible ` +
+        `control must not sit within a thumb-width of anything`,
+    ).toBeGreaterThanOrEqual(12);
+  });
+});
