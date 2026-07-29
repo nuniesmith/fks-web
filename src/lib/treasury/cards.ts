@@ -20,24 +20,17 @@ export type BadgeVariant = 'default' | 'green' | 'red' | 'amber' | 'cyan' | 'pur
 // ─── Money formatting ──────────────────────────────────────────────────────
 
 /**
- * "$1,234.56" (USD) / "1,234.56 EUR" (other) / "—" for null. Null figures
- * come straight from /profit's honest no-data answer — never render them 0.
+ * `fmtMoney` / `fmtSignedMoney` now live in `$lib/utils/format` — the module
+ * that declares itself the single home for formatters (M-1). They were the only
+ * correctly grouped money pair in the repo and were unreachable from anything
+ * that did not already import a treasury helper, which is how four pages ended
+ * up hand-rolling a local `usd()`.
+ *
+ * Re-exported here so every existing `$lib/treasury/cards` import (and
+ * `cards.test.ts`, which pins them through this path) keeps working unchanged.
+ * New call sites should import from `$lib/utils/format` directly.
  */
-export function fmtMoney(value: number | null | undefined, currency = 'USD'): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  const n = value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return currency === 'USD' ? `$${n}` : `${n} ${currency}`;
-}
-
-/** Signed money: "+$12.34" / "-$5.00" / "$0.00" (flat) / "—" (no data). */
-export function fmtSignedMoney(value: number | null | undefined, currency = 'USD'): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  if (value === 0) return fmtMoney(0, currency);
-  return `${value > 0 ? '+' : '-'}${fmtMoney(Math.abs(value), currency)}`;
-}
+export { fmtMoney, fmtSignedMoney } from '$lib/utils/format';
 
 export type MoneyTone = 'pos' | 'neg' | 'flat';
 

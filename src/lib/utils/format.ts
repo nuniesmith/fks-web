@@ -34,12 +34,59 @@ export function fmtPct(n: number | undefined | null): string {
 }
 
 /**
- * Format a dollar P&L value with sign prefix: "+$12.34" / "-$5.00"
+ * Format a dollar P&L value with sign prefix: "+$12.34" / "-$5.00".
+ *
+ * ALWAYS SIGNED — this is the P&L formatter. For a balance / net-worth figure
+ * use `fmtMoney` below, which is the same grouped notation without the forced
+ * sign.
+ *
+ * Thousands are grouped (M-1). Before that, `/exchanges` rendered a grouped
+ * `$12,345.67` net worth in the same `.stat-row` as an ungrouped `+$4567.89`
+ * P&L: two notations for the same class of money, adjacent, where a five-figure
+ * loss reads as four figures at a phone glance.
  */
 export function fmtDollar(n: number | undefined | null): string {
   if (n == null) return '—';
   const sign = n >= 0 ? '+' : '-';
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
+  return `${sign}$${Math.abs(n).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * "$1,234.56" (USD) / "1,234.56 EUR" (other) / "—" for null.
+ *
+ * UNSIGNED — for balances, net worth, deposits: any figure whose sign is not
+ * the information. Null figures come straight from the spawner's honest
+ * no-data answer — never render them as 0.
+ *
+ * Promoted here from `$lib/treasury/cards.ts` (M-1): this module declares
+ * itself the anti-copy-paste home for formatters, yet the repo's only correctly
+ * grouped money pair lived in a treasury helper, so four pages hand-rolled a
+ * local `usd()` beside a comment rediscovering that `fmtDollar` force-signs.
+ * `cards.ts` re-exports both for compatibility.
+ */
+export function fmtMoney(value: number | null | undefined, currency = 'USD'): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const n = value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return currency === 'USD' ? `$${n}` : `${n} ${currency}`;
+}
+
+/**
+ * Signed money: "+$12.34" / "-$5.00" / "$0.00" (flat) / "—" (no data).
+ *
+ * Differs from `fmtDollar` on two points that matter: it is currency-aware, and
+ * a FLAT figure stays unsigned (`$0.00`, not `+$0.00`) so a zero P&L is not
+ * painted as a gain.
+ */
+export function fmtSignedMoney(value: number | null | undefined, currency = 'USD'): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  if (value === 0) return fmtMoney(0, currency);
+  return `${value > 0 ? '+' : '-'}${fmtMoney(Math.abs(value), currency)}`;
 }
 
 /**
@@ -156,15 +203,27 @@ export function fmtTime(ts: string | number | undefined | null): string {
 }
 
 /**
- * Format a UTC timestamp as a short local date+time.
- * e.g. "2025-07-18 14:32"
+ * Format a UTC timestamp as a short LOCAL date+time, zone named.
+ * e.g. "2025-07-18 14:32 EDT"
+ *
+ * The zone marker is load-bearing (Q-5). `cockpit/+page.svelte`'s `tsLabel`
+ * stamps the kill-sentinel trip time in UTC with a trailing `Z`; this renders
+ * the operator's wall clock. Unlabelled, the two produce near-identical
+ * "YYYY-MM-DD HH:MM" strings on adjacent tabs, so an incident timeline built
+ * from both is silently off by the local UTC offset. Naming the zone here is
+ * cheaper than converting every ledger/trade/run stamp to UTC.
  */
 export function fmtDateTime(ts: string | number | undefined | null): string {
   if (ts == null) return '—';
   const d = typeof ts === 'number' ? new Date(ts) : new Date(ts);
   if (isNaN(d.getTime())) return '—';
   const date = d.toLocaleDateString('en-CA'); // YYYY-MM-DD
-  const time = d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  const time = d.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
   return `${date} ${time}`;
 }
 
