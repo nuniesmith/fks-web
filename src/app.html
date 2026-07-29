@@ -16,7 +16,19 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="FKS" />
-  <title>FKS Terminal</title>
+  <!-- Q2: NO static title element here, and do NOT add one back.
+       It used to sit ABOVE the head placeholder below, so SSR emitted TWO
+       title elements and the browser took the first: every hard load / cold
+       PWA launch showed the generic "FKS Terminal" for every route until
+       hydration overwrote it. Each route now owns its own title via
+       svelte:head. (The iOS home-screen label comes from
+       apple-mobile-web-app-title above and the manifest short_name, NOT
+       document.title — the real consumers of these titles are desktop tabs,
+       browser history, and SvelteKit's a11y announcer.)
+       Careful when editing this comment: SvelteKit string-replaces the head
+       and body placeholders ANYWHERE in this file, comments included, so
+       never spell either token out in prose here.
+       Pinned by tests/e2e/smoke.spec.ts "SSR document title". -->
   %sveltekit.head%
 </head>
 <body data-sveltekit-preload-data="hover">

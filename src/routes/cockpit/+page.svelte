@@ -38,6 +38,7 @@
   import type { ExchangesStatus } from '$lib/types/exchanges';
   import type { LiveStatusResp } from '$lib/types/cockpit-live';
   import AlertInbox from '$lib/components/monitoring/AlertInbox.svelte';
+  import { fmtPrice } from '$lib/utils/format';
   import { alertInbox } from '$lib/stores/alertInbox';
   import type { InboxAlert } from '$lib/types/alertInbox';
 
@@ -216,6 +217,20 @@
   let requiredPhrase = $derived(dialog === 'rearm' ? REARM_CONFIRM_PHRASE : KILL_CONFIRM_PHRASE);
   let phraseOk = $derived(confirmText === requiredPhrase);
 
+  /**
+   * R6 — appended to EVERY failed KILL / RE-ARM outcome.
+   *
+   * A failed request does not mean the write didn't happen. `client.ts` aborts
+   * at 15s, `PgCockpitStore` sets `connect_timeout: 10` with NO statement
+   * timeout, and SvelteKit does not cancel an in-flight server handler when the
+   * client aborts — so the sentinel write can land AFTER this modal has already
+   * reported failure. On the RE-ARM direction that means the operator is told
+   * the bot is still halted while it is in fact armed to trade on its next bar.
+   * "Failed" here is only ever "unconfirmed", never "definitely didn't happen".
+   */
+  const UNVERIFIED_HINT =
+    ' — outcome unverified; confirm against the sentinel badge before acting.';
+
   async function fireAction() {
     if (!dialog || submitting) return;
     submitting = true;
@@ -227,19 +242,27 @@
         confirm: confirmText,
         note: note.trim() || undefined,
       });
-      actionResult = { ok: r.ok === true, text: r.effect ?? r.message ?? 'done' };
-      if (r.ok) {
-        confirmText = '';
-        await statePoll.refresh();
-      }
+      const ok = r.ok === true;
+      const text = r.effect ?? r.message ?? 'done';
+      actionResult = { ok, text: ok ? text : `${text}${UNVERIFIED_HINT}` };
+      if (ok) confirmText = '';
     } catch (e) {
       const msg =
         e instanceof ApiError
           ? `${e.status}: ${typeof e.body === 'string' ? e.body : e.statusText}`
           : String(e);
-      actionResult = { ok: false, text: `request failed — ${msg}` };
+      actionResult = { ok: false, text: `request failed — ${msg}${UNVERIFIED_HINT}` };
     } finally {
       submitting = false;
+      // R6: re-verify on EVERY outcome, not just success. Before this, an
+      // aborted/failed KILL left every panel below showing the PRE-ATTEMPT
+      // sentinel state until the next 5s poll tick — the operator's next
+      // decision was made against a reading the app already knew was suspect.
+      // Safe to await unconditionally: poll.ts `fetchOnce` swallows its own
+      // errors and never rejects, so this cannot mask the outcome above.
+      // `submitting` is cleared FIRST so an emergency retry is never blocked
+      // behind a re-verification fetch that may itself be slow.
+      await statePoll.refresh();
     }
   }
 
@@ -454,7 +477,12 @@
               <tr>
                 <td>{p.symbol}</td>
                 <td class={p.dir > 0 ? 'pos' : 'neg'}>{p.side}</td>
-                <td>{p.entryPx}</td>
+                <!-- Q3: entry_px is a bare JSONB float from the bot's store.
+                     Default stringification gave ragged precision and no
+                     grouping ("60000") on the one table the operator reads
+                     while deciding whether to KILL, while every other price
+                     surface in the app uses fmtPrice. -->
+                <td>{fmtPrice(p.entryPx)}</td>
                 <td>{ago(p.entryTMs)}</td>
                 <td>
                   {#if selected === 'paper'}

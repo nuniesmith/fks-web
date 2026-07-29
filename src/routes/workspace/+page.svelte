@@ -186,6 +186,10 @@
     }
 </script>
 
+<svelte:head>
+    <title>Workspace — FKS Terminal</title>
+</svelte:head>
+
 <div class="workspace">
     <header class="ws-toolbar">
         <div class="ws-title">

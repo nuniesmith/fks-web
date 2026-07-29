@@ -42,7 +42,7 @@
 </script>
 
 <svelte:head>
-  <title>FKS Terminal — Accept Invite</title>
+  <title>Accept Invite — FKS Terminal</title>
 </svelte:head>
 
 <div class="gate">

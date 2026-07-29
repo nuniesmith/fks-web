@@ -18,6 +18,7 @@
   import { createPoll } from '$lib/stores/poll';
   import { api } from '$api/client';
   import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
+  import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
   import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
 
@@ -88,12 +89,13 @@
     return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
-  function modeVariant(mode: string): 'green' | 'cyan' | 'amber' {
-    if (mode === 'live') return 'green';
-    if (mode === 'paper') return 'amber';
-    return 'cyan';
-  }
-
+  /**
+   * Age of a funding-bot venue's LAST TRADE EVENT — not a poll age.
+   *
+   * The paper funding bot marks its book on trade events, so a healthy idle
+   * bot legitimately reports 15+ hours here. See the render site below and the
+   * gating comment at `exchanges/[exchange]/+page.svelte:79,171`.
+   */
   function agoSecs(epochSecs: number): string {
     const s = Math.max(0, Math.floor(Date.now() / 1000 - epochSecs));
     if (s < 90) return `${s}s ago`;
@@ -234,7 +236,19 @@
             </div>
             <div class="venue-meta">
               <span>data source: exchange-apiws (KuCoin futures)</span>
-              <span class="dim">updated {agoSecs(v.updated)}</span>
+              <!-- P4: `v.updated` is the last TRADE EVENT, not a poll stamp.
+                   The paper funding bot marks its book on trade events, so a
+                   healthy idle bot reads 15+ hours here and "updated 16h ago"
+                   reads as breakage to a phone-glancing operator. The copy
+                   names the mechanism instead.
+                   GUARD-RAIL for the M7 Freshness sweep: apply Freshness to
+                   this page's POLL `updatedAt` only — NEVER to `v.updated`.
+                   Copy the gating comment from
+                   `exchanges/[exchange]/+page.svelte:79,171`. Wiring Freshness
+                   (or any threshold) here turns /futures permanently amber
+                   during the Gate-A window and trains the operator to ignore
+                   the amber that IS load-bearing on /exchanges and /cockpit. -->
+              <span class="dim">marks on trade events — last {agoSecs(v.updated)}</span>
             </div>
           </Panel>
         {/each}
