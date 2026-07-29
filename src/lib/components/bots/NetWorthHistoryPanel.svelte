@@ -26,6 +26,7 @@
   import EmptyState from '$components/ui/EmptyState.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import { spawner } from '$api/spawner';
+  import { alertInbox } from '$lib/stores/alertInbox';
   import type { NetWorthSnapshot } from '$lib/types/spawner';
   import {
     classifyBot,
@@ -91,6 +92,37 @@
       bots: by.get(c)!,
     }));
   });
+
+  // ── P3: a hole in this chart is DELIBERATE, and must say so ───────────────
+  //
+  // The spawner will not record a net-worth sample it cannot trust: while a
+  // bot's venues are stale it writes nothing (and increments
+  // `fks_spawner_net_worth_stale_skipped_total`) rather than carry a fabricated
+  // flat line forward. This chart therefore goes DARK, and a gap in a net-worth
+  // line reads as a broken chart — or as "nothing happened" — neither of which
+  // is true.
+  //
+  // Keyed off `alerts.some(...)`, NOT off `unackedCount` / `describeChip`: the
+  // StatusBar chip disappears the instant anyone acks while the alert is still
+  // firing, and with the ack store down (`configured:false`) the inbox still
+  // returns the full `alerts` array — precisely the degraded state this line
+  // must survive. Prometheus itself being unreachable empties `alerts` and this
+  // stays silent, which is honest; the StatusBar is what greys out for
+  // "we cannot see".
+  //
+  // Twin of the same block in src/routes/treasury/+page.svelte — keep the
+  // alertname list in sync.
+  const SAMPLING_PAUSED_ALERTS = ['NetWorthSamplingPausedTooLong', 'BotAllVenuesStale'];
+
+  // Deduped by (url, interval) with the StatusBar's poll — no extra traffic.
+  $effect(() => {
+    alertInbox.start();
+    return () => alertInbox.stop();
+  });
+
+  let samplingPaused = $derived(
+    ($alertInbox?.alerts ?? []).some((a) => SAMPLING_PAUSED_ALERTS.includes(a.labels.alertname))
+  );
 
   let chartEl: HTMLDivElement | undefined = $state();
   let chart: IChartApi | null = null;
@@ -243,6 +275,15 @@
     </button>
   {/snippet}
 
+  {#if samplingPaused}
+    <p class="nwp-paused" role="status" data-testid="sampling-paused">
+      <strong>Net-worth sampling is paused.</strong> Bots are reporting stale venue figures, so the
+      spawner is recording nothing rather than carrying a fabricated flat line forward. Gaps in this
+      chart are deliberate — not a UI bug, and not "nothing happened".
+      <a href="/monitoring">Open /monitoring</a> for the firing alert.
+    </p>
+  {/if}
+
   <div class="nwp-body">
     <!-- Chart element stays mounted so lightweight-charts can attach; the
          loading / empty / error overlays sit on top. -->
@@ -317,6 +358,19 @@
 </Panel>
 
 <style>
+  .nwp-paused {
+    margin: 0 0 8px;
+    padding: 7px 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--amber, #f0a500);
+    background: var(--bg2, #16161f);
+    border: 1px solid var(--amber, #f0a500);
+    border-radius: var(--r-md, 6px);
+  }
+  .nwp-paused a {
+    color: inherit;
+  }
   .nwp-refresh {
     background: transparent;
     border: 1px solid var(--b2, #2a2a3e);

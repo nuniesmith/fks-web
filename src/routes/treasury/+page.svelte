@@ -24,6 +24,7 @@
   import TreasuryHeadline from '$components/treasury/TreasuryHeadline.svelte';
   import { spawner } from '$api/spawner';
   import { ApiError } from '$api/client';
+  import { alertInbox } from '$lib/stores/alertInbox';
   import { groupSnapshots, staleAccounts, type AccountSeries } from '$lib/treasury/rollup';
   import { paperAccountIds, selectProfitAccounts } from '$lib/treasury/cards';
   import { buildProfitTotalsView } from '$lib/treasury/aggregate';
@@ -98,6 +99,42 @@
     void loadNetWorth();
     void loadTransfers();
   });
+
+  // ── P3: say out loud that a gap in the money charts is DELIBERATE ─────────
+  //
+  // The spawner refuses to record a net-worth sample it cannot trust: rather
+  // than fabricate a flat carry-forward line while a bot's venues are stale, it
+  // writes NOTHING and increments `fks_spawner_net_worth_stale_skipped_total`.
+  // Every chart on this page therefore goes DARK — and a hole in a net-worth
+  // series reads to an operator as either a UI bug or, worse, as "nothing
+  // happened here", which on a money page is a lie.
+  //
+  // The global StatusBar chip already fires for these alerts, but it VANISHES
+  // the moment anyone acks, and it never says which surface is affected. This
+  // line survives the ack and names the surface.
+  //
+  // Deliberately keyed off `alerts.some(...)` and NOT off `unackedCount` /
+  // `describeChip`: an ack zeroes the count while the alert is still firing, and
+  // `AlertInbox.configured:false` (ack store down) still returns the full
+  // `alerts` array with every `acked` null — exactly the degraded state this
+  // banner has to survive. When Prometheus itself is unreachable `alerts` is
+  // empty and this stays silent, which is honest: the StatusBar chip is the
+  // surface that goes grey for "we cannot see".
+  //
+  // Twin of the same block in $components/bots/NetWorthHistoryPanel.svelte —
+  // keep the alertname list in sync.
+  const SAMPLING_PAUSED_ALERTS = ['NetWorthSamplingPausedTooLong', 'BotAllVenuesStale'];
+
+  // Deduped by (url, interval) with the StatusBar's poll, so this costs no
+  // extra traffic; it just means the banner does not depend on the shell.
+  $effect(() => {
+    alertInbox.start();
+    return () => alertInbox.stop();
+  });
+
+  let samplingPaused = $derived(
+    ($alertInbox?.alerts ?? []).some((a) => SAMPLING_PAUSED_ALERTS.includes(a.labels.alertname)),
+  );
 
   // ── Derived wiring ────────────────────────────────────────────────────────
 
@@ -214,6 +251,15 @@
 </svelte:head>
 
 <div class="page">
+  {#if samplingPaused}
+    <p class="sampling-paused" role="status" data-testid="sampling-paused">
+      <strong>Net-worth sampling is paused.</strong> Bots are reporting stale venue figures, so the
+      spawner is recording nothing rather than carrying a fabricated flat line forward. Gaps in the
+      figures and charts below are deliberate — not a UI bug, and not "nothing happened".
+      <a href="/monitoring">Open /monitoring</a> for the firing alert.
+    </p>
+  {/if}
+
   <TreasuryHeadline
     {series}
     {paperIds}
@@ -339,6 +385,19 @@
     padding: 8px;
     height: 100%;
     overflow: auto;
+  }
+  .sampling-paused {
+    margin: 0;
+    padding: 7px 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--amber, #f0a500);
+    background: var(--bg2);
+    border: 1px solid var(--amber, #f0a500);
+    border-radius: var(--r-md);
+  }
+  .sampling-paused a {
+    color: inherit;
   }
   .cards {
     display: grid;

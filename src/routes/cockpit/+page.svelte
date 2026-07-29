@@ -849,6 +849,32 @@
     background: var(--bg3);
     color: var(--t1);
   }
+  /* A-2 — PAPER/LIVE is not a view filter: it chooses WHICH INSTANCE the kill
+     button below targets. On a phone it computed to 26px, well under the 44px
+     touch floor, so a thumb aiming at PAPER could land on LIVE.
+     The floor alone would make that WORSE, not better: two flush segments in a
+     seamless control mean a bigger target is also a bigger overlap with its
+     neighbour. So the seam is broken at the same time — the shared frame moves
+     onto each button and a real 12px moat opens between them, and the group
+     gets more air from the Freshness/Badge chips either side. Fills and text
+     colours are untouched, so `.active` still reads exactly as before. */
+  @media (pointer: coarse) {
+    .mode-row {
+      gap: 14px;
+    }
+    .inst-tabs {
+      gap: 12px;
+      border: none;
+      border-radius: 0;
+      overflow: visible;
+    }
+    .inst-tab {
+      min-height: 44px;
+      padding: 6px 18px;
+      border: 1px solid var(--b2);
+      border-radius: var(--r);
+    }
+  }
   .mode-hint {
     font-size: 11px;
     color: var(--t3);
