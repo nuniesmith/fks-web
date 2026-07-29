@@ -920,6 +920,22 @@
       flex-direction: column;
     }
 
+    /* Stacking two `fill` panels in one scroll column is the case app.css
+       warns against: each keeps `flex: 1 1 0; min-height: 0`, so they share a
+       height neither of them has and the sibling panel lands on top of the
+       Alert Inbox's ack cluster — elementFromPoint over .ack-btn returned
+       .dual-row and a real click timed out. On a phone the operator simply
+       could not acknowledge an alert here. Below 720px the panels go rigid and
+       the PAGE owns the scroll, which is the `.page-scroll` archetype this
+       route already uses. */
+    .dual-row > :global(.panel.fill) {
+      flex: 0 0 auto;
+      min-height: auto;
+    }
+    .dual-row > :global(.panel.fill) > :global(.panel-body) {
+      overflow: visible;
+    }
+
     .stat-row {
       flex-direction: column;
     }
