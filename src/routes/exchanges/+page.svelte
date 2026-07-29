@@ -17,6 +17,7 @@
   import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
+  import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
@@ -66,16 +67,14 @@
     return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
-  function modeVariant(mode: string): 'green' | 'cyan' | 'amber' {
-    if (mode === 'live') return 'green';
-    if (mode === 'paper') return 'amber';
-    return 'cyan'; // dry-run: real balances, no orders
-  }
-
   function venueKey(v: VenueStatus): string {
     return `${v.exchange}:${v.mode}`;
   }
 </script>
+
+<svelte:head>
+  <title>Exchanges — FKS Terminal</title>
+</svelte:head>
 
 <div class="exchanges-page">
   <p class="page-blurb">

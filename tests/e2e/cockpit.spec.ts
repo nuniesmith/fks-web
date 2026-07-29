@@ -71,11 +71,28 @@ async function installCockpitMocks(page: Page, opts: MockOpts = {}): Promise<voi
   }
 }
 
-/** Deterministic ready signal — the cockpit polls, so the network never idles;
- *  the title is the stable "page mounted" marker (mirrors viewport.spec). */
+/**
+ * Deterministic ready signal — the cockpit polls, so the network never idles.
+ *
+ * The title alone is NOT a ready signal, and used to be one only by accident.
+ * `app.html` shipped a static `<title>FKS Terminal</title>` ABOVE the head
+ * placeholder, so the SSR document's title was the generic one and
+ * `toHaveTitle("Cockpit — FKS Terminal")` could not pass until hydration
+ * replaced it. Q2 deleted that duplicate — the correct title is now in the
+ * FIRST painted byte, so the title assertion resolves against the SSR document
+ * and every subsequent `.click()` could land on un-hydrated markup and be
+ * silently dropped. (Observed: the LIVE-tab specs failed ~2 runs in 3.)
+ *
+ * So wait on something only the CLIENT can produce: `Freshness` renders
+ * "age unknown" until the state poll succeeds, then "state Ns ago". Reaching
+ * that text proves hydration ran AND the first mocked fetch resolved.
+ */
 async function gotoCockpit(page: Page): Promise<void> {
   await page.goto("/cockpit");
   await expect(page).toHaveTitle("Cockpit — FKS Terminal");
+  await expect(page.locator(".freshness").first()).toContainText(
+    /state \d+s ago/,
+  );
 }
 
 /** A Panel located by its .panel-title text. */
@@ -198,6 +215,22 @@ test.describe("cockpit honest-empty states", () => {
     await expect(kill.getByRole("button", { name: /RE-ARM live/ })).toBeVisible();
     await expect(kill.getByRole("button", { name: /^KILL live/ })).toHaveCount(0);
   });
+
+  test("7. Q3: entry price is formatted, not a raw JSONB float", async ({
+    page,
+  }) => {
+    await installCockpitMocks(page, {
+      state: cockpitState({ paper: { positions: [openPosition()] } }),
+    });
+    await gotoCockpit(page);
+
+    // fmtPrice — the same formatter every other price surface in the app uses.
+    // Raw stringification of the 61234.5 fixture gave "61234.5": ragged
+    // precision and no grouping, on the table the operator reads while
+    // deciding whether to KILL.
+    const row = panel(page, /Open positions/).locator("tbody tr").first();
+    await expect(row.locator("td").nth(2)).toHaveText("61,234.50");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,7 +322,7 @@ test.describe("kill flow", () => {
       .toBe("live");
   });
 
-  test("4. server 403 → error shown inline, dialog stays open, state NOT refreshed", async ({
+  test("4. server 403 → error shown inline, dialog stays open, state RE-VERIFIED", async ({
     page,
   }) => {
     let stateHits = 0;
@@ -298,9 +331,7 @@ test.describe("kill flow", () => {
       killBody: { message: "live_mutation_requires_auth" },
       onKill: () => {},
     });
-    // Count state fetches so we can assert the failed kill did NOT trigger the
-    // success-path statePoll.refresh() (a fake-success would refetch
-    // immediately). This route is registered AFTER installCockpitMocks ON
+    // Count state fetches. This route is registered AFTER installCockpitMocks ON
     // PURPOSE: Playwright matches routes in reverse-registration order and stops
     // at the first handler that fulfills, so the LAST-registered route for a URL
     // wins. Registered before installCockpitMocks, the fixture's own
@@ -323,21 +354,90 @@ test.describe("kill flow", () => {
     await expect(dialog.getByText(/403/)).toBeVisible();
     await expect(dialog.getByText(/live_mutation_requires_auth/)).toBeVisible();
 
-    // The failed write must NOT clear the confirm input …
+    // The failed write must NOT clear the confirm input.
     await expect(phraseInput(page)).toHaveValue("KILL");
 
-    // … nor call the success-path statePoll.refresh(). A regression that fires
-    // refresh() on the error path (moving it out of `if (r.ok)`, or an
-    // unconditional `finally { statePoll.refresh() }`) issues an IMMEDIATE extra
-    // /api/cockpit/state fetch the moment the kill rejects. Settle briefly so
-    // that immediate refetch (network ~sub-second) would have landed — the
-    // window is far shorter than the 5s background poll cadence, so a poll tick
-    // cannot masquerade as the refresh — then assert EXACTLY zero extra hits.
-    // (The former `<= hitsBefore + 1` tolerance was toothless: the success path
-    // adds exactly one refresh, so +1 could not tell a correct 403 handler from
-    // a regressed one that spuriously refreshes on failure.)
+    // R6 — CONTRACT REVERSAL, read this before "fixing" it back.
+    //
+    // This assertion used to be `expect(stateHits).toBe(hitsBefore)`: a failed
+    // kill was pinned NOT to refresh, on the theory that refreshing looked like
+    // a fake success. That was wrong, and money-path wrong. `client.ts` aborts
+    // at 15s, `PgCockpitStore` sets connect_timeout:10 with no statement
+    // timeout, and SvelteKit does not cancel an in-flight server handler when
+    // the client aborts — so the sentinel write can land AFTER this modal has
+    // reported failure. Under the old contract the operator's next decision was
+    // made against the PRE-ATTEMPT sentinel reading, for up to a full 5s poll
+    // tick, on the RE-ARM direction most dangerously ("still halted" while the
+    // bot is armed to trade on its next bar).
+    //
+    // `statePoll.refresh()` now lives in `fireAction`'s `finally`, so EVERY
+    // outcome re-verifies. Exactly one extra fetch: the 750ms settle is far
+    // shorter than the 5s background poll cadence, so a poll tick cannot
+    // masquerade as (or hide) the refresh. `toBe(hitsBefore + 1)` therefore
+    // fails BOTH ways — if the refresh is removed, and if it double-fires.
     await page.waitForTimeout(750);
-    expect(stateHits).toBe(hitsBefore);
+    expect(stateHits).toBe(hitsBefore + 1);
+
+    // …and the failure copy must say the outcome is UNCONFIRMED, not that
+    // nothing happened. "403: …" alone reads as "the kill definitely did not
+    // occur", which is precisely what the app cannot know.
+    await expect(
+      dialog.getByText(/outcome unverified; confirm against the sentinel badge/),
+    ).toBeVisible();
+  });
+
+  test("6. R6: an ABORTED re-arm re-verifies state and says the outcome is unconfirmed", async ({
+    page,
+  }) => {
+    // The dangerous direction, and the failure mode the 403 spec cannot model:
+    // the request dies in flight (dropped connection / client abort) with the
+    // server handler still running, so the sentinel may yet be cleared.
+    let stateHits = 0;
+    await installCockpitMocks(page, {
+      state: cockpitState({
+        paper: {
+          sentinel: {
+            state: "killed",
+            reason: "webui kill by ops",
+            trippedAtMs: Date.now() - 60_000,
+          },
+        },
+      }),
+    });
+    await page.route("**/api/cockpit/rearm", (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      route.abort("connectionreset");
+    });
+    await page.route("**/api/cockpit/state", (route) => {
+      stateHits += 1;
+      route.fulfill({
+        json: cockpitState({
+          paper: {
+            sentinel: {
+              state: "killed",
+              reason: "webui kill by ops",
+              trippedAtMs: Date.now() - 60_000,
+            },
+          },
+        }),
+      });
+    });
+    await gotoCockpit(page);
+
+    await page.locator(".kill-actions button.btn-rearm").click();
+    await phraseInput(page).fill("REARM");
+    const hitsBefore = stateHits;
+    await dialogConfirm(page, "rearm").click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/request failed/)).toBeVisible();
+    await expect(
+      dialog.getByText(/outcome unverified; confirm against the sentinel badge/),
+    ).toBeVisible();
+
+    // The sentinel must be re-read even though the request never completed.
+    await page.waitForTimeout(750);
+    expect(stateHits).toBe(hitsBefore + 1);
   });
 
   test("5. re-arm flow → phrase 'REARM' + unreconciled-venue warning", async ({

@@ -16,7 +16,7 @@
 </script>
 
 <svelte:head>
-  <title>FKS Terminal — Login</title>
+  <title>Login — FKS Terminal</title>
 </svelte:head>
 
 <div class="gate">

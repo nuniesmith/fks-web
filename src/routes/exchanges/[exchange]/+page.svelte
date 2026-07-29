@@ -14,6 +14,7 @@
   import Freshness from '$lib/components/ui/Freshness.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
+  import { modeVariant } from '$lib/utils/mode';
   import { normalizeFuturesEvent } from '$lib/utils/tradeEvents';
   import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
 
@@ -83,12 +84,6 @@
 
   function usd(n: number): string {
     return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
-  function modeVariant(mode: string): 'green' | 'cyan' | 'amber' {
-    if (mode === 'live') return 'green';
-    if (mode === 'paper') return 'amber';
-    return 'cyan';
   }
 
   function epochLabel(secs: number | undefined | null): string {

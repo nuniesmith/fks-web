@@ -24,7 +24,7 @@
 </script>
 
 <svelte:head>
-  <title>FKS Terminal — Set Your Credentials</title>
+  <title>Set Your Credentials — FKS Terminal</title>
 </svelte:head>
 
 <div class="gate">

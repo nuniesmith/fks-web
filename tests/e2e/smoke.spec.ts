@@ -16,6 +16,14 @@ const routes = [
   { path: "/monitoring", title: "Monitoring — FKS Terminal" },
   { path: "/db", title: "DB Explorer — FKS Terminal" },
   { path: "/settings", title: "Settings — FKS Terminal" },
+  // Q2: these three shipped with NO <title> at all, so SvelteKit kept the
+  // previous route's title on client navigation (/cockpit → /exchanges left
+  // the tab reading "Cockpit — FKS Terminal").
+  { path: "/exchanges", title: "Exchanges — FKS Terminal" },
+  // `/workspace` sets `export const ssr = false` (dockview is client-only), so
+  // it is deliberately excluded from the SSR-title suite below — see there.
+  { path: "/workspace", title: "Workspace — FKS Terminal", ssr: false },
+  { path: "/charts/grid", title: "Multi-chart — FKS Terminal" },
 ];
 
 test.describe("Shell", () => {
@@ -123,6 +131,54 @@ test.describe("Workspace Smoke Tests", () => {
       expect(criticalErrors).toHaveLength(0);
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Q2 — the SSR half. `page.goto` + toHaveTitle only proves the POST-HYDRATION
+// title, which was always right. The bug lived in the first painted byte:
+// app.html emitted a static <title>FKS Terminal</title> BEFORE
+// %sveltekit.head%, so every hard load / cold PWA launch showed the generic
+// title until hydration replaced it. Assert on the raw SSR HTML — a duplicate
+// <title> can only be seen there.
+// ─────────────────────────────────────────────────────────────────────────────
+function ssrTitles(html: string): string[] {
+  return [...html.matchAll(/<title[^>]*>([\s\S]*?)<\/title>/g)].map((m) =>
+    m[1].trim(),
+  );
+}
+
+test.describe("SSR document title", () => {
+  for (const route of routes.filter((r) => r.ssr !== false)) {
+    test(`${route.path} emits exactly one <title>, and it is the route's`, async ({
+      request,
+    }) => {
+      const res = await request.get(route.path);
+      expect(res.ok()).toBe(true);
+
+      // Two <title> elements is invalid HTML and the FIRST one wins — which is
+      // exactly how the generic title used to beat every route's own.
+      const titles = ssrTitles(await res.text());
+      expect(titles).toHaveLength(1);
+      expect(titles[0]).toBe(route.title);
+    });
+  }
+
+  test("/workspace SSRs no title at all — it is an ssr:false route", async ({
+    request,
+  }) => {
+    // Documented, not overlooked. `src/routes/workspace/+page.ts` sets
+    // `ssr = false` (dockview mounts DOM imperatively), so the server renders
+    // an empty shell and there is no head to carry a title; the tab shows the
+    // URL for the pre-hydration instant. That is the price of app.html no
+    // longer shipping a generic fallback title that beat every real one, and it
+    // is confined to this one client-only route.
+    //
+    // If SSR is ever enabled here, this flips and the route must join the loop
+    // above (its <svelte:head> title is already in place).
+    const res = await request.get("/workspace");
+    expect(res.ok()).toBe(true);
+    expect(ssrTitles(await res.text())).toHaveLength(0);
+  });
 });
 
 test.describe("Navigation", () => {

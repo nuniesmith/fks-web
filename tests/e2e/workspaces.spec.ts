@@ -33,7 +33,11 @@ const PAGE_TITLES: { path: string; title: RegExp }[] = [
   { path: "/monitoring", title: /Monitoring.*FKS Terminal/ },
   { path: "/db", title: /DB Explorer.*FKS Terminal/ },
   { path: "/settings", title: /Settings.*FKS Terminal/ },
-  { path: "/login", title: /FKS Terminal.*Login/ },
+  // Q2: the three auth-gate routes used to read "FKS Terminal — X"; they now
+  // lead with the page name like every other route, so a truncated browser tab
+  // or history entry shows WHICH page it is rather than the app name twelve
+  // times over.
+  { path: "/login", title: /Login.*FKS Terminal/ },
 ];
 
 test.describe("Page Titles", () => {

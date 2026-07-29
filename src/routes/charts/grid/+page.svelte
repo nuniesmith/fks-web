@@ -63,6 +63,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Multi-chart — FKS Terminal</title>
+</svelte:head>
+
 <div class="page">
   <div class="grid-toolbar">
     <span class="toolbar-label">MULTI-CHART</span>
