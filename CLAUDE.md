@@ -245,6 +245,12 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
 The dashboard is fully repointed to janus / Prometheus / QuestDB via the
 `hooks.server.ts` adapter (the old Python "Ruby" backend is gone). Current state:
 
+> **Merge order:** this section describes the THREE-clause filter from PR #75.
+> If you are reading this and `src/routes/cockpit/+page.svelte` still has the
+> two-clause form (`mode === 'live' || ARMED_ALERTNAMES.has(...)`), #75 has not
+> landed yet and `BotAllVenuesStale` — severity CRITICAL, "ALL real-money venues
+> stale — bot is blind" — is NOT reaching this panel. Merge #75.
+
 - **Green gates:** `npm run check` is 0/0, `npm run build` succeeds, and
   `npm run test:unit` (vitest) passes — all three run in the web CI.
 - **Unit tests** cover the pure logic + plumbing: the indicator engine, the
