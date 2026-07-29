@@ -390,3 +390,60 @@ test.describe("Phone frame: health freshness stays visible", () => {
     expect(box!.x + box!.width).toBeLessThanOrEqual(375);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A-2 — the PAPER/LIVE instance tabs are a KILL-TARGET selector, not a filter.
+//
+// Whichever tab is active decides which instance the cockpit's kill switch
+// halts. Measured at 390x844 under a coarse pointer the tabs were 26px tall,
+// well under the 44px floor — and they sat FLUSH against each other inside a
+// seamless segmented control, so a thumb aiming at PAPER could land on LIVE.
+//
+// Both halves are asserted here on purpose. A height-only fix would make the
+// mis-selection WORSE: a bigger target flush against its neighbour is a bigger
+// overlap. So the gap is a first-class guard, not a nicety — a future "tidy-up"
+// that restores the seamless segmented look must fail this spec.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("Phone frame: the kill-target selector is a real touch target", () => {
+  test.use({ viewport: PHONE, hasTouch: true, isMobile: true });
+
+  test("PAPER/LIVE are >=44px tall AND separated under a coarse pointer", async ({
+    page,
+  }) => {
+    await installTallCockpit(page);
+    await page.goto("/cockpit");
+    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
+
+    // Guard the guard: without coarse-pointer emulation the assertions below
+    // would be measuring the desktop rule and pass for the wrong reason.
+    const coarse = await page.evaluate(
+      () => window.matchMedia("(pointer: coarse)").matches,
+    );
+    expect(coarse, "this spec is meaningless without coarse-pointer emulation").toBe(
+      true,
+    );
+
+    const tabs = page.locator(".inst-tab");
+    await expect(tabs).toHaveCount(2);
+
+    const boxes = await tabs.evaluateAll((nodes) =>
+      nodes.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, height: r.height };
+      }),
+    );
+
+    // Measured 26px before the fix.
+    for (const b of boxes) {
+      expect(b.height).toBeGreaterThanOrEqual(44);
+    }
+
+    // Measured 0px before the fix — the two segments shared an edge.
+    const sorted = [...boxes].sort((a, b) => a.left - b.left);
+    const moat = sorted[1].left - sorted[0].right;
+    expect(
+      moat,
+      "PAPER and LIVE must not be flush: enlarging a kill-target selector without separating it raises mis-selection odds",
+    ).toBeGreaterThanOrEqual(8);
+  });
+});
