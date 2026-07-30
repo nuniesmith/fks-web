@@ -180,6 +180,30 @@
 
   // ─── Redis API ──────────────────────────────────────────────────────
 
+  /**
+   * Reject a payload whose list field is not actually a list.
+   *
+   * The Redis endpoints are UNMAPPED at the backend seam, and
+   * `hooks.server.ts` → `gracefulEmpty()` answers an unmapped /api path with
+   * `200 {}` unless the path matches its list-ish name heuristic
+   * (reshape.ts ARRAY_PATH_RE — "pubsub" and "scan" do not match). So
+   * `/api/db/redis/pubsub` resolves to `{}`: TRUTHY, with `channels`
+   * undefined. The markup then evaluates `redisPubSub.channels.length` and
+   * throws "Cannot read properties of undefined (reading 'length')" DURING
+   * RENDER, which kills this component's reactivity — every tab in the DB
+   * Explorer stops responding to clicks for the rest of the page's life.
+   *
+   * A missing list is not an empty list. It means we could not see Redis, so
+   * it is reported through the panel's error slot; rendering "No active
+   * channels" would be the dashboard claiming a fact it does not have.
+   */
+  function requireList<T, K extends keyof T>(res: T, field: K, what: string): T {
+    if (!Array.isArray(res?.[field])) {
+      throw new Error(`${what} unavailable — backend returned no ${String(field)} list`);
+    }
+    return res;
+  }
+
   async function loadRedisInfo() {
     redisInfoLoading = true;
     redisInfoError = '';
@@ -199,7 +223,11 @@
     redisKeyValue = null;
     try {
       const pattern = encodeURIComponent(redisScanPattern || '*');
-      redisScanResult = await api.get<RedisScanResponse>(`/api/db/redis/scan?pattern=${pattern}&count=100`);
+      redisScanResult = requireList(
+        await api.get<RedisScanResponse>(`/api/db/redis/scan?pattern=${pattern}&count=100`),
+        'keys',
+        'Key scan',
+      );
     } catch (e: any) {
       redisScanError = e.message || 'Scan failed';
     } finally {
@@ -225,7 +253,11 @@
     redisPubSubLoading = true;
     redisPubSubError = '';
     try {
-      redisPubSub = await api.get<RedisPubSubResponse>('/api/db/redis/pubsub');
+      redisPubSub = requireList(
+        await api.get<RedisPubSubResponse>('/api/db/redis/pubsub'),
+        'channels',
+        'Pub/sub channels',
+      );
     } catch (e: any) {
       redisPubSubError = e.message || 'Failed to load pub/sub channels';
     } finally {
@@ -377,7 +409,20 @@
     janusHealthLoading = true;
     janusHealthError = '';
     try {
-      janusHealth = await api.get<JanusBrainHealth>('/api/janus/brain/health');
+      const raw = await api.get<JanusBrainHealth>('/api/janus/brain/health');
+      // gracefulEmpty answers an unmapped/unreachable read with 200 {} — which is
+      // TRUTHY. Accepting it rendered a RED "Unhealthy" verdict on the janus
+      // trading brain (healthy === undefined -> falsy) and then THREW on
+      // Object.keys(components). Absent data is not a health verdict: a payload
+      // without the `healthy` field means we could not ask, and the honest
+      // answer is the error branch, not a diagnosis.
+      if (!raw || typeof raw !== 'object' || typeof (raw as JanusBrainHealth).healthy !== 'boolean') {
+        janusHealth = null;
+        janusHealthError =
+          'Brain health unavailable — janus did not return a health payload (this is NOT a verdict that janus is unhealthy)';
+      } else {
+        janusHealth = raw;
+      }
     } catch (e: any) {
       janusHealthError = e.message || 'Failed to load brain health';
     } finally {
@@ -1047,7 +1092,7 @@
             </div>
 
             <!-- Component list -->
-            {#if Object.keys(janusHealth.components).length > 0}
+            {#if janusHealth.components && Object.keys(janusHealth.components).length > 0}
               <div class="sub-section-label" style="margin-top:8px;">Components</div>
               <div class="component-list">
                 {#each Object.entries(janusHealth.components) as [name, comp] (name)}
