@@ -6,6 +6,7 @@
   import Skeleton from '$components/ui/Skeleton.svelte';
   import Panel from '$components/ui/Panel.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
+  import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtRelative, fmtDateTime } from '$lib/utils/format';
   import {
@@ -178,8 +179,9 @@
   let credSecret = $state('');
   let credPassphrase = $state('');
   let credSaving = $state(false);
-  // Delete flow: exchange id armed for confirm / currently deleting.
-  let credPendingDelete = $state<string | null>(null);
+  // Delete flow: which exchange is currently being deleted. The two-step
+  // ARMING state now lives inside ConfirmButton (per-row, self-disarming), so
+  // there is no page-level "pending" id to keep in sync.
   let credDeleting = $state<string | null>(null);
   let credFeedback = $state('');
   let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
@@ -347,17 +349,12 @@
     credPassphrase = '';
   }
 
-  // Two-step inline confirm: first click arms (auto-disarms after 4s),
-  // second click deletes. No browser dialogs.
+  // Runs ONLY on an accepted second click — the two-step is `ConfirmButton`'s
+  // job now. That is not a refactor for tidiness: this flow used to accept the
+  // confirm click IMMEDIATELY after arming, so one double-tap on a phone
+  // destroyed a stored API secret that can only be recovered by re-issuing it at
+  // the exchange. ConfirmButton swallows confirm clicks for the first ~600ms.
   async function deleteCredential(exchange: string) {
-    if (credPendingDelete !== exchange) {
-      credPendingDelete = exchange;
-      setTimeout(() => {
-        if (credPendingDelete === exchange) credPendingDelete = null;
-      }, 4000);
-      return;
-    }
-    credPendingDelete = null;
     credDeleting = exchange;
     try {
       await api.delete(`/api/settings/exchange-keys/${encodeURIComponent(exchange)}`);
@@ -416,7 +413,7 @@
   let channelCatchAll = $state(true); // true = subscribe to all events
   let channelEvents = $state<Set<string>>(new Set());
   let channelSaving = $state(false);
-  let channelPendingDelete = $state<string | null>(null);
+  // (Arming state lives in each row's ConfirmButton — see credDeleting above.)
   let channelDeleting = $state<string | null>(null);
   let channelTesting = $state<string | null>(null); // one in-flight test at a time
   let channelFeedback = $state('');
@@ -529,17 +526,11 @@
     );
   }
 
-  // Two-step inline confirm: first click arms (auto-disarms after 4s),
-  // second click deletes. No browser dialogs.
+  // Runs ONLY on an accepted second click (see deleteCredential). Deleting a
+  // channel is how the 3am crash page goes silent — `bot_crashed` /
+  // `risk_halt` are always-delivered, so the ONLY way to stop them reaching the
+  // phone is to remove the webhook. A double-tap must not be able to do that.
   async function deleteNotification(name: string) {
-    if (channelPendingDelete !== name) {
-      channelPendingDelete = name;
-      setTimeout(() => {
-        if (channelPendingDelete === name) channelPendingDelete = null;
-      }, 4000);
-      return;
-    }
-    channelPendingDelete = null;
     channelDeleting = name;
     try {
       await api.delete(`/api/settings/notifications/${encodeURIComponent(name)}`);
@@ -829,18 +820,15 @@
                 </button>
               {/if}
               <button class="btn-ghost" onclick={() => startUpdate(cred.exchange)}>Update</button>
-              <button
-                class="btn-ghost btn-delete"
-                class:armed={credPendingDelete === cred.exchange}
-                onclick={() => deleteCredential(cred.exchange)}
-                disabled={credDeleting === cred.exchange}
-              >
-                {credDeleting === cred.exchange
-                  ? 'Deleting…'
-                  : credPendingDelete === cred.exchange
-                    ? 'Confirm delete?'
-                    : 'Delete'}
-              </button>
+              <ConfirmButton
+                id={`cred-delete-${cred.exchange}`}
+                label="Delete"
+                confirmLabel="Confirm delete?"
+                busyLabel="Deleting…"
+                busy={credDeleting === cred.exchange}
+                ariaLabel={`Delete stored ${cred.exchange} API credentials`}
+                onconfirm={() => deleteCredential(cred.exchange)}
+              />
             </span>
           </div>
         {/each}
@@ -1014,18 +1002,15 @@
                 {channelTesting === ch.name ? '⏳ Testing…' : '🔔 Test'}
               </button>
               <button class="btn-ghost" onclick={() => startChannelUpdate(ch)}>Update</button>
-              <button
-                class="btn-ghost btn-delete"
-                class:armed={channelPendingDelete === ch.name}
-                onclick={() => deleteNotification(ch.name)}
-                disabled={channelDeleting === ch.name}
-              >
-                {channelDeleting === ch.name
-                  ? 'Deleting…'
-                  : channelPendingDelete === ch.name
-                    ? 'Confirm delete?'
-                    : 'Delete'}
-              </button>
+              <ConfirmButton
+                id={`channel-delete-${ch.name.replace(/\s+/g, '-')}`}
+                label="Delete"
+                confirmLabel="Confirm delete?"
+                busyLabel="Deleting…"
+                busy={channelDeleting === ch.name}
+                ariaLabel={`Delete notification channel ${ch.name}`}
+                onconfirm={() => deleteNotification(ch.name)}
+              />
             </span>
           </div>
         {/each}
@@ -1512,7 +1497,15 @@
 
   .pane {
     overflow: auto;
-    padding: 10px;
+    /* Bottom gutter so the LAST control in the pane cannot butt against the
+       fixed StatusBar. Measured at 390x844 with coarse-pointer emulation: the
+       second notification channel's Delete — now a 44px ConfirmButton — sat
+       0px from StatusBar's 44px logout button. Two adjacent 44px controls with
+       zero separation, one of them destructive, is a mis-tap waiting to
+       happen; enlarging a control for reachability must never remove its
+       clearance. The gutter is the general fix (any page's last row hits this),
+       rather than special-casing one button. */
+    padding: 10px 10px calc(28px + env(safe-area-inset-bottom, 0px));
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1777,7 +1770,23 @@
   .cred-actions {
     margin-left: auto;
     display: flex;
+    align-items: center;
     gap: 6px;
+  }
+
+  @media (pointer: coarse) {
+    /* Delete takes a 44px floor from ConfirmButton on a touch screen, which
+       makes this row much taller than its two small siblings. Let the row wrap
+       rather than overflow a 390px phone — and widen the gap, because the
+       neighbour a mis-aimed thumb lands on is `Update`, which WIPES the
+       add/update form (a half-typed API secret with it). ConfirmButton carries
+       its own 12px margin, so the two separations add up. */
+    .cred-row {
+      flex-wrap: wrap;
+    }
+    .cred-actions {
+      gap: 14px;
+    }
   }
 
   .cred-empty {
@@ -1912,10 +1921,10 @@
     margin: 6px 0 4px;
   }
 
-  .btn-delete:hover:not(:disabled),
-  .btn-delete.armed {
-    color: var(--red);
-  }
+  /* (`.btn-delete` / `.armed` are gone with the hand-rolled two-step: both
+     Delete controls are `ConfirmButton`, which owns its own resting / arming /
+     armed styling. Left here it would be dead CSS — svelte-check warns, and the
+     gate is 0 warnings.) */
 
   /* ═══════════════════════════════════════════════════════════════════
      Form Hints
