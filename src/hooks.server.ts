@@ -49,6 +49,11 @@ import {
 } from "$lib/server/cockpit";
 import { alertAckPost, alertInboxGet } from "$lib/server/alertAck";
 import { getAlertAckStore } from "$lib/server/alertAck/store";
+// Shared with the browser half on purpose — one definition of the
+// session-expiry marker, so a rename cannot silently disable the banner. The
+// module imports only `svelte/store` (isomorphic); nothing here touches the
+// store itself.
+import { SESSION_HEADER, SESSION_REQUIRED } from "$stores/session";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Backend proxy  (replaces the old vite/nginx → fks_ruby reverse proxy)
@@ -173,6 +178,13 @@ async function forward(
   try {
     const res = await fetch(base + path, init);
     const headers = upstreamHeaders(res.headers);
+    // The session-expiry marker means "the ADAPTER refused you" and must be
+    // unforgeable. `upstreamHeaders`' strip set lives in adapter.ts and does not
+    // cover it, so drop any upstream-supplied copy here — otherwise a
+    // misconfigured or compromised upstream could echo it back on a proxied 401
+    // and raise a false "sign in again" banner, which is exactly the
+    // false-positive class the header exists to prevent.
+    headers.delete(SESSION_HEADER);
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } catch {
     return new Response(JSON.stringify({ error: "upstream_unreachable", upstream: base }), {
@@ -1170,7 +1182,7 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     // AUTH_DISABLED_BLOCKED_MUTATIONS already gate this; this is belt-and-braces,
     // mirroring the /api/users philosophy.)
     if (!(auth?.mode === "enabled" && auth.session)) {
-      return jsonError(401, { error: "unauthorized" });
+      return sessionRequired();
     }
     return alertAckPost(event.request, getAlertAckStore(), auth.session.username);
   }
@@ -1536,6 +1548,31 @@ function jsonError(status: number, body: Record<string, unknown>): Response {
   });
 }
 
+/**
+ * The adapter's OWN session denial — 401 plus the `x-fks-auth: session-required`
+ * marker the browser keys its "Session expired — sign in again" banner off
+ * ($lib/stores/session).
+ *
+ * Use this ONLY where THIS process decided the caller has no valid webui
+ * session. It must never be used for a status that merely came back as 401 from
+ * an upstream: `forward` proxies upstream statuses verbatim, so a spawner
+ * `X-Internal-Token` mismatch (a deploy fault that signing in cannot fix) also
+ * reaches the browser as a 401. Marking that one would train the operator to
+ * ignore the banner that means their session really did expire — which is the
+ * whole point of the header. `forward` correspondingly DELETES any
+ * upstream-supplied copy of the header, so the signal is unforgeable and always
+ * means "the adapter itself refused this request".
+ */
+function sessionRequired(): Response {
+  return new Response(JSON.stringify({ error: "unauthorized" }), {
+    status: 401,
+    headers: {
+      "content-type": "application/json",
+      [SESSION_HEADER]: SESSION_REQUIRED,
+    },
+  });
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
   const { pathname, search } = event.url;
   const method = event.request.method;
@@ -1607,7 +1644,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     case "backend":
       return proxyBackend(event, auth);
     case "unauthorized":
-      return jsonError(401, { error: "unauthorized" });
+      return sessionRequired();
     case "forbidden":
       return jsonError(403, {
         error: "forbidden",

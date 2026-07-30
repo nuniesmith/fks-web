@@ -5,6 +5,8 @@
  * in production, so we use relative URLs.
  */
 
+import { isSessionRequired, sessionExpired } from '$stores/session';
+
 const DEFAULT_TIMEOUT = 15_000;
 
 export class ApiError extends Error {
@@ -47,6 +49,12 @@ async function request<T>(url: string, opts: FetchOptions = {}): Promise<T> {
     });
 
     if (!res.ok) {
+      // Raise the app-wide "sign in again" banner ONLY for the adapter's own
+      // session denial (401 + `x-fks-auth: session-required`). A proxied
+      // upstream 401 — e.g. a spawner X-Internal-Token mismatch — is a backend
+      // config fault that signing in cannot fix, and must NOT trigger it.
+      // Throwing is unchanged either way: callers keep their existing ApiError.
+      if (isSessionRequired(res)) sessionExpired.set(true);
       const errBody = await res.text().catch(() => undefined);
       throw new ApiError(res.status, res.statusText, errBody);
     }
