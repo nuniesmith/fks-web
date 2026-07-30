@@ -1,9 +1,218 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+/**
+ * Charts E2E — the chart UI (toolbar, timeframes, indicator dropdown, panes,
+ * multi-chart grid), NOT the market-data plumbing behind it.
+ *
+ * Why the route mocks (same strategy as cockpit.spec.ts installCockpitMocks):
+ *
+ * `/charts` reads history from QuestDB through the adapter's `/bars/:sym/candles`
+ * seam. When QuestDB is absent — every dev box, every CI runner — that seam is
+ * NOT an error: `hooks.server.ts queryCandles()` swallows the connection failure
+ * and answers `200 {"candles":[]}`. The page then correctly renders its honest
+ * empty state ("No data · No stored candles for MGC · 5m"), which is a
+ * `.chart-overlay`. So the overlay stays up forever and every spec that waits
+ * for it to clear times out:
+ *
+ *     expect(locator).not.toBeVisible() failed
+ *     Locator: locator('.chart-overlay')   Expected: not visible  Received: visible
+ *
+ * That is the environment talking, not a defect: the overlay is doing exactly
+ * what an empty-history response should make it do. Mocking `/bars` gives the
+ * chart bars to draw, so `.chart-overlay` clearing becomes a real assertion
+ * ("given history, the chart paints") instead of a check on whether this host
+ * happens to run QuestDB.
+ *
+ * Mocked seams (all backend-dependent, none of them what these specs assert):
+ *   - GET /bars/:sym/candles            → deterministic OHLCV page (QuestDB)
+ *   - GET /api/chart/:sym/indicators    → well-formed series (QuestDB-derived)
+ *   - GET /api/assets/:sym              → futures descriptor (QuestDB registry)
+ *   - GET /api/janus/indicators/catalog → empty, i.e. the documented
+ *     janus-unreachable degradation, so the Indicators menu is a fixed list
+ *
+ * Deliberately NOT mocked, because they are already deterministic and local:
+ *   - GET /api/indicators/catalog — a static constant in hooks.server.ts
+ *   - GET /sse/bars/:sym — the idle stub (JANUS_BARS_SSE_URL is unset)
+ *
+ * One residual: `+page.server.ts` prefetches `/api/assets/:sym` during SSR, and
+ * page.route cannot intercept a server-side fetch. Nothing here asserts on that
+ * value — the client's own `lookupAsset()` overwrites it on mount — so the mock
+ * below is what decides `isCrypto` for every assertion.
+ */
+
+// ─── Deterministic market data ──────────────────────────────────────────────
+
+interface MockCandle {
+  timestamp: number; // ms epoch, ascending
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+/** Fixed anchor so the same bytes are served on every run. */
+const LAST_BAR_MS = Date.UTC(2026, 0, 5, 18, 0, 0);
+
+const INTERVAL_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "30m": 1_800_000,
+  "1h": 3_600_000,
+  "4h": 14_400_000,
+  "1D": 86_400_000,
+  "1W": 604_800_000,
+  "1M": 2_592_000_000,
+};
+
+/**
+ * A plausible OHLCV page: ascending timestamps, high/low bracketing open/close.
+ * lightweight-charts rejects unsorted or malformed bars, so the shape matters;
+ * the prices do not — no assertion in this file reads a number off the chart.
+ */
+function makeCandles(interval: string, count = 240): MockCandle[] {
+  const step = INTERVAL_MS[interval] ?? INTERVAL_MS["5m"];
+  const start = LAST_BAR_MS - (count - 1) * step;
+  // Tiny LCG: a stable pseudo-random walk, identical on every run.
+  let seed = 1337;
+  const rnd = (): number => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const out: MockCandle[] = [];
+  let px = 2400;
+  for (let i = 0; i < count; i++) {
+    const open = px;
+    const close = Math.round((open + (rnd() - 0.5) * 6) * 100) / 100;
+    out.push({
+      timestamp: start + i * step,
+      open,
+      high: Math.round((Math.max(open, close) + rnd() * 2) * 100) / 100,
+      low: Math.round((Math.min(open, close) - rnd() * 2) * 100) / 100,
+      close,
+      volume: 100 + Math.round(rnd() * 900),
+    });
+    px = close;
+  }
+  return out;
+}
+
+/**
+ * Indicator series keyed the way the page expects (`bb_upper`/`bb_middle`/
+ * `bb_lower`, `rsi`, …), computed off the same candles so the times line up
+ * with the chart. Only bb + rsi are exercised by these specs; anything else
+ * asked for still gets a well-formed series under its own key rather than a
+ * 404, so a future toggle here fails on behaviour, not on a missing mock.
+ */
+function makeIndicators(
+  interval: string,
+  specs: string[],
+): Record<string, { time: number; value: number }[]> {
+  const bars = makeCandles(interval);
+  const at = (i: number): number => Math.floor(bars[i].timestamp / 1000);
+  const out: Record<string, { time: number; value: number }[]> = {};
+
+  for (const raw of specs) {
+    const [name, ...args] = raw.split(":");
+    if (!name) continue;
+    if (name === "bb") {
+      const period = Number(args[0]) || 20;
+      const mult = Number(args[1]) || 2;
+      const mid: { time: number; value: number }[] = [];
+      const up: { time: number; value: number }[] = [];
+      const low: { time: number; value: number }[] = [];
+      for (let i = period - 1; i < bars.length; i++) {
+        const win = bars.slice(i - period + 1, i + 1).map((b) => b.close);
+        const mean = win.reduce((a, b) => a + b, 0) / win.length;
+        const sd = Math.sqrt(
+          win.reduce((a, b) => a + (b - mean) ** 2, 0) / win.length,
+        );
+        mid.push({ time: at(i), value: mean });
+        up.push({ time: at(i), value: mean + mult * sd });
+        low.push({ time: at(i), value: mean - mult * sd });
+      }
+      out.bb_middle = mid;
+      out.bb_upper = up;
+      out.bb_lower = low;
+      continue;
+    }
+    // Everything else (rsi, atr, sma20, vwap, …) — a bounded series with
+    // monotone times under the requested key.
+    out[name] = bars.map((b, i) => ({
+      time: at(i),
+      value: name === "rsi" ? 50 + 25 * Math.sin(i / 7) : b.close,
+    }));
+  }
+  return out;
+}
+
+/** Install every backend seam the charts pages touch. Must run BEFORE goto. */
+async function installChartMocks(page: Page): Promise<void> {
+  await page.route(/\/bars\/[^/]+\/candles/, (route) => {
+    const url = new URL(route.request().url());
+    // History pagination (`?before=`) is the backfill burst walking left. An
+    // empty page there is the real "history exhausted" answer, and the page
+    // converges on it in ≤3 requests (see maybeBackfill's window widening).
+    if (url.searchParams.has("before"))
+      return route.fulfill({ json: { candles: [] } });
+    const interval = url.searchParams.get("interval") ?? "5m";
+    return route.fulfill({ json: { candles: makeCandles(interval) } });
+  });
+
+  await page.route(/\/api\/chart\/[^/]+\/indicators/, (route) => {
+    const url = new URL(route.request().url());
+    const interval = url.searchParams.get("interval") ?? "5m";
+    const specs = (url.searchParams.get("indicators") ?? "")
+      .split(",")
+      .filter(Boolean);
+    return route.fulfill({
+      json: { indicators: makeIndicators(interval, specs) },
+    });
+  });
+
+  // Asset registry: futures ⇒ isCrypto=false ⇒ the SSE path. This also keeps
+  // the specs off the real `wss://ws.kraken.com/v2` socket the crypto branch
+  // opens — an external dependency an e2e run must never acquire.
+  await page.route(/\/api\/assets\//, (route) => {
+    // /api/assets/search is the toolbar's symbol lookup, a different contract.
+    if (route.request().url().includes("/api/assets/search"))
+      return route.fallback();
+    return route.fulfill({
+      json: { type: "futures", source: "rithmic", source_chain: ["rithmic"] },
+    });
+  });
+
+  // janus is not running here. An empty catalog is exactly what
+  // hooks.server.ts returns when janus is unreachable, so the Indicators
+  // dropdown holds only its built-in TS entries.
+  await page.route(/\/api\/janus\/indicators\/catalog/, (route) =>
+    route.fulfill({ json: { count: 0, indicators: [] } }),
+  );
+}
+
+/**
+ * Navigate and wait for a state only the hydrated client can reach.
+ *
+ * `.chart-overlay` covers BOTH the spinner (`loading`) and the empty state
+ * (`!loading && candles.length === 0`). With `/bars` mocked, it clearing proves
+ * hydration ran, onMount fired, lightweight-charts loaded and the bars were
+ * accepted — i.e. every click after this lands on live handlers.
+ */
+async function gotoCharts(page: Page): Promise<void> {
+  await installChartMocks(page);
+  await page.goto("/charts");
+  await expect(page.locator(".chart-area")).toBeVisible();
+  await expect(page.locator(".chart-overlay")).not.toBeVisible({
+    timeout: 10_000,
+  });
+}
 
 test.describe("Charts Page", () => {
   test("chart page loads with symbol and timeframe controls", async ({
     page,
   }) => {
+    await installChartMocks(page);
     await page.goto("/charts");
 
     // Should see the toolbar with SYMBOL label
@@ -23,14 +232,7 @@ test.describe("Charts Page", () => {
   });
 
   test("timeframe buttons change active state", async ({ page }) => {
-    await page.goto("/charts");
-
-    // Wait for initial chart load to settle
-    await expect(page.locator(".chart-area")).toBeVisible();
-    // Wait for client-side hydration + loadChart() to complete
-    await expect(page.locator(".chart-overlay")).not.toBeVisible({
-      timeout: 10_000,
-    });
+    await gotoCharts(page);
 
     // Click 15m timeframe — use aria-pressed instead of CSS class
     // (Svelte scoped styles make class checks unreliable)
@@ -44,14 +246,7 @@ test.describe("Charts Page", () => {
   });
 
   test("EMA indicator toggle changes state", async ({ page }) => {
-    await page.goto("/charts");
-
-    // Wait for chart to load
-    await expect(page.locator(".chart-area")).toBeVisible();
-    // Wait for client-side hydration + loadChart() to complete
-    await expect(page.locator(".chart-overlay")).not.toBeVisible({
-      timeout: 10_000,
-    });
+    await gotoCharts(page);
 
     // Open the TW-style Indicators dropdown, then toggle EMA 9.
     // Menu entries are menuitemcheckbox items — use aria-checked for state.
@@ -68,13 +263,7 @@ test.describe("Charts Page", () => {
   });
 
   test("BB indicator toggle changes state", async ({ page }) => {
-    await page.goto("/charts");
-
-    await expect(page.locator(".chart-area")).toBeVisible();
-    // Wait for client-side hydration + loadChart() to complete
-    await expect(page.locator(".chart-overlay")).not.toBeVisible({
-      timeout: 10_000,
-    });
+    await gotoCharts(page);
 
     // Bollinger Bands lives in the Indicators dropdown; the label carries the
     // current params (e.g. "Bollinger Bands (20, 2)"), so match on the name.
@@ -92,13 +281,7 @@ test.describe("Charts Page", () => {
   });
 
   test("RSI sub-pane toggle shows and hides pane", async ({ page }) => {
-    await page.goto("/charts");
-
-    await expect(page.locator(".chart-area")).toBeVisible();
-    // Wait for client-side hydration + loadChart() to complete
-    await expect(page.locator(".chart-overlay")).not.toBeVisible({
-      timeout: 10_000,
-    });
+    await gotoCharts(page);
 
     // RSI pane should not be visible initially
     await expect(page.locator(".ind-pane")).toHaveCount(0);
@@ -124,6 +307,7 @@ test.describe("Charts Page", () => {
   });
 
   test("quick picks include futures and crypto symbols", async ({ page }) => {
+    await installChartMocks(page);
     await page.goto("/charts");
 
     const qp = page.locator(".quick-picks");
@@ -139,6 +323,7 @@ test.describe("Charts Page", () => {
   });
 
   test("data source status badge is visible", async ({ page }) => {
+    await installChartMocks(page);
     await page.goto("/charts");
 
     await expect(page.locator(".status-badges")).toBeVisible();
@@ -147,13 +332,7 @@ test.describe("Charts Page", () => {
   });
 
   test("quick pick selects symbol and updates badge", async ({ page }) => {
-    await page.goto("/charts");
-
-    await expect(page.locator(".chart-area")).toBeVisible();
-    // Wait for client-side hydration + loadChart() to complete
-    await expect(page.locator(".chart-overlay")).not.toBeVisible({
-      timeout: 10_000,
-    });
+    await gotoCharts(page);
 
     // Click MES quick pick
     const mesBtn = page.locator(".quick-picks button", { hasText: "MES" });
@@ -167,9 +346,38 @@ test.describe("Charts Page", () => {
 });
 
 test.describe("Multi-Chart Grid", () => {
-  test("grid page loads with layout controls", async ({ page }) => {
+  /**
+   * Navigate and wait for hydration.
+   *
+   * `load` is NOT a hydration signal: the whole toolbar is server-rendered, so
+   * every `.layout-btn` is visible, enabled and stable — i.e. Playwright-
+   * actionable — before Svelte has attached a single onclick. A click in that
+   * window is silently dropped and never retried, which is exactly how
+   * "layout switch changes grid" failed:
+   *
+   *     expect(locator).toBeChecked() failed
+   *     Locator: getByRole('radio', { name: /1×2/ })
+   *     Expected: checked  Received: unchecked
+   *     9 × locator resolved to <button role="radio" aria-checked="false" …>
+   *
+   * (Confirmed by hand: the first click leaves aria-checked="false" forever; a
+   * second click 1.5 s later flips it to "true" and drops the grid to 2 charts.)
+   *
+   * `MiniChart` gives a real signal: it ships `loading=true` in the SSR HTML and
+   * only clears `.mc-loading` in initChart()'s `finally`, which needs onMount
+   * plus the lightweight-charts dynamic import. Zero spinners ⇒ all four
+   * children mounted ⇒ the parent's handlers are live.
+   */
+  async function gotoGrid(page: Page): Promise<void> {
+    await installChartMocks(page);
     await page.goto("/charts/grid");
-    await page.waitForLoadState("load");
+    await expect(page.locator(".mc-loading")).toHaveCount(0, {
+      timeout: 10_000,
+    });
+  }
+
+  test("grid page loads with layout controls", async ({ page }) => {
+    await gotoGrid(page);
 
     // Toolbar with MULTI-CHART label
     await expect(page.locator(".grid-toolbar")).toBeVisible();
@@ -183,8 +391,7 @@ test.describe("Multi-Chart Grid", () => {
   });
 
   test("layout switch changes grid", async ({ page }) => {
-    await page.goto("/charts/grid");
-    await page.waitForLoadState("load");
+    await gotoGrid(page);
 
     // Default should be 2x2 (4 charts) — use web-first toHaveCount
     await expect(page.locator(".mini-chart")).toHaveCount(4);
@@ -203,8 +410,7 @@ test.describe("Multi-Chart Grid", () => {
   });
 
   test("symbol slot is editable", async ({ page }) => {
-    await page.goto("/charts/grid");
-    await page.waitForLoadState("load");
+    await gotoGrid(page);
 
     // Wait for the grid to fully render
     await expect(page.locator(".mini-chart").first()).toBeVisible();
