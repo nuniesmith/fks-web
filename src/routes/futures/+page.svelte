@@ -13,6 +13,7 @@
   import Panel from '$lib/components/ui/Panel.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import AsyncSection from '$lib/components/ui/AsyncSection.svelte';
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import MiniChart from '$lib/components/ui/MiniChart.svelte';
   import { createPoll } from '$lib/stores/poll';
@@ -23,6 +24,17 @@
   import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
+  // Q-1: aliased at top level so Svelte auto-subscribes ($statusUpdatedAt /
+  // $statusError). `$status.updatedAt` would read a field off the DATA, not the
+  // store. Both are needed to tell "still asking" (skeleton) from "asked and
+  // got nothing" (red outage): `updatedAt` is null in BOTH cases, so keying the
+  // skeleton on it alone would shimmer forever against a refusing status server
+  // — a calm animation over an unobserved book.
+  //
+  // NOT a freshness indicator. See the guard-rail at the venue-meta render site
+  // below: nothing on this page may threshold `v.updated`.
+  const statusUpdatedAt = status.updatedAt;
+  const statusError = status.error;
   $effect(() => {
     status.start();
     return () => status.stop();
@@ -214,83 +226,92 @@
   {/if}
 
   <!-- ── Crypto futures (live today via the funding bot) ────────────── -->
-  {#if funding}
-    <div class="stat-row">
-      <StatCard
-        label="Futures paper PnL"
-        value={fmtDollar(funding.pnl_usd)}
-        color={funding.pnl_usd >= 0 ? 'green' : 'red'}
-      />
-      <StatCard label="Futures W / L" value={`${fmtInt(funding.wins)} / ${fmtInt(funding.losses)}`} />
-      <StatCard label="Win rate" value={fmtPct(funding.win_rate * 100)} />
-    </div>
-
-    {#if fundingVenues.length > 0}
-      <div class="venue-grid">
-        {#each fundingVenues as v (venueKey(v))}
-          <Panel title={`Crypto futures — ${v.exchange}`}>
-            <div class="venue-head">
-              <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
-              <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-              <span class="venue-total">{usd(v.total_value)}</span>
-            </div>
-            <div class="venue-meta">
-              <span>data source: exchange-apiws (KuCoin futures)</span>
-              <!-- P4: `v.updated` is the last TRADE EVENT, not a poll stamp.
-                   The paper funding bot marks its book on trade events, so a
-                   healthy idle bot reads 15+ hours here and "updated 16h ago"
-                   reads as breakage to a phone-glancing operator. The copy
-                   names the mechanism instead.
-                   GUARD-RAIL for the M7 Freshness sweep: apply Freshness to
-                   this page's POLL `updatedAt` only — NEVER to `v.updated`.
-                   Copy the gating comment from
-                   `exchanges/[exchange]/+page.svelte:79,171`. Wiring Freshness
-                   (or any threshold) here turns /futures permanently amber
-                   during the Gate-A window and trains the operator to ignore
-                   the amber that IS load-bearing on /exchanges and /cockpit. -->
-              <span class="dim">marks on trade events — last {agoSecs(v.updated)}</span>
-            </div>
-          </Panel>
-        {/each}
+  <!-- Q-1: three-way, not two-way. `{#if funding}` alone put "The funding bot's
+       status server didn't respond" in the first byte of SSR HTML on every load,
+       before any fetch was attempted — training the operator to read the outage
+       as startup noise. Skeleton while asking; red only once we actually know. -->
+  <AsyncSection
+    data={funding}
+    updatedAt={$statusUpdatedAt}
+    error={$statusError}
+    errorIcon="📉"
+    errorTitle="No futures bot status available"
+    errorHint="The funding bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_FUNDING_INTERNAL_URL points at it."
+    lines={3}
+    height="52px"
+  >
+    {#snippet children(fundingDoc)}
+      <div class="stat-row">
+        <StatCard
+          label="Futures paper PnL"
+          value={fmtDollar(fundingDoc.pnl_usd)}
+          color={fundingDoc.pnl_usd >= 0 ? 'green' : 'red'}
+        />
+        <StatCard label="Futures W / L" value={`${fmtInt(fundingDoc.wins)} / ${fmtInt(fundingDoc.losses)}`} />
+        <StatCard label="Win rate" value={fmtPct(fundingDoc.win_rate * 100)} />
       </div>
-    {/if}
 
-    <Panel title={`Funding bot — ${funding.bot} (${funding.mode})`}>
-      <div class="venue-meta">
-        <span>{fmtInt(funding.signals_total)} signals</span>
-        <span>{fmtInt(funding.trades_total)} trades</span>
-        <span>win rate {fmtPct(funding.win_rate * 100)}</span>
-      </div>
-      {#if funding.positions.length > 0}
-        <table class="holdings">
-          <thead>
-            <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Mark</th><th>Return</th></tr>
-          </thead>
-          <tbody>
-            {#each funding.positions as p (p.symbol)}
-              <tr>
-                <td>{p.symbol}</td>
-                <td>
-                  <Badge variant={p.dir > 0 ? 'green' : 'red'}>{dirLabel(p)}</Badge>
-                </td>
-                <td>{fmtFixed(p.entry_px, 4)}</td>
-                <td>{fmtFixed(p.mark_px, 4)}</td>
-                <td class:pos={p.ret_pct >= 0} class:neg={p.ret_pct < 0}>{fmtPct(p.ret_pct)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {:else}
-        <p class="dim">No open positions.</p>
+      {#if fundingVenues.length > 0}
+        <div class="venue-grid">
+          {#each fundingVenues as v (venueKey(v))}
+            <Panel title={`Crypto futures — ${v.exchange}`}>
+              <div class="venue-head">
+                <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
+                <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
+                <span class="venue-total">{usd(v.total_value)}</span>
+              </div>
+              <div class="venue-meta">
+                <span>data source: exchange-apiws (KuCoin futures)</span>
+                <!-- P4: `v.updated` is the last TRADE EVENT, not a poll stamp.
+                     The paper funding bot marks its book on trade events, so a
+                     healthy idle bot reads 15+ hours here and "updated 16h ago"
+                     reads as breakage to a phone-glancing operator. The copy
+                     names the mechanism instead.
+                     GUARD-RAIL for the M7 Freshness sweep: apply Freshness to
+                     this page's POLL `updatedAt` only — NEVER to `v.updated`.
+                     Copy the gating comment from
+                     `exchanges/[exchange]/+page.svelte:79,171`. Wiring Freshness
+                     (or any threshold) here turns /futures permanently amber
+                     during the Gate-A window and trains the operator to ignore
+                     the amber that IS load-bearing on /exchanges and /cockpit. -->
+                <span class="dim">marks on trade events — last {agoSecs(v.updated)}</span>
+              </div>
+            </Panel>
+          {/each}
+        </div>
       {/if}
-    </Panel>
-  {:else}
-    <EmptyState
-      icon="📉"
-      title="No futures bot status available"
-      hint="The funding bot's status server didn't respond. Check that it is running with BOT_STATUS_PORT enabled and that CRYPTO_FUNDING_INTERNAL_URL points at it."
-    />
-  {/if}
+
+      <Panel title={`Funding bot — ${fundingDoc.bot} (${fundingDoc.mode})`}>
+        <div class="venue-meta">
+          <span>{fmtInt(fundingDoc.signals_total)} signals</span>
+          <span>{fmtInt(fundingDoc.trades_total)} trades</span>
+          <span>win rate {fmtPct(fundingDoc.win_rate * 100)}</span>
+        </div>
+        {#if fundingDoc.positions.length > 0}
+          <table class="holdings">
+            <thead>
+              <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Mark</th><th>Return</th></tr>
+            </thead>
+            <tbody>
+              {#each fundingDoc.positions as p (p.symbol)}
+                <tr>
+                  <td>{p.symbol}</td>
+                  <td>
+                    <Badge variant={p.dir > 0 ? 'green' : 'red'}>{dirLabel(p)}</Badge>
+                  </td>
+                  <td>{fmtFixed(p.entry_px, 4)}</td>
+                  <td>{fmtFixed(p.mark_px, 4)}</td>
+                  <td class:pos={p.ret_pct >= 0} class:neg={p.ret_pct < 0}>{fmtPct(p.ret_pct)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="dim">No open positions.</p>
+        {/if}
+      </Panel>
+    {/snippet}
+  </AsyncSection>
 
   <!-- ── Planned trading types ──────────────────────────────────────── -->
   <div class="venue-grid">
