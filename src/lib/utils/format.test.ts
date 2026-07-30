@@ -3,6 +3,8 @@ import {
   fmtPrice,
   fmtPct,
   fmtDollar,
+  fmtMoney,
+  fmtSignedMoney,
   fmtConfidence,
   fmtFixed,
   fmtInt,
@@ -47,6 +49,45 @@ describe("fmtDollar", () => {
     expect(fmtDollar(-5)).toBe("-$5.00");
     expect(fmtDollar(0)).toBe("+$0.00");
     expect(fmtDollar(null)).toBe("—");
+  });
+
+  // M-1: /exchanges renders a grouped `$12,345.67` net-worth stat in the SAME
+  // `.stat-row` as `fmtDollar(spot.pnl_usd)`. Ungrouped, a five-figure PnL
+  // ("+$4567.89") reads as four figures at a phone glance, and it disagrees
+  // with the grouped notation sitting beside it for the same class of money.
+  it("groups thousands so a five-figure PnL cannot read as four", () => {
+    expect(fmtDollar(4567.89)).toBe("+$4,567.89");
+    expect(fmtDollar(12345.67)).toBe("+$12,345.67");
+    expect(fmtDollar(-1234567.8)).toBe("-$1,234,567.80");
+    // Grouping must not disturb the sub-1000 rendering the 39 existing call
+    // sites already show.
+    expect(fmtDollar(999.5)).toBe("+$999.50");
+  });
+});
+
+// M-1: promoted verbatim out of `$lib/treasury/cards.ts` — `format.ts` calls
+// itself the anti-copy-paste module, and the only correctly-grouped money pair
+// in the repo was buried in a treasury helper. `cards.ts` re-exports these, so
+// `cards.test.ts` pins the SAME functions through the compat path.
+describe("fmtMoney / fmtSignedMoney (promoted from treasury/cards)", () => {
+  it("groups thousands and switches notation for non-USD", () => {
+    expect(fmtMoney(1234.5)).toBe("$1,234.50");
+    expect(fmtMoney(0)).toBe("$0.00");
+    expect(fmtMoney(99.9, "CAD")).toBe("99.90 CAD");
+  });
+
+  it("never renders a missing figure as zero", () => {
+    expect(fmtMoney(null)).toBe("—");
+    expect(fmtMoney(undefined)).toBe("—");
+    expect(fmtMoney(Number.NaN)).toBe("—");
+    expect(fmtSignedMoney(null)).toBe("—");
+  });
+
+  it("signs a non-zero figure and leaves flat unsigned", () => {
+    expect(fmtSignedMoney(12.34)).toBe("+$12.34");
+    expect(fmtSignedMoney(-5)).toBe("-$5.00");
+    expect(fmtSignedMoney(4567.89)).toBe("+$4,567.89");
+    expect(fmtSignedMoney(0)).toBe("$0.00");
   });
 });
 
@@ -148,8 +189,21 @@ describe("fmtTime / fmtDateTime", () => {
   it("format valid timestamps in the expected shape", () => {
     expect(fmtTime(Date.UTC(2025, 6, 18, 14, 32, 7))).toMatch(/^\d{1,2}:\d{2}:\d{2}$/);
     expect(fmtDateTime(Date.UTC(2025, 6, 18, 14, 32))).toMatch(
-      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/,
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+$/,
     );
+  });
+
+  // Q-5: `fmtDateTime` is a LOCAL wall clock (treasury's ledger, /performance,
+  // /bots, /edges, /signals). `cockpit`'s `tsLabel` stamps the kill-sentinel
+  // trip time in UTC with a trailing `Z`. Two near-identical
+  // "YYYY-MM-DD HH:MM" strings in different zones on adjacent tabs is how an
+  // operator mis-orders an incident timeline by their UTC offset, so the local
+  // one must name its zone.
+  it("names the zone, so it can never be mistaken for cockpit's UTC Z stamp", () => {
+    const out = fmtDateTime(Date.UTC(2025, 6, 18, 14, 32));
+    expect(out).not.toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    // A zone token follows the time: "EDT", "UTC", "GMT+5:30", …
+    expect(out.split(" ")[2] ?? "").toMatch(/^[A-Z][A-Za-z0-9+:−-]*$/);
   });
 });
 

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
   import { page } from '$app/stores';
+  // Shared auth-gate chrome (.gate/.panel/.input/.btn/…) — ONE definition for
+  // /login, /setup and /invite. See src/styles/gate.css.
+  import '../../styles/gate.css';
 
   interface Props {
     form?: { error?: string; username?: string } | null;
@@ -112,45 +115,8 @@
 </div>
 
 <style>
-  /* ── Layout ──────────────────────────────────────────── */
-  .gate {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    /* This page owns the ONLY scroll region (see the one-scroll rule in
-       app.css). Without overflow-y the centred card is clipped at both ends
-       on a short viewport — with the keyboard up, that hides the submit
-       button. padding + `margin:auto` on the child keeps it centred when it
-       fits and scrollable when it does not. */
-    overflow-y: auto;
-    padding: 16px;
-    min-height: 100vh;
-    max-height: 100vh;
-    background: var(--bg0);
-    background-image:
-      linear-gradient(rgba(91, 110, 245, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(91, 110, 245, 0.03) 1px, transparent 1px);
-    background-size: 32px 32px;
-  }
-
-  .panel {
-    /* min() so the card never exceeds a 375px phone viewport, where a fixed
-       width overflowed horizontally and pushed the submit button out of
-       reach. */
-    width: min(360px, 100%);
-    padding: 32px 28px 24px;
-    background: var(--bg1);
-    border: 1px solid var(--b2);
-    border-radius: var(--r-md);
-    box-shadow:
-      0 0 0 1px rgba(91, 110, 245, 0.08),
-      0 8px 40px rgba(0, 0, 0, 0.6),
-      0 0 80px rgba(91, 110, 245, 0.06);
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    animation: fade-in 0.25s ease both;
-  }
+  /* Everything shared with /setup and /invite lives in src/styles/gate.css
+     (imported above). Only the login-specific ornament stays here. */
 
   /* ── ASCII art ───────────────────────────────────────── */
   .ascii {
@@ -163,162 +129,6 @@
     white-space: pre;
     user-select: none;
     margin: 0;
-  }
-
-  /* ── Title ───────────────────────────────────────────── */
-  .title {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--t1);
-    text-align: center;
-    line-height: 1;
-    margin: 0;
-  }
-
-  .bracket {
-    color: var(--accent);
-    opacity: 0.7;
-  }
-
-  .subtitle {
-    font-size: 10px;
-    color: var(--t3);
-    text-align: center;
-    letter-spacing: 0.03em;
-  }
-
-  /* ── Form ────────────────────────────────────────────── */
-  form {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 4px;
-  }
-
-  .field-label {
-    font-size: 10px;
-    color: var(--t3);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  .input-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--bg2);
-    border: 1px solid var(--b2);
-    border-radius: var(--r);
-    padding: 0 10px;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  }
-
-  .input-row:focus-within {
-    border-color: var(--accent-brd);
-    box-shadow: 0 0 0 2px var(--accent-dim);
-  }
-
-  .input-row-error {
-    border-color: var(--red-brd) !important;
-    box-shadow: 0 0 0 2px var(--red-dim) !important;
-  }
-
-  .prompt {
-    color: var(--cyan);
-    font-size: 12px;
-    flex-shrink: 0;
-    user-select: none;
-  }
-
-  .input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: var(--t1);
-    font-family: inherit;
-    font-size: 12px;
-    height: 36px;
-    caret-color: var(--cyan);
-  }
-
-  .input::placeholder {
-    color: var(--t3);
-    opacity: 0.6;
-  }
-
-  .input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* ── Error message ───────────────────────────────────── */
-  .error-msg {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 11px;
-    color: var(--red);
-    background: var(--red-dim);
-    border: 1px solid var(--red-brd);
-    border-radius: var(--r);
-    padding: 6px 10px;
-    animation: fade-in 0.15s ease both;
-  }
-
-  .error-icon {
-    font-size: 12px;
-    flex-shrink: 0;
-  }
-
-  /* ── Submit button ───────────────────────────────────── */
-  .btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    height: 36px;
-    margin-top: 4px;
-    background: var(--accent-dim);
-    border: 1px solid var(--accent-brd);
-    border-radius: var(--r);
-    color: var(--accent);
-    font-family: inherit;
-    font-size: 12px;
-    letter-spacing: 0.03em;
-    cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  }
-
-  .btn:hover:not(:disabled) {
-    background: rgba(91, 110, 245, 0.2);
-    border-color: var(--accent);
-    color: var(--t1);
-  }
-
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .btn-loading {
-    opacity: 0.7;
-  }
-
-  .btn-arrow {
-    font-size: 13px;
-  }
-
-  /* ── Spinner ─────────────────────────────────────────── */
-  .spinner {
-    display: inline-block;
-    width: 11px;
-    height: 11px;
-    border: 1.5px solid var(--accent-brd);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
   }
 
   /* ── Footer note ─────────────────────────────────────── */

@@ -6,7 +6,8 @@
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
-  import { fmtDollar, fmtPct, fmtFixed, fmtDateTime } from '$lib/utils/format';
+  import { fmtDollar, fmtPct, fmtPrice, fmtFixed, fmtDateTime } from '$lib/utils/format';
+  import type { Trade, TradesResponse } from '$lib/types/trade';
 
   // ─── Types ──────────────────────────────────────────────────────────
 
@@ -25,19 +26,9 @@
     largest_loss?: number;
   }
 
-  interface Trade {
-    symbol: string;
-    side?: string;
-    entry_price?: number;
-    exit_price?: number;
-    size?: number;
-    pnl?: number;
-    pnl_percent?: number;
-    open_time?: string;
-    close_time?: string;
-  }
-
-  interface TradesResponse { trades: Trade[] }
+  // `Trade` / `TradesResponse` live in `$lib/types/trade.ts` — GET /api/trades
+  // has no backend yet, so the field UNITS are assumptions that have to sit
+  // where whoever writes that producer will read them, not inside this page.
 
   // ─── State ───────────────────────────────────────────────────────────
 
@@ -187,11 +178,15 @@
                     {t.side ?? '—'}
                   </Badge>
                 </td>
-                <td class="mono">{t.entry_price != null ? fmtDollar(t.entry_price) : '—'}</td>
-                <td class="mono">{t.exit_price  != null ? fmtDollar(t.exit_price)  : '—'}</td>
+                <!-- Prices, not P&L: fmtPrice (adaptive precision, grouped, unsigned).
+                     fmtDollar force-signs, so it rendered "+$109403.20" for a price. -->
+                <td class="mono">{t.entry_price != null ? fmtPrice(t.entry_price) : '—'}</td>
+                <td class="mono">{t.exit_price  != null ? fmtPrice(t.exit_price)  : '—'}</td>
                 <td class="mono">{t.size        != null ? fmtFixed(t.size, 4)       : '—'}</td>
                 <td class="mono" style="color:{pnl >= 0 ? 'var(--green)' : 'var(--red)'}">{fmtDollar(pnl)}</td>
-                <td class="mono" style="color:{pnlPct >= 0 ? 'var(--green)' : 'var(--red)'}">{fmtPct(pnlPct / 100)}</td>
+                <!-- NO /100: pnl_percent is ALREADY a percent (see $lib/types/trade.ts)
+                     and fmtPct only appends '%'. The old /100 rendered 11.28% as 0.11%. -->
+                <td class="mono" style="color:{pnlPct >= 0 ? 'var(--green)' : 'var(--red)'}">{fmtPct(pnlPct)}</td>
               </tr>
             {/each}
           </tbody>

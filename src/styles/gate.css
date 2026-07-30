@@ -1,0 +1,246 @@
+/**
+ * Auth-gate chrome — the ONE definition of the card + form controls shared by
+ * `/login`, `/setup` and `/invite/[token]`.
+ *
+ * WHY A STYLESHEET AND NOT A COMPONENT (M-2 step 1):
+ * roadmap M5 item 6 says to "assert the gate-card CSS at component level
+ * instead". That plan cannot run today — there is no gate-card component, and
+ * `playwright.config.ts` runs the suite with WEBUI_AUTH=disabled, under which
+ * `/setup` redirects to `/`, so the page most worth testing is unreachable.
+ * A component would also not fix the duplication on its own: in Svelte 5 a
+ * snippet keeps the PARENT's style scope, so `<GateCard>` would dedupe `.gate`
+ * and `.panel` and leave all 13 form-control classes copied three ways. The
+ * stylesheet is the part that actually removes the drift, so it lands first.
+ *
+ * Before this file the three pages re-declared the same 15 classes with the M5
+ * scroll-region comment byte-identical in each, and had already diverged:
+ * /login had a grid backdrop and a triple box-shadow the others lacked, the
+ * card gap was 16 vs 12, the subtitle 10px vs 11px. Pinned by
+ * `tests/e2e/gate-css.spec.ts`, which compares computed styles across the two
+ * hermetically reachable gates (/login and /invite) on every axis that drifted.
+ *
+ * EVERY RULE IS SCOPED UNDER `.gate` ON PURPOSE. `.panel`, `.input`, `.title`
+ * and `.btn` are generic names that also exist as Svelte-scoped classes
+ * elsewhere in the app (`$components/ui/Panel.svelte`, for one). Un-nested,
+ * this file would leak `width`/`box-shadow` into every panel in the terminal.
+ * Keep the `.gate ` prefix on anything added here.
+ *
+ * `fade-in` and `spin` keyframes come from `src/app.css` (global).
+ */
+
+/* ── Layout ──────────────────────────────────────────────── */
+.gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The gate page owns the ONLY scroll region (see the one-scroll rule in
+     app.css). Without overflow-y the centred card is clipped at both ends on a
+     short viewport — with the software keyboard up, that hides the submit
+     button. padding + centring keeps it centred when it fits and scrollable
+     when it does not. Pinned by tests/e2e/viewport.spec.ts (320x380). */
+  overflow-y: auto;
+  padding: 16px;
+  min-height: 100vh;
+  max-height: 100vh;
+  background: var(--bg0);
+  background-image:
+    linear-gradient(rgba(91, 110, 245, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(91, 110, 245, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ── The card ────────────────────────────────────────────── */
+.gate .panel {
+  /* min() so the card never exceeds a 375px phone viewport, where a fixed
+     width overflowed horizontally and pushed the submit button out of reach. */
+  width: min(380px, 100%);
+  padding: 32px 28px 24px;
+  background: var(--bg1);
+  border: 1px solid var(--b2);
+  border-radius: var(--r-md);
+  box-shadow:
+    0 0 0 1px rgba(91, 110, 245, 0.08),
+    0 8px 40px rgba(0, 0, 0, 0.6),
+    0 0 80px rgba(91, 110, 245, 0.06);
+  display: flex;
+  flex-direction: column;
+  /* 12px, the tighter of the two drifted values: /invite and /setup carry three
+     input rows plus a hint line, and the taller card is the one that must still
+     reach its submit button with the keyboard up. */
+  gap: 12px;
+  animation: fade-in 0.25s ease both;
+}
+
+/* ── Type ────────────────────────────────────────────────── */
+.gate .title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--t1);
+  text-align: center;
+  margin: 0;
+}
+
+.gate .bracket {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.gate .subtitle {
+  /* 11px, the larger of the two drifted values — /setup and /invite explain a
+     one-time bootstrap or an invite here, in body copy that has to be read. */
+  font-size: 11px;
+  color: var(--t3);
+  text-align: center;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+}
+
+/* ── Form ────────────────────────────────────────────────── */
+.gate form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.gate .field-label {
+  font-size: 10px;
+  color: var(--t3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+}
+
+.gate .input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--b2);
+  border-radius: var(--r);
+  padding: 0 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.gate .input-row:focus-within {
+  border-color: var(--accent-brd);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.gate .input-row-error {
+  border-color: var(--red-brd) !important;
+  box-shadow: 0 0 0 2px var(--red-dim) !important;
+}
+
+.gate .prompt {
+  color: var(--cyan);
+  font-size: 12px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.gate .input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 12px;
+  height: 36px;
+  caret-color: var(--cyan);
+}
+
+.gate .input::placeholder {
+  color: var(--t3);
+  opacity: 0.6;
+}
+
+/* All three gates disable their inputs while submitting; only /login used to
+   say so visually. */
+.gate .input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Validation ──────────────────────────────────────────── */
+.gate .hint {
+  font-size: 10px;
+  color: var(--amber);
+}
+
+.gate .error-msg {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--red);
+  background: var(--red-dim);
+  border: 1px solid var(--red-brd);
+  border-radius: var(--r);
+  padding: 6px 10px;
+  animation: fade-in 0.15s ease both;
+}
+
+.gate .error-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ── Submit ──────────────────────────────────────────────── */
+.gate .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  /* 10px, the larger of the two drifted values: this is the last control above
+     the fold on a phone and the only one that submits. More separation from the
+     field above is never the worse direction. */
+  margin-top: 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-brd);
+  border-radius: var(--r);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  /* /invite renders two of these as <a> (Log out / Go to login). */
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.gate .btn:hover:not(:disabled) {
+  background: rgba(91, 110, 245, 0.2);
+  border-color: var(--accent);
+  color: var(--t1);
+}
+
+.gate .btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gate .btn.link {
+  text-align: center;
+}
+
+.gate .btn-loading {
+  opacity: 0.7;
+}
+
+.gate .btn-arrow {
+  font-size: 13px;
+}
+
+.gate .spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--accent-brd);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
