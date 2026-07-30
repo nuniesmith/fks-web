@@ -221,9 +221,80 @@
         return () =>
             document.removeEventListener("keydown", handleKeydown, true);
     });
+
+    // ── Phone nav: keep the ACTIVE tab on screen + show that the strip scrolls ─
+    //
+    // A-3. Measured on the installed PWA at 390x844 on /cockpit: the strip's
+    // scrollWidth is 1288 against a 390 clientWidth, scrollLeft 0, and the
+    // Cockpit tab sits at left=738 — ENTIRELY off-screen. The scrollbar is
+    // hidden (scrollbar-width:none + ::-webkit-scrollbar), so the operator got
+    // no active-tab indicator anywhere AND no hint the strip continued: the app
+    // looked like it had opened on a page that isn't in the nav.
+    //
+    // Two cheap fixes, no tab reordering:
+    //  (1) centre the active tab in the strip on mount and on every navigation;
+    //  (2) fade the overflowing edge(s) so the strip visibly continues.
+    let barEl: HTMLElement | null = $state(null);
+    /** false ⇒ there is hidden content off that edge ⇒ paint the fade. */
+    let atStart = $state(true);
+    let atEnd = $state(true);
+
+    function syncEdges() {
+        const bar = barEl;
+        if (!bar) return;
+        const max = bar.scrollWidth - bar.clientWidth;
+        // No overflow ⇒ both edges are "reached" ⇒ no fade at all (desktop).
+        atStart = max <= 1 || bar.scrollLeft <= 1;
+        atEnd = max <= 1 || bar.scrollLeft >= max - 1;
+    }
+
+    // Scroll the strip ITSELF rather than calling scrollIntoView: that walks
+    // every scrollable ancestor, and on navigation it can also scroll the
+    // page's own `.page-scroll` region (block:'nearest' mitigates but does not
+    // eliminate it). Rect maths, not offsetLeft — `.group` is position:relative
+    // so a tab's offsetParent is its group, not the bar.
+    $effect(() => {
+        // Re-run on navigation, and when the admin-only Users tab appears or
+        // disappears (either changes which tab is active / how wide the strip is).
+        currentPath;
+        groups;
+        const bar = barEl;
+        if (!bar) return;
+        const active = bar.querySelector<HTMLElement>(".tab.active");
+        if (active && bar.scrollWidth > bar.clientWidth) {
+            const barRect = bar.getBoundingClientRect();
+            const tabRect = active.getBoundingClientRect();
+            bar.scrollLeft +=
+                tabRect.left -
+                barRect.left -
+                (bar.clientWidth - tabRect.width) / 2;
+        }
+        // A delta of 0 fires no scroll event, so seed the fades directly.
+        syncEdges();
+    });
+
+    // A window resize (or a desktop→narrow drag) changes whether the strip
+    // overflows at all; without this the fades would lie until the next nav.
+    $effect(() => {
+        window.addEventListener("resize", syncEdges);
+        return () => window.removeEventListener("resize", syncEdges);
+    });
 </script>
 
-<nav class="tabbar" aria-label="Workspace navigation">
+<!-- The wrapper exists ONLY to host the edge fades (the nav is the scroller, so
+     an overlay inside it would scroll away with the tabs). `nav.tabbar` stays
+     the nav landmark and keeps its selector — specs anchor to it. -->
+<div
+    class="tabbar-wrap"
+    class:fade-start={!atStart}
+    class:fade-end={!atEnd}
+>
+<nav
+    class="tabbar"
+    aria-label="Workspace navigation"
+    bind:this={barEl}
+    onscroll={syncEdges}
+>
     {#each groups as group, gi}
         {#if gi > 0}
             <div class="group-sep" aria-hidden="true"></div>
@@ -258,8 +329,47 @@
         </div>
     {/each}
 </nav>
+</div>
 
 <style>
+    /* Positioning context for the fades; it is the flex item .tabbar used to be,
+       so the shell's column layout is unchanged. */
+    .tabbar-wrap {
+        position: relative;
+        flex-shrink: 0;
+        min-width: 0;
+    }
+    /* A-3 affordance: a fade on whichever edge still hides tabs. pointer-events
+       is none on purpose — the strip navigates, and an overlay that swallowed a
+       tap would send the operator to the wrong page.
+       32px, not 16: a tab carries ~11-14px of side padding, so a narrower fade
+       lands entirely on that padding and dims NOTHING the operator can see. It
+       has to reach into the adjacent label to read as "there is more here". */
+    .tabbar-wrap::before,
+    .tabbar-wrap::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 32px;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s;
+        z-index: 1;
+    }
+    .tabbar-wrap::before {
+        left: 0;
+        background: linear-gradient(to right, var(--bg1), transparent);
+    }
+    .tabbar-wrap::after {
+        right: 0;
+        background: linear-gradient(to left, var(--bg1), transparent);
+    }
+    .tabbar-wrap.fade-start::before,
+    .tabbar-wrap.fade-end::after {
+        opacity: 1;
+    }
+
     .tabbar {
         height: var(--tabbar-h);
         background: var(--bg1);

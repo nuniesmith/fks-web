@@ -468,6 +468,13 @@
       {:else if !inst || inst.positions.length === 0}
         <EmptyState icon="∅" title="No open positions" hint="No persisted open trade for this instance." />
       {:else}
+        <!-- A-4: the widest table in the app (6 columns, measured 436.6px) inside
+             a 368px panel body on a phone. Panel is overflow:hidden, so without
+             this wrapper the "Close status" column was CUT AT THE PANEL BORDER
+             with no scrollbar and no page overflow to hint at it — a row reading
+             "CLOSING (funding_flip, attempt 3)" looked complete and the operator
+             never learned the close was failing. -->
+        <div class="table-scroll">
         <table class="ck-table">
           <thead>
             <tr><th>Symbol</th><th>Side</th><th>Entry px</th><th>Age</th><th>Unrealized</th><th>Close status</th></tr>
@@ -525,6 +532,7 @@
             {/each}
           </tbody>
         </table>
+        </div>
       {/if}
       {#if (cockpit?.other_instance_keys?.length ?? 0) > 0}
         <p class="data-flag">
@@ -556,6 +564,7 @@
           hint="No halt/breaker snapshot rows for this instance yet (written on realized trades)."
         />
       {:else}
+        <div class="table-scroll">
         <table class="ck-table">
           <thead>
             <tr><th>Symbol</th><th>Session halt (−1% eq/day)</th><th>Circuit breaker (4-loss)</th></tr>
@@ -586,6 +595,7 @@
             {/each}
           </tbody>
         </table>
+        </div>
       {/if}
     </Panel>
 
@@ -694,6 +704,7 @@
       {:else if tele.orderErrors.length === 0}
         <EmptyState icon="✓" title="No order errors recorded" hint="Counter series present, zero errors." />
       {:else}
+        <div class="table-scroll">
         <table class="ck-table">
           <thead><tr><th>Class</th><th>Total</th></tr></thead>
           <tbody>
@@ -705,6 +716,7 @@
             {/each}
           </tbody>
         </table>
+        </div>
       {/if}
     </Panel>
   </div>
@@ -976,6 +988,16 @@
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 12px;
     align-items: start;
+  }
+  /* A-4 — the only sanctioned inner scroller here. CLAUDE.md forbids wrapping a
+     table in its own overflow:auto INSIDE A `fill` PANEL (that is the nested
+     double-scroll); every cockpit Panel is rigid, so this absorbs the extra
+     width horizontally while the PAGE still owns the single vertical scroll.
+     overscroll-behavior-x keeps a swipe that runs off the end of the table from
+     propagating out to the shell. */
+  .table-scroll {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
   }
   .ck-table {
     width: 100%;
