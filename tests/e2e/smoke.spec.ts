@@ -1,4 +1,39 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+/**
+ * Press a nav shortcut, then assert where it landed.
+ *
+ * WHY THE KEYSTROKE IS RE-SENT — measured on this dev server, not assumed.
+ * TabBar registers its document-level keydown listener from an `$effect`, so
+ * the shortcuts only exist once the shell has HYDRATED, and
+ * `waitForLoadState("load")` is NOT that moment: `load` fires at ~95ms while
+ * the listener attaches at ~215ms. With the handler temporarily instrumented to
+ * record every call, a press sent inside that window never reached it — the
+ * recorded call list stayed empty and the URL simply stayed on "/". That is a
+ * lost keystroke, not a broken shortcut: over 15 runs of the three shortcut
+ * tests, 5 failed and WHICH one failed rotated at random, which is why this
+ * read as several unrelated mystery failures on a pristine main.
+ *
+ * Waiting for a hydration marker instead does not work. SvelteKit's own
+ * history stamp (`history.state["sveltekit:history"]`) lands BEFORE the
+ * component effects run — gating on it still lost 8 of 24 presses — and the
+ * shell paints nothing else that only exists post-hydration.
+ *
+ * The assertion is unchanged and unweakened: pressing this key must navigate to
+ * this route, and no amount of retrying will make a mis-wired or dead shortcut
+ * pass. The only thing tolerated is a keystroke aimed at a page that is still
+ * hydrating, which the app never promised to honour.
+ */
+async function pressShortcut(page: Page, key: string, url: RegExp) {
+  // Click the body first so no input holds focus — the handler deliberately
+  // ignores keys typed into an INPUT/TEXTAREA/SELECT.
+  await page.locator("body").click();
+
+  await expect(async () => {
+    await page.keyboard.press(key);
+    await expect(page).toHaveURL(url, { timeout: 1_000 });
+  }).toPass({ timeout: 10_000, intervals: [200] });
+}
 
 // All workspace routes to smoke-test, with the <title> each should render.
 // (The de-navved Ruby routes — analysis/news/data/chains/crypto/simulations —
@@ -52,20 +87,13 @@ test.describe("Shell", () => {
   test("keyboard shortcut 2 navigates to charts", async ({ page }) => {
     await page.goto("/");
 
-    // Wait for the TabBar to be fully interactive before pressing keys
+    // The nav must render at all before a nav shortcut means anything.
     const tabbar = page.getByRole("navigation", {
       name: "Workspace navigation",
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("load");
-
-    // Click on the body first to ensure no input has focus
-    // (the handler skips key events when an input/textarea is focused)
-    await page.locator("body").click();
-
-    await page.keyboard.press("2");
-    await expect(page).toHaveURL(/\/charts/, { timeout: 10_000 });
+    await pressShortcut(page, "2", /\/charts/);
   });
 
   test("keyboard shortcut 5 navigates to performance", async ({ page }) => {
@@ -76,12 +104,7 @@ test.describe("Shell", () => {
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("load");
-
-    await page.locator("body").click();
-
-    await page.keyboard.press("5");
-    await expect(page).toHaveURL(/\/performance/, { timeout: 10_000 });
+    await pressShortcut(page, "5", /\/performance/);
   });
 
   test("Shift+1 navigates to docs (Analysis group shortcut)", async ({
@@ -94,12 +117,7 @@ test.describe("Shell", () => {
     });
     await expect(tabbar).toBeVisible();
 
-    await page.waitForLoadState("load");
-
-    await page.locator("body").click();
-
-    await page.keyboard.press("Shift+1");
-    await expect(page).toHaveURL(/\/docs/, { timeout: 10_000 });
+    await pressShortcut(page, "Shift+1", /\/docs/);
   });
 });
 

@@ -180,6 +180,30 @@
 
   // ─── Redis API ──────────────────────────────────────────────────────
 
+  /**
+   * Reject a payload whose list field is not actually a list.
+   *
+   * The Redis endpoints are UNMAPPED at the backend seam, and
+   * `hooks.server.ts` → `gracefulEmpty()` answers an unmapped /api path with
+   * `200 {}` unless the path matches its list-ish name heuristic
+   * (reshape.ts ARRAY_PATH_RE — "pubsub" and "scan" do not match). So
+   * `/api/db/redis/pubsub` resolves to `{}`: TRUTHY, with `channels`
+   * undefined. The markup then evaluates `redisPubSub.channels.length` and
+   * throws "Cannot read properties of undefined (reading 'length')" DURING
+   * RENDER, which kills this component's reactivity — every tab in the DB
+   * Explorer stops responding to clicks for the rest of the page's life.
+   *
+   * A missing list is not an empty list. It means we could not see Redis, so
+   * it is reported through the panel's error slot; rendering "No active
+   * channels" would be the dashboard claiming a fact it does not have.
+   */
+  function requireList<T, K extends keyof T>(res: T, field: K, what: string): T {
+    if (!Array.isArray(res?.[field])) {
+      throw new Error(`${what} unavailable — backend returned no ${String(field)} list`);
+    }
+    return res;
+  }
+
   async function loadRedisInfo() {
     redisInfoLoading = true;
     redisInfoError = '';
@@ -199,7 +223,11 @@
     redisKeyValue = null;
     try {
       const pattern = encodeURIComponent(redisScanPattern || '*');
-      redisScanResult = await api.get<RedisScanResponse>(`/api/db/redis/scan?pattern=${pattern}&count=100`);
+      redisScanResult = requireList(
+        await api.get<RedisScanResponse>(`/api/db/redis/scan?pattern=${pattern}&count=100`),
+        'keys',
+        'Key scan',
+      );
     } catch (e: any) {
       redisScanError = e.message || 'Scan failed';
     } finally {
@@ -225,7 +253,11 @@
     redisPubSubLoading = true;
     redisPubSubError = '';
     try {
-      redisPubSub = await api.get<RedisPubSubResponse>('/api/db/redis/pubsub');
+      redisPubSub = requireList(
+        await api.get<RedisPubSubResponse>('/api/db/redis/pubsub'),
+        'channels',
+        'Pub/sub channels',
+      );
     } catch (e: any) {
       redisPubSubError = e.message || 'Failed to load pub/sub channels';
     } finally {

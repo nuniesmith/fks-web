@@ -1,7 +1,44 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // Playwright tests run in Node.js — process is available at runtime.
 declare const process: { env: Record<string, string | undefined> };
+
+/**
+ * Select an InnerTabs tab and prove it took.
+ *
+ * WHY THE CLICK IS RE-SENT — measured, not assumed. InnerTabs is a plain
+ * `<button onclick>`; SSR paints it fully visible and enabled, but the click
+ * handler only exists after HYDRATION, and `waitForLoadState("load")` is not
+ * that moment (on this dev server `load` fires ~95ms in, component effects run
+ * ~215ms in). A click landing in that window hits real, visible, hit-testable
+ * DOM and does NOTHING — `aria-selected` stays "false" for the rest of the
+ * test. Instrumented on /janus-ai and /db: the FIRST click changed no state, a
+ * second click 1.5s later selected the tab and rendered its panels every time.
+ *
+ * The assertion is unchanged: the tab must end up selected. Verified by stub —
+ * with InnerTabs' `onclick` replaced by a no-op, all three tests that use this
+ * helper fail, retries and all.
+ *
+ * What retrying DOES hide, and what therefore has to be caught elsewhere: /db
+ * was throwing during render on every load (see the crash fixed in
+ * src/routes/db/+page.svelte), and with that bug still in place these tab tests
+ * pass through this helper — a later click gets through. That is why the "loads
+ * without critical JS errors" test below was strengthened rather than left to
+ * these; a swallowed first click is not evidence of a healthy page.
+ */
+async function selectInnerTab(page: Page, label: string) {
+  const tab = page
+    .locator('[role="tablist"]')
+    .locator('[role="tab"]', { hasText: label });
+  await expect(tab).toBeVisible();
+
+  await expect(async () => {
+    await tab.click();
+    await expect(tab).toHaveAttribute("aria-selected", "true", {
+      timeout: 1_000,
+    });
+  }).toPass({ timeout: 10_000, intervals: [200] });
+}
 
 // ─── Shared error filter ──────────────────────────────────────────────────────
 
@@ -180,17 +217,12 @@ test.describe("Janus AI workspace (/janus-ai)", () => {
     await page.goto("/janus-ai");
     await page.waitForLoadState("load");
 
-    const tablist = page.locator('[role="tablist"]');
-    const signalsTab = tablist.locator('[role="tab"]', {
-      hasText: "Live Signals",
-    });
+    await selectInnerTab(page, "Live Signals");
 
-    await signalsTab.click();
-    await expect(signalsTab).toHaveAttribute("aria-selected", "true");
-
-    const sessionsTab = tablist.locator('[role="tab"]', {
-      hasText: "Sessions",
-    });
+    // The tab bar is single-select: the previously active tab must give it up.
+    const sessionsTab = page
+      .locator('[role="tablist"]')
+      .locator('[role="tab"]', { hasText: "Sessions" });
     await expect(sessionsTab).toHaveAttribute("aria-selected", "false");
   });
 });
@@ -286,6 +318,16 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
+    // `load` is TOO EARLY to see the error this test exists to catch. The three
+    // Redis panels fetch on mount and the crash happened while RENDERING the
+    // response (~200ms after `load`), so this assertion ran against a page that
+    // looked clean and had already died — it passed for the whole time /db was
+    // uninteractive. Wait until no panel is still loading: that is the render
+    // that used to throw.
+    await expect(
+      page.locator('[role="status"][aria-label="Loading"]'),
+    ).toHaveCount(0);
+
     expect(errors.filter(isCritical)).toHaveLength(0);
   });
 
@@ -341,10 +383,7 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
-    await page
-      .locator('[role="tablist"]')
-      .locator('[role="tab"]', { hasText: "Postgres" })
-      .click();
+    await selectInnerTab(page, "Postgres");
 
     await expect(
       page.locator(".panel-title", { hasText: "Tables" }),
@@ -365,10 +404,7 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
-    await page
-      .locator('[role="tablist"]')
-      .locator('[role="tab"]', { hasText: "QuestDB" })
-      .click();
+    await selectInnerTab(page, "QuestDB");
 
     await expect(
       page.locator(".panel-title", { hasText: "Tables" }),
@@ -384,10 +420,7 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
-    await page
-      .locator('[role="tablist"]')
-      .locator('[role="tab"]', { hasText: "Janus" })
-      .click();
+    await selectInnerTab(page, "Janus");
 
     await expect(
       page.locator(".panel-title", { hasText: "Brain Health" }),
@@ -403,10 +436,7 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
-    await page
-      .locator('[role="tablist"]')
-      .locator('[role="tab"]', { hasText: "Janus" })
-      .click();
+    await selectInnerTab(page, "Janus");
 
     // Wait for data load attempt
     await page.waitForTimeout(400);
@@ -435,10 +465,7 @@ test.describe("DB Explorer (/db)", () => {
     await page.goto("/db");
     await page.waitForLoadState("load");
 
-    await page
-      .locator('[role="tablist"]')
-      .locator('[role="tab"]', { hasText: "Postgres" })
-      .click();
+    await selectInnerTab(page, "Postgres");
 
     await expect(page.locator("textarea.query-input").first()).toBeVisible();
     await expect(
