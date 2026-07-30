@@ -241,7 +241,10 @@ describe("routeRequest — disabled mode blocks money-path mutations (M1)", () =
 describe("routeRequest — bootstrap (no users yet, fail closed on writes)", () => {
   it("lets GET reads through but 401s mutations", () => {
     expect(routeRequest("/api/signals", "", "GET", bootstrap)).toEqual({ kind: "backend" });
-    expect(routeRequest("/api/spawner/x", "", "POST", bootstrap)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest("/api/spawner/x", "", "POST", bootstrap)).toEqual({
+      kind: "unauthorized",
+      reason: "bootstrap",
+    });
   });
   it("funnels pages to /setup", () => {
     expect(routeRequest("/charts", "", "GET", bootstrap)).toEqual({ kind: "redirect", location: "/setup" });
@@ -483,5 +486,31 @@ describe("originAllowed — CSRF guard on state-changing backend calls", () => {
   it("rejects a cross-site Origin and a malformed one", () => {
     expect(originAllowed("POST", "https://evil.example", "fks.local")).toBe(false);
     expect(originAllowed("POST", "not-a-url", "fks.local")).toBe(false);
+  });
+});
+
+describe("bootstrap is not an expired session", () => {
+  // A first-run operator (users table empty) refused a mutation used to receive
+  // the same {kind:"unauthorized"} as someone whose session lapsed. With the R2
+  // banner live that renders "Session expired — sign in again" and links to
+  // /login, where they CANNOT log in because no account exists. They need
+  // /setup. The refusal is right; the explanation was wrong.
+  it("tags a bootstrap refusal so the client can say something true", () => {
+    const bootstrap: AuthState = { mode: "bootstrap" };
+    const r = routeRequest("/api/spawner/x", "", "POST", bootstrap);
+    expect(r).toEqual({ kind: "unauthorized", reason: "bootstrap" });
+  });
+
+  it("does NOT tag an ordinary session denial", () => {
+    // The session banner must still fire for the case it was built for.
+    const noSession: AuthState = { mode: "enabled", session: null } as AuthState;
+    const r = routeRequest("/api/spawner/x", "", "POST", noSession);
+    expect(r).toEqual({ kind: "unauthorized" });
+    expect((r as { reason?: string }).reason).toBeUndefined();
+  });
+
+  it("still lets harmless bootstrap GETs through — the refusal is unchanged", () => {
+    const bootstrap: AuthState = { mode: "bootstrap" };
+    expect(routeRequest("/api/signals", "", "GET", bootstrap)).toEqual({ kind: "backend" });
   });
 });

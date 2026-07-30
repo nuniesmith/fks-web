@@ -150,7 +150,17 @@ export type AdapterRoute =
   | { kind: "redirect"; location: string }
   /** API/backend request without a valid session → 401 JSON (never a 302: a
    *  redirect would corrupt a JSON/SSE consumer). */
-  | { kind: "unauthorized" }
+  | {
+      kind: "unauthorized";
+      /**
+       * WHY the call was refused, so the client can say something true.
+       * `bootstrap` = the users table is empty and no session can exist yet —
+       * telling that operator "session expired, sign in again" sends them to
+       * /login, where they cannot log in because there is no account. They
+       * need /setup. Absent = an ordinary missing/expired session.
+       */
+      reason?: "bootstrap";
+    }
   /** Authenticated but not permitted (mustChange / role) → 403 JSON. An
    *  optional machine-readable `reason` overrides the default
    *  `credential_change_required` in the 403 body. */
@@ -365,7 +375,8 @@ export function routeRequest(
   //    GET reads through on the loopback while the operator sets up, funnel
   //    every page to /setup.
   if (auth.mode === "bootstrap") {
-    if (backend) return get ? { kind: "backend" } : { kind: "unauthorized" };
+    if (backend)
+      return get ? { kind: "backend" } : { kind: "unauthorized", reason: "bootstrap" };
     if (pathname.startsWith(SETUP_PREFIX)) return { kind: "pass" };
     return { kind: "redirect", location: SETUP_PREFIX };
   }

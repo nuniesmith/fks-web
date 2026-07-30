@@ -1644,6 +1644,17 @@ export const handle: Handle = async ({ event, resolve }) => {
     case "backend":
       return proxyBackend(event, auth);
     case "unauthorized":
+      // Only stamp the session-expired marker for a genuine session denial.
+      // A BOOTSTRAP refusal (empty users table) has no session to expire, and
+      // the banner would send the operator to /login where no account exists.
+      // Route them to the truth instead.
+      if (route.reason === "bootstrap") {
+        return jsonError(401, {
+          error: "setup_required",
+          detail:
+            "No administrator account exists yet — complete first-run setup at /setup before making changes.",
+        });
+      }
       return sessionRequired();
     case "forbidden":
       return jsonError(403, {
