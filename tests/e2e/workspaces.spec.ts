@@ -680,3 +680,44 @@ test.describe("Login flow", () => {
     await expect(page).not.toHaveURL(/\/login/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An unreachable janus must NOT be reported as an UNHEALTHY janus.
+//
+// gracefulEmpty answers an unmapped/unreachable read with 200 {}, which is
+// TRUTHY. The Brain Health panel accepted it, read healthy === undefined as
+// falsy, and painted a RED "Unhealthy" badge on the trading brain — a definite
+// alarming verdict manufactured from no data — then threw on
+// Object.keys(components). During a measurement window an operator could act on
+// that badge.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("/db Brain Health: absent data is not a verdict", () => {
+  test("an empty payload reports UNAVAILABLE, never Unhealthy, and does not throw", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    // Exactly what gracefulEmpty serves for an unreachable janus.
+    await page.route("**/api/janus/brain/health", (route) => route.fulfill({ json: {} }));
+
+    await page.goto("/db");
+    await page.waitForLoadState("load");
+    await selectInnerTab(page, "Janus");
+
+    const panel = page.locator(".panel", {
+      has: page.locator(".panel-title", { hasText: /Brain Health/i }),
+    });
+    await expect(panel).toBeVisible();
+
+    // The load-bearing assertion: no fabricated VERDICT. Scoped to the badge —
+    // the honest error copy legitimately contains the word "unhealthy" while
+    // explaining that it is NOT the verdict, so a whole-panel text match would
+    // fail on the fix itself.
+    await expect(panel.locator(".badge")).toHaveCount(0);
+    await expect(panel).toContainText(/unavailable/i);
+
+    // And the render must survive — the crash is what froze the panel before.
+    expect(errors.filter((e) => /reading '?(length|components)'?/.test(e)), errors.join(" | ")).toHaveLength(0);
+  });
+});
