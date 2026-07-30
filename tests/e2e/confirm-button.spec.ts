@@ -458,3 +458,57 @@ test.describe("thumb-safe on the phone — size AND separation, never one alone"
     await expect.poll(() => seam.deletes).toEqual(["/api/settings/exchange-keys/kraken"]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A tap aimed at a 44px ConfirmButton must LAND on it.
+//
+// A review flagged the last channel's Delete as sitting "1.0px" (measured here:
+// 0px) from StatusBar's logout button, and read that as a mis-tap hazard.
+// Layout-box adjacency is the WRONG metric: the workspace clips the pane and
+// the stacking order decides the tap. Probing elementFromPoint at the top,
+// middle and bottom of every ConfirmButton shows all nine points landing on the
+// button itself — there was no hazard.
+//
+// This guard therefore asserts what actually matters (hit-testing), not a
+// distance. A distance assertion would have failed on a healthy page and sent
+// the next reader chasing a phantom, which is exactly what happened here.
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe("ConfirmButton: taps land on the button, not a neighbour", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("every point on every ConfirmButton hit-tests to itself", async ({ page }) => {
+    await page.route(
+      (u) => u.pathname === "/api/settings/notifications",
+      (r) =>
+        r.fulfill({
+          json: {
+            db_enabled: true,
+            channels: [
+              { name: "discord-money", kind: "discord", events: [] },
+              { name: "discord-ops", kind: "discord", events: ["bot_crashed"] },
+            ],
+          },
+        }),
+    );
+    await page.goto("/settings");
+
+    const btns = page.locator(".confirm-btn");
+    await expect(btns.first()).toBeVisible();
+    expect(await btns.count(), "the mocked channels must render their Delete").toBeGreaterThan(0);
+
+    const misses = await page.evaluate(() => {
+      const out: string[] = [];
+      for (const b of Array.from(document.querySelectorAll(".confirm-btn")) as HTMLElement[]) {
+        const r = b.getBoundingClientRect();
+        for (const y of [r.top + 4, r.top + r.height / 2, r.bottom - 4]) {
+          const hit = document.elementFromPoint(r.left + r.width / 2, y);
+          if (!hit || !(b === hit || b.contains(hit))) {
+            out.push(`${(b.textContent || "").trim()} @y=${Math.round(y)} -> ${hit ? (hit as HTMLElement).className : "null"}`);
+          }
+        }
+      }
+      return out;
+    });
+    expect(misses, "a tap on a confirm control reached something else").toEqual([]);
+  });
+});
