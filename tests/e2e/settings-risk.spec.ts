@@ -142,17 +142,38 @@ test.describe("Risk Controls — unknown config is never rendered as a number", 
     page,
   }) => {
     let reachable = false;
-    await page.route(RISK_ROUTE, (route) =>
-      reachable
+    // What the panel was told, in order. `reachable` is flipped from Node while
+    // the page runs, so recording it per request is the only way to know which
+    // side of the outage each read actually landed on.
+    const reads: boolean[] = [];
+    await page.route(RISK_ROUTE, (route) => {
+      reads.push(reachable);
+      return reachable
         ? route.fulfill({ status: 200, json: LIVE_CONFIG })
         : route.fulfill({
             status: 502,
             json: { error: "risk_config_unreachable", message: "the risk service is unreachable" },
-          }),
-    );
+          });
+    });
     await gotoSettings(page);
 
+    // Synchronize on the outage being ON SCREEN before healing the seam.
+    //
+    // This used to wait only for `#risk-save` to be disabled — but Save is
+    // disabled while `riskLoading` too, so that assertion is satisfied by the
+    // first paint, before the panel has issued its first read at all. Flipping
+    // `reachable` there raced the mount fetch and won: the app was served a
+    // 200, never saw a 502, never rendered the outage banner, so `#risk-retry`
+    // did not exist and the click sat there until the 15s test budget expired
+    // ("locator.click: Test timeout ... waiting for locator('#risk-retry')").
+    // The spec was testing nothing about Retry; it was losing a race.
+    await expect(riskPanel(page)).toContainText("Live risk limits unavailable");
+    await expect(page.locator("#risk-retry")).toBeEnabled();
+    await expectNoLimitsShown(page);
     await expect(page.locator("#risk-save")).toBeDisabled();
+    // The outage was REAL: the panel asked and was refused. Without this the
+    // spec cannot tell a genuine 502 from a read that never happened.
+    expect(reads, "the panel must have read the config and been refused").toEqual([false]);
 
     reachable = true;
     await page.locator("#risk-retry").click();
@@ -162,6 +183,10 @@ test.describe("Risk Controls — unknown config is never rendered as a number", 
     await expect(page.locator("#risk-gross-exposure")).toHaveValue("250000");
     await expect(page.locator("#risk-save")).toBeEnabled();
     await expect(riskPanel(page)).not.toContainText("Live risk limits unavailable");
+    // "re-reads" is the load-bearing word: the restored numbers must come from a
+    // SECOND read of the live config, not from state the panel was already
+    // holding. Exactly one extra read — no refetch storm behind the button.
+    expect(reads, "Retry must issue exactly one fresh read").toEqual([false, true]);
   });
 
   test("6. positive control — a real config renders and Save is available", async ({ page }) => {
