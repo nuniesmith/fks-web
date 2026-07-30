@@ -409,7 +409,20 @@
     janusHealthLoading = true;
     janusHealthError = '';
     try {
-      janusHealth = await api.get<JanusBrainHealth>('/api/janus/brain/health');
+      const raw = await api.get<JanusBrainHealth>('/api/janus/brain/health');
+      // gracefulEmpty answers an unmapped/unreachable read with 200 {} — which is
+      // TRUTHY. Accepting it rendered a RED "Unhealthy" verdict on the janus
+      // trading brain (healthy === undefined -> falsy) and then THREW on
+      // Object.keys(components). Absent data is not a health verdict: a payload
+      // without the `healthy` field means we could not ask, and the honest
+      // answer is the error branch, not a diagnosis.
+      if (!raw || typeof raw !== 'object' || typeof (raw as JanusBrainHealth).healthy !== 'boolean') {
+        janusHealth = null;
+        janusHealthError =
+          'Brain health unavailable — janus did not return a health payload (this is NOT a verdict that janus is unhealthy)';
+      } else {
+        janusHealth = raw;
+      }
     } catch (e: any) {
       janusHealthError = e.message || 'Failed to load brain health';
     } finally {
@@ -1079,7 +1092,7 @@
             </div>
 
             <!-- Component list -->
-            {#if Object.keys(janusHealth.components).length > 0}
+            {#if janusHealth.components && Object.keys(janusHealth.components).length > 0}
               <div class="sub-section-label" style="margin-top:8px;">Components</div>
               <div class="component-list">
                 {#each Object.entries(janusHealth.components) as [name, comp] (name)}
