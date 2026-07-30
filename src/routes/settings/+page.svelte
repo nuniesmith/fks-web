@@ -1497,7 +1497,15 @@
 
   .pane {
     overflow: auto;
-    padding: 10px;
+    /* Bottom gutter so the LAST control in the pane cannot butt against the
+       fixed StatusBar. Measured at 390x844 with coarse-pointer emulation: the
+       second notification channel's Delete — now a 44px ConfirmButton — sat
+       0px from StatusBar's 44px logout button. Two adjacent 44px controls with
+       zero separation, one of them destructive, is a mis-tap waiting to
+       happen; enlarging a control for reachability must never remove its
+       clearance. The gutter is the general fix (any page's last row hits this),
+       rather than special-casing one button. */
+    padding: 10px 10px calc(28px + env(safe-area-inset-bottom, 0px));
     display: flex;
     flex-direction: column;
     gap: 8px;
