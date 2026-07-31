@@ -35,7 +35,12 @@ describe("cockpit routes behind the auth seam", () => {
 
   it("bootstrap mode (no users yet) denies the kill mutation", () => {
     const bootstrap: AuthState = { mode: "bootstrap" };
-    expect(routeRequest(KILL, "", "POST", bootstrap)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest(KILL, "", "POST", bootstrap)).toEqual({
+      kind: "unauthorized",
+      // First-run refusal, not an expired session — see adapter.ts. The KILL is
+      // still refused either way; only the message the operator gets changes.
+      reason: "bootstrap",
+    });
   });
 
   it("an unrotated bootstrap credential (mustChange) cannot fire the kill", () => {

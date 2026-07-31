@@ -59,7 +59,7 @@
     );
 </script>
 
-<div class="terminal">
+<div class="terminal" class:has-banner={showSessionBanner}>
     {#if showSessionBanner}
         <!-- IN FLOW and at the VERY TOP, both measured decisions.
              In flow (not a fixed overlay) so it can only ever push content
@@ -107,6 +107,15 @@
         position: relative;
     }
 
+    /* Only ONE row may claim the iOS top inset. While the banner is up it is
+       the topmost row and owns it; Strip's own reservation is zeroed here so
+       the two do not stack into a double gap on a notched phone. Global
+       because .strip is Svelte-scoped to its own component. */
+    .terminal.has-banner :global(.strip) {
+        height: var(--strip-h);
+        padding-top: 0;
+    }
+
     .session-banner {
         /* MONEY SAFETY: paint ABOVE Modal.svelte's .overlay (z-index 1000).
            The overlay is `position:fixed; inset:0` with a click handler that
@@ -126,9 +135,9 @@
         justify-content: space-between;
         gap: 12px;
         padding: 5px 10px;
-        /* It is now the topmost row, so IT owns the iOS top inset. Strip still
-           reserves its own, which leaves a small gap under the banner on a
-           notched phone — cosmetic, and only while the session is dead. */
+        /* It is now the topmost row, so IT owns the iOS top inset — and the
+           Strip's copy is suppressed below, or a notched phone reserves the
+           inset TWICE and opens a dead band under the banner. */
         padding-top: calc(5px + env(safe-area-inset-top, 0px));
         background: var(--amber-dim);
         border-bottom: 1px solid var(--amber-brd);

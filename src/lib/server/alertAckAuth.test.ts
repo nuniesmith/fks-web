@@ -39,7 +39,12 @@ describe("alert-ack routes behind the auth seam", () => {
   });
 
   it("bootstrap mode denies the ack mutation", () => {
-    expect(routeRequest(ACK, "", "POST", { mode: "bootstrap" })).toEqual({ kind: "unauthorized" });
+    expect(routeRequest(ACK, "", "POST", { mode: "bootstrap" })).toEqual({
+      kind: "unauthorized",
+      // Distinguishes "no admin exists yet" from "your session expired" — the
+      // banner must not send a first-run operator to /login.
+      reason: "bootstrap",
+    });
   });
 
   it("a full operator session reaches the backend dispatcher", () => {
