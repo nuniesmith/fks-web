@@ -25,6 +25,22 @@
     import Panel from "$components/ui/Panel.svelte";
     import Badge from "$components/ui/Badge.svelte";
     import Skeleton from "$components/ui/Skeleton.svelte";
+    import ConfirmButton from "$components/ui/ConfirmButton.svelte";
+
+    /**
+     * The two containers that hold or measure REAL MONEY.
+     *
+     * crypto-spot trades live funds. crypto-funding is the Gate-A MEASUREMENT
+     * INSTANCE — stopping it ends a pre-registered measurement window that
+     * cannot be restarted or back-filled.
+     *
+     * Both sat behind an unconfirmed ~13px button in a row shared with Restart
+     * and Remove, on a page routinely opened from a phone. One mis-tap was the
+     * whole failure mode.
+     */
+    const MONEY_BOTS = new Set(["crypto-spot", "crypto-funding"]);
+    const isMoneyBot = (name: string) =>
+        MONEY_BOTS.has(name) || [...MONEY_BOTS].some((m) => name.includes(m));
     import ProgressBar from "$components/ui/ProgressBar.svelte";
     import NetWorthHistoryPanel from "$components/bots/NetWorthHistoryPanel.svelte";
     import { fmtDateTime, fmtInt } from "$lib/utils/format";
@@ -313,8 +329,10 @@
     const restartBot = (id: string) =>
         withAction(id, "restart", () => spawner.restart(id));
     const removeBot = (id: string) => {
-        if (!confirm(`Remove container ${id}? (Force, including running.)`))
-            return;
+        // The two-step + cooldown now lives in the ConfirmButton at the call
+        // site. A native confirm() here would be a SECOND gesture with NO
+        // cooldown — it steals focus and its OK accepts instantly, which is
+        // exactly the single-gesture delete the primitive exists to prevent.
         return withAction(id, "remove", () => spawner.remove(id));
     };
 
@@ -804,28 +822,37 @@
                                     Logs
                                 </button>
                                 {#if c.state === "running"}
-                                    <button
-                                        class="btn small"
-                                        onclick={() => stopBot(c.id)}
-                                        disabled={actingOn !== null}
-                                    >
-                                        Stop
-                                    </button>
-                                    <button
-                                        class="btn small"
-                                        onclick={() => restartBot(c.id)}
-                                        disabled={actingOn !== null}
-                                    >
-                                        Restart
-                                    </button>
+                                    <ConfirmButton
+                                        label="Stop"
+                                        confirmLabel={isMoneyBot(c.name)
+                                            ? `Really stop ${c.name}?`
+                                            : `Stop ${c.name}?`}
+                                        busy={actingOn === c.id}
+                                        disabled={actingOn !== null &&
+                                            actingOn !== c.id}
+                                        onconfirm={() => stopBot(c.id)}
+                                    />
+                                    <ConfirmButton
+                                        label="Restart"
+                                        confirmLabel={isMoneyBot(c.name)
+                                            ? `Really restart ${c.name}?`
+                                            : `Restart ${c.name}?`}
+                                        busy={actingOn === c.id}
+                                        disabled={actingOn !== null &&
+                                            actingOn !== c.id}
+                                        onconfirm={() => restartBot(c.id)}
+                                    />
                                 {/if}
-                                <button
-                                    class="btn small danger"
-                                    onclick={() => removeBot(c.id)}
-                                    disabled={actingOn !== null}
-                                >
-                                    ✕
-                                </button>
+                                <ConfirmButton
+                                    label="✕"
+                                    confirmLabel={isMoneyBot(c.name)
+                                        ? `FORCE-REMOVE ${c.name}?`
+                                        : `Force-remove ${c.name}?`}
+                                    busy={actingOn === c.id}
+                                    disabled={actingOn !== null &&
+                                        actingOn !== c.id}
+                                    onconfirm={() => removeBot(c.id)}
+                                />
                             </div>
                         </div>
                     {/each}
@@ -1136,13 +1163,12 @@
         padding: 2px 7px;
         font-size: 9px;
     }
-    .btn.danger {
-        color: var(--red);
-    }
-    .btn.danger:hover:not(:disabled) {
-        background: var(--red-dim);
-        border-color: var(--red-brd);
-    }
+    /* `.btn.danger` was the force-remove ✕. It is now a ConfirmButton, which
+       carries its own armed styling plus the 44px coarse-pointer floor and the
+       arming cooldown — the reason for the swap. Rules removed rather than left
+       dangling: an unused danger style invites the next author to reach for a
+       bare <button class="btn small danger"> and quietly reintroduce a
+       single-gesture destructive control. */
 
     /* ─── Feedback toast ───────────────────────────────────────────────── */
     .feedback {
