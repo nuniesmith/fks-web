@@ -9,10 +9,14 @@
 # degrade paths (WEBUI_AUTH=disabled, DB URLs blanked in playwright.config.ts),
 # and users-roles self-skips without a database. No secrets, no live stack.
 #
-# PROMOTE TO A REQUIRED CHECK only after ONE quiet week of green/low-flake runs:
-# drop `continue-on-error`, add this job to the fks-side branch-protection
-# required checks. Until then it is observe-only.
-name: e2e (advisory)
+# PROMOTED TO A REQUIRED CHECK 2026-08-05, per the criterion this header carried
+# since the job shipped: one quiet week of green/low-flake runs. The record
+# 2026-07-29 -> 08-05: every completed run success (16+ runs across the
+# triage/Stage-3/Stage-4-5 traffic), zero failures, zero flakes on main.
+# The suite itself went 12-red -> 0 on 07-30 and has held.
+# Remaining half of the promotion: add this job to branch-protection required
+# checks (repo settings / gh api) after this merges.
+name: e2e
 
 on:
   pull_request:
@@ -26,10 +30,9 @@ concurrency:
 
 jobs:
   e2e:
-    name: playwright (advisory, non-blocking)
+    name: playwright
     runs-on: ubuntu-latest
     # Advisory: a red run must NOT fail the workflow / block a merge (OD-5).
-    continue-on-error: true
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
