@@ -121,8 +121,9 @@
   // empty and this stays silent, which is honest: the StatusBar chip is the
   // surface that goes grey for "we cannot see".
   //
-  // Twin of the same block in $components/bots/NetWorthHistoryPanel.svelte —
-  // keep the alertname list in sync.
+  // Twin of the same block in $components/bots/NetWorthHistoryPanel.svelte and
+  // $components/exchanges/NetWorthHistory.svelte — keep the alertname list in
+  // sync across all three.
   const SAMPLING_PAUSED_ALERTS = ['NetWorthSamplingPausedTooLong', 'BotAllVenuesStale'];
 
   // Deduped by (url, interval) with the StatusBar's poll, so this costs no
