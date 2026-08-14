@@ -3,6 +3,7 @@ import { env } from "$env/dynamic/private";
 import { computeIndicators, INDICATOR_CATALOG, type Candle } from "$lib/server/indicators";
 import {
   type CandleRow,
+  type FetchStatus,
   humanizeSince,
   intervalToSeconds,
   mapCandleRows,
@@ -245,18 +246,59 @@ function gracefulEmpty(pathname: string): Response {
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-// Read a janus JSON endpoint, tolerating failure (returns {} on any error).
-async function janusJson(event: RequestEvent, base: string, path: string): Promise<any> {
+/**
+ * What the fetch layer actually observed: "up" (2xx, body parsed), "down"
+ * (a CONFIRMED failure — non-2xx response, or connection-refused: something
+ * on the wire told us "no"), or "unknown" (an AMBIGUOUS failure — timeout,
+ * DNS hiccup, any other network error: we genuinely don't know).
+ *
+ * MONEY SAFETY. The old `janusJson` swallowed every failure into the same
+ * `{}`, and two consumers (`janusHealth`/`janusState`) then defaulted the
+ * missing status to the literal string "down" — so an 8s read-timeout on a
+ * merely-slow janus rendered identically to a confirmed outage: a red DOWN
+ * badge on the /janus-ai page and a red StatusBar dot. Distinguishing the two
+ * here lets those callers render a neutral "unknown" instead of fabricating
+ * an outage from a timeout.
+ */
+async function janusJsonStatus(
+  event: RequestEvent,
+  base: string,
+  path: string,
+): Promise<{ data: any; status: FetchStatus }> {
+  let r: Response;
   try {
-    const r = await fetch(base + path, {
+    r = await fetch(base + path, {
       headers: upstreamHeaders(event.request.headers),
       // Bound the read so a hung janus can't wedge the panel that awaits it.
       signal: AbortSignal.timeout(8_000),
     });
-    return await r.json();
-  } catch {
-    return {};
+  } catch (err: any) {
+    // undici tags a refused connection with cause.code === "ECONNREFUSED" —
+    // that's a confirmed "nothing is listening", not an ambiguous blip.
+    // AbortSignal.timeout firing (name "TimeoutError"/"AbortError") and any
+    // other network error (DNS, reset, …) are ambiguous: we didn't get an
+    // answer either way.
+    const refused = err?.cause?.code === "ECONNREFUSED";
+    return { data: {}, status: refused ? "down" : "unknown" };
   }
+  if (!r.ok) {
+    // The service answered — with an error. That's confirmed, not ambiguous.
+    return { data: {}, status: "down" };
+  }
+  try {
+    return { data: await r.json(), status: "up" };
+  } catch {
+    // 2xx but an unparsable body is a body bug, not an outage — don't let it
+    // masquerade as "down" either.
+    return { data: {}, status: "unknown" };
+  }
+}
+
+// Read a janus JSON endpoint, tolerating failure (returns {} on any error).
+// Thin wrapper over janusJsonStatus for the call sites that only need the
+// payload, not the failure classification.
+async function janusJson(event: RequestEvent, base: string, path: string): Promise<any> {
+  return (await janusJsonStatus(event, base, path)).data;
 }
 
 // janus recent signals — { symbol, signal_type, confidence, timestamp }[].
@@ -292,8 +334,8 @@ async function janusRecentSignals(event: RequestEvent): Promise<
 // version,uptime}. We return a superset so both render (and the settings panel
 // no longer hits `healthData.status` undefined).
 async function janusHealth(event: RequestEvent): Promise<Response> {
-  const j = await janusJson(event, JANUS_URL, "/health");
-  return json(reshapeHealth(j));
+  const { data: j, status } = await janusJsonStatus(event, JANUS_URL, "/health");
+  return json(reshapeHealth(j, status));
 }
 
 // /api/janus/state → the /janus-ai "Janus State" panel's JanusStateResponse:
@@ -303,21 +345,32 @@ async function janusHealth(event: RequestEvent): Promise<Response> {
 // signals feed. regime/affinity have no janus feed wired here yet → empty (the
 // panel renders a clean "no data" state rather than stale Ruby shapes).
 async function janusState(event: RequestEvent): Promise<Response> {
-  const [brain, health, sigs] = await Promise.all([
-    janusJson(event, JANUS_FORWARD_URL, "/api/v1/brain/health"),
-    janusJson(event, JANUS_URL, "/health"),
+  const [brainRes, healthRes, sigs] = await Promise.all([
+    janusJsonStatus(event, JANUS_FORWARD_URL, "/api/v1/brain/health"),
+    janusJsonStatus(event, JANUS_URL, "/health"),
     janusRecentSignals(event),
   ]);
+  const brain = brainRes.data;
+  const health = healthRes.data;
   const rawStatus =
     typeof brain?.healthy === "boolean"
       ? brain.healthy
         ? "ok"
         : "down"
-      : String(brain?.state ?? brain?.status ?? health?.status ?? "down");
-  // The panel greens on 'UP'/'ok'; normalise any healthy-ish word to 'ok'.
-  const status = /^(ok|up|healthy|running|connected|active)$/i.test(rawStatus)
-    ? "ok"
-    : rawStatus.toUpperCase();
+      : (brain?.state ?? brain?.status ?? health?.status);
+  let status: string;
+  if (rawStatus != null) {
+    // The panel greens on 'UP'/'ok'; normalise any healthy-ish word to 'ok'.
+    const s = String(rawStatus);
+    status = /^(ok|up|healthy|running|connected|active)$/i.test(s) ? "ok" : s.toUpperCase();
+  } else {
+    // Neither brain health nor forward /health answered with a real status —
+    // fall back to what the fetch layer actually observed instead of
+    // fabricating "DOWN". Only a CONFIRMED failure on either call (non-2xx /
+    // connection-refused) earns a red DOWN; an ambiguous one (timeout / other
+    // network error) on both renders the page's neutral UNKNOWN state.
+    status = brainRes.status === "down" || healthRes.status === "down" ? "DOWN" : "UNKNOWN";
+  }
   return json({
     janus: { status },
     redis: {

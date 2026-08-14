@@ -67,6 +67,17 @@
   );
   let hasRealVenue = $derived(venues.some((v) => v.mode !== 'paper'));
 
+  /**
+   * The bot may be configured to report more venues than it did in this
+   * snapshot (e.g. one is mid-restart) — `expected_venues` mirrors the
+   * backend's own `venue_set_is_complete` check. Advisory only: never
+   * fabricate a corrected total, just flag that the total may be short.
+   */
+  let expectedVenues = $derived(spot?.expected_venues);
+  let venueSetIncomplete = $derived(
+    expectedVenues != null && expectedVenues > 0 && venues.length < expectedVenues,
+  );
+
   /** Plain USD for balances (fmtDollar force-signs, which is for PnL only). */
   function usd(n: number): string {
     return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -125,6 +136,12 @@
              it existed only to re-narrow what the outer branch already knew. -->
         <StatCard label="Spot PnL (since start)" value={fmtDollar(spotDoc.pnl_usd)} color={spotDoc.pnl_usd >= 0 ? 'green' : 'red'} />
       </div>
+      {#if venueSetIncomplete}
+        <p class="venue-incomplete">
+          ⚠ {venues.length}/{expectedVenues} venues reporting in this snapshot — the total above may
+          be understated until the rest report back in.
+        </p>
+      {/if}
 
       <!-- History panel: the spot bot's net worth over time, straight from
            Prometheus (fks_bot_net_worth_usd) via the /api/metrics/query_range
@@ -212,6 +229,15 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 12px;
+  }
+  .venue-incomplete {
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    color: var(--amber, #f0a500);
+    background: var(--amber-dim, rgba(240, 165, 0, 0.1));
+    border: 1px solid var(--amber-brd, rgba(240, 165, 0, 0.25));
+    border-radius: var(--r, 4px);
   }
   .venue-grid {
     display: grid;
