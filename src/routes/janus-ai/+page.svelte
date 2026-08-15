@@ -504,7 +504,13 @@
     <Panel title="Janus State" badge="10s">
       {#snippet header()}
         {#if janusState}
-          <Badge variant={janusStatus === 'UP' || janusStatus === 'ok' ? 'green' : 'red'}>
+          <Badge
+            variant={janusStatus === 'UP' || janusStatus === 'ok'
+              ? 'green'
+              : janusStatus === 'UNKNOWN'
+                ? 'default'
+                : 'red'}
+          >
             {janusStatus}
           </Badge>
         {/if}

@@ -34,13 +34,33 @@ describe("reshapeHealth", () => {
     expect(out.feed).toBe("running"); // forward_service wins
   });
 
-  it("defaults to down / — on an empty payload", () => {
+  it("does not fabricate 'down' from an empty payload — defaults to unknown", () => {
+    // No fetchStatus arg: the caller genuinely doesn't know why the body is
+    // empty. A bare timeout must never render identically to a confirmed
+    // outage (the bug this default fixes).
     const out = reshapeHealth({});
-    expect(out.status).toBe("down");
-    expect(out.janus).toBe("down");
+    expect(out.status).toBe("unknown");
+    expect(out.janus).toBe("unknown");
     expect(out.redis).toBe("—");
     expect(out.feed).toBe("—");
     expect(out.components).toEqual({});
+  });
+
+  it("threads the fetch layer's 3-way verdict through an empty body", () => {
+    // Ambiguous failure (timeout / other network error) → unknown, not down.
+    expect(reshapeHealth({}, "unknown").status).toBe("unknown");
+    expect(reshapeHealth({}, "unknown").janus).toBe("unknown");
+    // Confirmed failure (non-2xx / connection-refused) → down.
+    expect(reshapeHealth({}, "down").status).toBe("down");
+    expect(reshapeHealth({}, "down").janus).toBe("down");
+    // A 2xx reply whose body just happens to omit `status` → still not "down".
+    expect(reshapeHealth({}, "up").status).toBe("up");
+  });
+
+  it("prefers the body's own status over the fetch-layer fallback", () => {
+    // Even if the caller (incorrectly) passed fetchStatus "down", a real
+    // status field in the body wins — the body is authoritative when present.
+    expect(reshapeHealth({ status: "healthy" }, "down").status).toBe("healthy");
   });
 
   it("falls back to component statuses for the feed", () => {

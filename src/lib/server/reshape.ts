@@ -15,16 +15,31 @@ const coerceNum = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+/**
+ * What the fetch layer actually observed, independent of whatever the body
+ * says: "up" = a 2xx reply, "down" = a CONFIRMED failure (non-2xx response,
+ * or connection-refused — something answered "no"), "unknown" = an AMBIGUOUS
+ * failure (timeout, DNS hiccup, other network error — we genuinely don't
+ * know). See `janusJsonStatus` in hooks.server.ts.
+ */
+export type FetchStatus = "up" | "unknown" | "down";
+
 // janus `/health` → a superset consumed by both the bottom StatusBar (flat
 // `{janus,redis,feed}`) and the /settings System Info panel
 // (`{status,components,version,uptime}`).
 // janus serves `components: { redis: {status}, feed: {status} }` (a live PING
 // for redis; the data module's health entry for feed — "connected" / "idle" /
 // "disconnected"); the older data/questdb component names stay as fallbacks.
-export function reshapeHealth(j: any): Record<string, unknown> {
+//
+// `fetchStatus` is the fallback used ONLY when the body itself carries no
+// `status` field (an empty `{}` from a swallowed fetch failure, most often).
+// MONEY-ADJACENT HONESTY: a plain timeout must never render as a fabricated
+// "down" — that turns a fixable read-timeout into a fake red outage badge.
+// Default to "unknown" (never assert "down" without a caller-supplied verdict).
+export function reshapeHealth(j: any, fetchStatus: FetchStatus = "unknown"): Record<string, unknown> {
   const comp: Record<string, { status?: string; latency?: string }> = (j?.components ??
     {}) as Record<string, { status?: string; latency?: string }>;
-  const overall = String(j?.status ?? "down");
+  const overall = j?.status != null ? String(j.status) : fetchStatus;
   return {
     status: overall,
     version: j?.version,

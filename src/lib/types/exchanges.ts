@@ -60,6 +60,15 @@ export interface BotStatus {
   exchanges: VenueStatus[];
   positions: PositionStatus[];
   recent_events: unknown[];
+  /**
+   * How many venues this bot is CONFIGURED to report (mirrors the backend's
+   * `venue_set_is_complete`, `fks-spawner` crate `spawner/src/net_worth.rs`).
+   * When present and `exchanges.length` falls short, the `/status` snapshot
+   * is a PARTIAL venue set (e.g. one venue mid-restart) — advisory only, used
+   * to flag "N/M venues reporting" rather than silently understating net
+   * worth as if the missing venue held nothing.
+   */
+  expected_venues?: number;
 }
 
 /**
