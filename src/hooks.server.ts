@@ -431,7 +431,26 @@ async function promAlerts(event: RequestEvent): Promise<Response> {
 // /api/metrics/layout — Ruby served a configurable dashboard layout; there's no
 // janus/Prometheus equivalent, so we ship a small default built only from
 // synthetic metrics Prometheus always generates (up, scrape_duration_seconds),
-// plus the live alert-feed/targets panels. Node/redis KPIs depend on exporters.
+// plus the live targets panel. Node/redis KPIs depend on exporters.
+//
+// Gap 20 (audit 2026-07-31): this used to also carry an `alerts` /
+// `alert-feed` panel backed by `promAlerts` above. `promAlerts` calls
+// `janusJson`, which — BY DESIGN, so a Prometheus hiccup can't wedge a panel —
+// catches ANY fetch failure and returns `{}`, which `promAlerts` then turns
+// into `{ data: [] }`: a perfectly well-formed, 200-OK EMPTY alert list. The
+// `alert-feed` panel read that as "genuinely zero firing alerts" and rendered
+// a reassuring green "✓ No active alerts" at the TOP of /monitoring — with no
+// way to distinguish "Prometheus says nothing is firing" from "Prometheus is
+// unreachable and we have no idea". Worse, Prometheus being down also means
+// Alertmanager is receiving nothing, so out-of-band paging is dead at the
+// exact moment this line claimed everything was fine — while the honest
+// `AlertInbox` component further down the SAME page correctly showed
+// "Prometheus unreachable" for the identical failure. Deleting this entry
+// removes the fabricated-looking summary entirely; `AlertInbox` (which keys
+// off `prom_available`, not an empty list — see its own header comment) is
+// now the page's ONLY alert surface. Verified nothing else consumes
+// `/api/metrics/alerts` (the route handler is left in place, just unused from
+// the client, in case a future dedicated caller wants the raw reshape).
 const METRICS_LAYOUT = {
   panels: [
     { id: "targets_up", type: "stat", title: "Targets Up", query: "sum(up)" },
@@ -443,7 +462,6 @@ const METRICS_LAYOUT = {
       query: "max(scrape_duration_seconds)",
       color: "var(--cyan)",
     },
-    { id: "alerts", type: "alert-feed", title: "Active Alerts" },
     { id: "targets", type: "targets", title: "Scrape Targets" },
   ],
 };

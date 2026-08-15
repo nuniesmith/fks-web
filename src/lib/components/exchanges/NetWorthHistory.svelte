@@ -11,6 +11,23 @@
    *
    * Honest empty state: on a fresh deploy (bot not yet scraped) the range query
    * returns no series → we show "no net-worth history yet" rather than a flat $0.
+   *
+   * ── Two net-worth series exist on this platform, and they can legitimately
+   * disagree during an incident — that is expected, not a bug, as long as both
+   * are honest about it (audit 2026-07-31, gap 18):
+   *   1. DB-backed (`/treasury`, `NetWorthHistoryPanel` on `/bots`): the
+   *      spawner sampler REFUSES to write a row while a bot's venues are
+   *      stale, so a bad incident renders as a genuine GAP in the line.
+   *   2. Prometheus-backed (this component): `fks_bot_net_worth_usd` is
+   *      exported by the bot itself and scraped on Prometheus' own cadence
+   *      regardless of whether the spawner sampler trusts the venue data. It
+   *      does not gap — during the same incident it can keep exporting the
+   *      bot's last-known (stale) figure, which draws as a smooth, complete
+   *      line that looks like nothing happened. This chart was previously
+   *      unaware of the sampling-paused alerts and drew that misleading line
+   *      with no annotation; it now shows the same banner the DB-backed charts
+   *      show, so an operator sees "trust this less right now" on BOTH series
+   *      during an incident instead of only one.
    */
   import { onDestroy } from 'svelte';
   import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
@@ -18,6 +35,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Skeleton from '$lib/components/ui/Skeleton.svelte';
   import { api } from '$lib/api/client';
+  import { alertInbox } from '$lib/stores/alertInbox';
   import {
     promRangeToLine,
     promRangeByLabel,
@@ -46,6 +64,34 @@
   let errored = $state(false);
   let hasData = $state(false);
   let latest = $state<number | null>(null);
+
+  // ── Gap 18: bypassed the sampling-paused guard ─────────────────────────────
+  //
+  // This chart draws from Prometheus, not from the spawner's gap-guarded
+  // `net_worth_snapshots` table, so it never gapped during a staleness
+  // incident — it just kept drawing whatever `fks_bot_net_worth_usd` last
+  // reported, smooth and complete, with nothing telling the operator the
+  // underlying venue data was untrustworthy. `/treasury` and `/bots` already
+  // show an amber banner for the same condition; this mirrors that.
+  //
+  // Keyed off `alerts.some(...)`, NOT `unackedCount`/`describeChip`: an ack
+  // zeroes the StatusBar chip while the alert is still firing, and with the
+  // ack store down the inbox still returns the full `alerts` array — exactly
+  // the degraded state this banner has to survive. Twin of the same block in
+  // $components/bots/NetWorthHistoryPanel.svelte and
+  // src/routes/treasury/+page.svelte — keep the alertname list in sync across
+  // all three.
+  const SAMPLING_PAUSED_ALERTS = ['NetWorthSamplingPausedTooLong', 'BotAllVenuesStale'];
+
+  // Deduped by (url, interval) with the StatusBar's poll — no extra traffic.
+  $effect(() => {
+    alertInbox.start();
+    return () => alertInbox.stop();
+  });
+
+  let samplingPaused = $derived(
+    ($alertInbox?.alerts ?? []).some((a) => SAMPLING_PAUSED_ALERTS.includes(a.labels.alertname)),
+  );
 
   // Palette for per-exchange breakdown lines (theme accents, cycled).
   const breakdownColors = ['#22d3ee', '#a78bfa', '#34d399', '#f59e0b', '#f472b6', '#60a5fa'];
@@ -225,6 +271,16 @@
     </div>
   {/snippet}
 
+  {#if samplingPaused}
+    <p class="nw-paused" role="status" data-testid="sampling-paused">
+      <strong>Net-worth sampling is paused.</strong> Bots are reporting stale venue figures. This
+      chart is Prometheus-scraped, not spawner-gated, so it does NOT gap the way `/treasury` does —
+      it may keep drawing a flat, stale figure through the incident instead. Don't read a smooth
+      line here as "nothing happened".
+      <a href="/monitoring">Open /monitoring</a> for the firing alert.
+    </p>
+  {/if}
+
   <div class="nw-body">
     <!-- Chart element always mounted so lightweight-charts can attach; overlays
          sit on top for the loading / empty / error states. -->
@@ -254,6 +310,19 @@
 </Panel>
 
 <style>
+  .nw-paused {
+    margin: 0 0 8px;
+    padding: 7px 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--amber, #f0a500);
+    background: var(--bg2, #16161f);
+    border: 1px solid var(--amber, #f0a500);
+    border-radius: var(--r-md, 6px);
+  }
+  .nw-paused a {
+    color: inherit;
+  }
   .nw-controls {
     display: flex;
     align-items: center;

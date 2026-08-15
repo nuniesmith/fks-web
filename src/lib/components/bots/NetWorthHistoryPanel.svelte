@@ -110,8 +110,11 @@
   // stays silent, which is honest; the StatusBar is what greys out for
   // "we cannot see".
   //
-  // Twin of the same block in src/routes/treasury/+page.svelte — keep the
-  // alertname list in sync.
+  // Twin of the same block in src/routes/treasury/+page.svelte and
+  // $components/exchanges/NetWorthHistory.svelte — keep the alertname list in
+  // sync across all three. (The exchanges chart is Prometheus-backed and
+  // doesn't gap the way this DB-backed one does — see its own comment for why
+  // it still needs the same banner.)
   const SAMPLING_PAUSED_ALERTS = ['NetWorthSamplingPausedTooLong', 'BotAllVenuesStale'];
 
   // Deduped by (url, interval) with the StatusBar's poll — no extra traffic.

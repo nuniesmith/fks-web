@@ -98,6 +98,48 @@ describe("api client", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Gap 19 (audit 2026-07-31) — an "unmapped" fabricated-empty response must not
+// read as fresh, real data. `hooks.server.ts`'s `gracefulEmpty()` answers a
+// backend path with no dispatch with a well-formed `200 {}`/`[]` stamped
+// `x-fks-unmapped: 1`. Before this fix the client silently accepted that as a
+// normal successful payload — poll.ts's `updatedAt` (last SUCCESSFUL fetch)
+// advanced on it, and read-only panels (e.g. the `/db` explorer) rendered the
+// empty body as a genuine "No tables found" even when real data exists
+// server-side. It must now reject like any other failed fetch, UNLESS the
+// caller opts in with `{ allowUnmapped: true }`.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("unmapped-response handling (gap 19)", () => {
+  it("a 200 stamped x-fks-unmapped:1 throws ApiError instead of resolving", async () => {
+    mockFetch.mockResolvedValue(
+      res("{}", { ok: true, status: 200, headers: { "x-fks-unmapped": "1" } }),
+    );
+    await expect(api.get("/api/db/postgres/tables")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("an ordinary 200 with no unmapped header still resolves normally", async () => {
+    mockFetch.mockResolvedValue(res({ value: 1 }, { ok: true, status: 200 }));
+    expect(await api.get("/api/x")).toEqual({ value: 1 });
+  });
+
+  it("{ allowUnmapped: true } opts out and returns the fabricated empty body", async () => {
+    mockFetch.mockResolvedValue(
+      res("[]", { ok: true, status: 200, headers: { "x-fks-unmapped": "1" } }),
+    );
+    const out = await api.get("/api/db/redis/patterns", { allowUnmapped: true });
+    expect(out).toEqual([]);
+  });
+
+  it("allowUnmapped is not forwarded into the underlying fetch() init", async () => {
+    mockFetch.mockResolvedValue(
+      res("{}", { ok: true, status: 200, headers: { "x-fks-unmapped": "1" } }),
+    );
+    await api.get("/api/x", { allowUnmapped: true });
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init).not.toHaveProperty("allowUnmapped");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // R2 — session expiry vs a proxied upstream 401.
 //
 // The adapter is a PROXY: it streams upstream statuses back verbatim, so a
