@@ -338,6 +338,13 @@ export interface SaveConfigRequest {
   env?: Record<string, string>;
   /** Exchanges whose stored credentials the template injects at spawn time. */
   secrets?: string[];
+  /**
+   * Bot identity this template respawns as (`fks-bot-{bot_id}`) — makes the
+   * saved config self-contained for `POST /configs/{name}/respawn`. Omitted
+   * ⇒ the config has no respawn target (`resolve_respawn_bot_id` 400s unless
+   * the caller passes an override in the respawn body).
+   */
+  bot_id?: string;
 }
 
 /** A saved spawn config row from `GET /configs`. */
@@ -351,6 +358,12 @@ export interface BotConfig {
   env: Record<string, string>;
   /** Exchanges the template injects at spawn time (may be absent on old rows). */
   secrets?: string[];
+  /**
+   * Bot identity the template respawns as. `null`/absent for configs saved
+   * before the field existed or saved with no Bot ID — those configs are NOT
+   * respawn-ready (`POST .../respawn` needs a body override instead).
+   */
+  bot_id?: string | null;
 }
 
 /** `GET /configs` wrapper. When `db_enabled=false` the array is empty. */
@@ -358,6 +371,32 @@ export interface ConfigsResponse {
   configs: BotConfig[];
   total: number;
   db_enabled: boolean;
+}
+
+// ─── Respawn (db feature) ─────────────────────────────────────────────────
+
+/**
+ * Optional body for `POST /configs/{name}/respawn`. An explicit `bot_id`
+ * overrides the config's stored one; omitted/empty uses the config's own
+ * (400 `bot_id required (config has none)` if neither resolves).
+ */
+export interface RespawnRequest {
+  bot_id?: string;
+}
+
+/**
+ * `POST /configs/{name}/respawn` ack (200) — the atomic stop → force-remove
+ * → re-spawn-from-config that re-injects CURRENT stored secrets, i.e. the
+ * rotate-then-respawn path. Idempotent: `old_container_id` is `null` when the
+ * bot wasn't running (nothing to remove). 400 = no bot_id resolvable, 404 =
+ * config not found, 503 = spawner has no database configured.
+ */
+export interface RespawnResponse {
+  bot_id: string;
+  old_container_id: string | null;
+  new_container_id: string;
+  status: string;
+  image: string;
 }
 
 // ─── Stored exchange credentials (secret store) ──────────────────────────
