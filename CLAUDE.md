@@ -358,8 +358,17 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   services. Two design-review claims (logout clipped off-screen, gate cards
   overflowing at 320px) did **not** reproduce against the real DOM and are
   deliberately unguarded — do not re-add specs for them without re-measuring.
-  Remaining coarse-pointer gaps are real and unshipped: the cockpit
-  kill/re-arm buttons, the instance tabs, and the alert-inbox ack button.
+  The coarse-pointer sweep is COMPLETE for the money path: cockpit instance
+  tabs (#83, `cockpit/+page.svelte:864-887` — 44px floor AND a 12px moat,
+  because a bigger flush segment is a bigger overlap with its neighbour), the
+  alert-inbox ack cluster (#84/#86, `AlertInbox.svelte:376-400`), and every
+  two-step confirm via `ConfirmButton` (#95, `:224-236`). `/bots` Stop /
+  Restart / force-remove was the one surface that missed this sweep — it has
+  since been closed too: all three now route through `ConfirmButton`, and
+  money-bot names (`crypto-spot`, `crypto-funding`) get a named confirm
+  phrase (#98, `routes/bots/+page.svelte:825-854`). **Do not re-open any of
+  these** — re-adding a bare `onclick` here re-creates the unconfirmed-tap
+  failure mode this sweep exists to close.
 - Phase-by-phase buildout detail lives in the **fks** repo at
   `docs/architecture/WEBUI_BUILDOUT_PLAN.md`. Forward roadmap (M4–M10 + an
   explicit NOT DOING list) lives at `~/github/FKS_WEB_ROADMAP_2026-07-27.md`.
