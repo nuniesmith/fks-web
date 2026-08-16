@@ -85,6 +85,10 @@
   let candleSeries: any = null;
   let chartLoading = $state(true);
   let chartEmpty = $state(false);
+  // R7: true when the empty chart is QuestDB being unreachable (the server's
+  // `degraded` flag, or the fetch itself throwing) rather than a genuine
+  // zero-candle symbol — surfaced as a distinct message below.
+  let chartDegraded = $state(false);
 
   // Order form state
   let orderSymbol = $state('BTCUSDT');
@@ -230,12 +234,19 @@
         candleSeries.setData(candles);
         chart.timeScale().fitContent();
         chartEmpty = false;
+        chartDegraded = false;
       } else {
         chartEmpty = true;
+        // A 200 with no candles is ambiguous by itself — genuinely no bars for
+        // this symbol/interval, or QuestDB was unreachable and the server
+        // degraded rather than erroring. `res.ok` can't distinguish them
+        // (both are 200), so read the server's own flag.
+        chartDegraded = Boolean(data.degraded);
       }
     } catch (e) {
       console.warn('[trading/chart] Failed to load bars:', e);
       chartEmpty = true;
+      chartDegraded = true;
     } finally {
       chartLoading = false;
     }
@@ -539,7 +550,11 @@
               Loading {symbol} · {activeTimeframe}
             </div>
           {:else if chartEmpty}
-            <div class="chart-loading">No bar data for {symbol} · {activeTimeframe}</div>
+            <div class="chart-loading" class:chart-error={chartDegraded}>
+              {chartDegraded
+                ? `Couldn't reach the bars service for ${symbol} · ${activeTimeframe}`
+                : `No bar data for ${symbol} · ${activeTimeframe}`}
+            </div>
           {/if}
         </div>
       </Panel>
@@ -927,6 +942,10 @@
     z-index: 5;
     /* Status text only — never block pan/zoom on the chart underneath. */
     pointer-events: none;
+  }
+
+  .chart-loading.chart-error {
+    color: var(--red, #ea3943);
   }
 
   .spinner {

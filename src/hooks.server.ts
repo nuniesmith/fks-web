@@ -477,7 +477,14 @@ const METRICS_LAYOUT = {
 // Query candles_crypto → ascending rows { tsMs, o,h,l,c,v }. Shared by the
 // candles endpoint and the indicators endpoint.
 // One QuestDB candles_crypto query. `sym`/`iv` are already sanitized (they go
-// into the SQL string literal). Returns ascending OHLCV rows ([] on any failure).
+// into the SQL string literal).
+//
+// R7: returns `CandleRow[]` on a genuine result (possibly zero rows — a real
+// symbol/interval can legitimately have no data) or `null` if the query
+// itself failed — network error, timeout, or a non-2xx from QuestDB. Before
+// this the two cases were both `[]`, so an outage rendered identically to
+// "this symbol has no candles" with zero error signal; `fetchCandles` below
+// turns a `null` into the `degraded` flag the client branches on.
 async function queryCandles(
   sym: string,
   iv: string,
@@ -486,7 +493,7 @@ async function queryCandles(
   beforeIso?: string,
   table: "candles_crypto" | "candles_futures" = "candles_crypto",
   exact = false,
-): Promise<CandleRow[]> {
+): Promise<CandleRow[] | null> {
   // With `beforeIso` (history pagination) the days window anchors to that
   // cutoff instead of now(), so scrolling far back keeps returning rows.
   const timeCond = beforeIso
@@ -509,18 +516,27 @@ async function queryCandles(
       // (adapter-node has no default per-request timeout). Matches proxyBackend.
       signal: AbortSignal.timeout(15_000),
     });
+    if (!r.ok) return null;
     const j: any = await r.json();
     return mapCandleRows(j?.dataset);
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<CandleRow[]> {
+// R7: `degraded: true` means at least one of the QuestDB queries behind this
+// response failed (vs. genuinely returning zero rows) — see `queryCandles`
+// above. The B3 1m-resample fallback only runs when the primary query came
+// back empty (including the degraded-empty case), so a failure there also
+// marks the response degraded even if it never manages to populate `rows`.
+async function fetchCandles(
+  event: RequestEvent,
+  symbolRaw: string,
+): Promise<{ rows: CandleRow[]; degraded: boolean }> {
   // Route venue-tagged symbols (rithmic:MESU6) to candles_futures; both paths
   // sanitize into the SQL literal, so this is also the injection guard.
   const { table, sym, exact } = resolveCandleTable(symbolRaw);
-  if (!sym) return [];
+  if (!sym) return { rows: [], degraded: false };
   const p = event.url.searchParams;
   const iv = sanitizeInterval(p.get("interval"));
   const days = Math.min(365, Math.max(1, parseInt(p.get("days_back") ?? "5", 10) || 5));
@@ -535,7 +551,9 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
       ? new Date(beforeMs).toISOString()
       : undefined;
 
-  let rows = await queryCandles(sym, iv, days, lim, beforeIso, table, exact);
+  const primary = await queryCandles(sym, iv, days, lim, beforeIso, table, exact);
+  let degraded = primary === null;
+  let rows: CandleRow[] = primary ?? [];
 
   // B3: if nothing is stored natively at this interval, synthesize it by
   // resampling 1m bars. Only fires when the direct query came back empty, so it
@@ -551,14 +569,25 @@ async function fetchCandles(event: RequestEvent, symbolRaw: string): Promise<Can
       table,
       exact,
     );
-    if (oneMin.length > 0) rows = resampleCandles(oneMin, sec);
+    if (oneMin === null) {
+      degraded = true;
+    } else if (oneMin.length > 0) {
+      rows = resampleCandles(oneMin, sec);
+    }
   }
-  return rows;
+  return { rows, degraded };
 }
 
-// GET /bars/:symbol/candles → { candles: [{ timestamp /*ms*/, o,h,l,c,v }] }.
+// GET /bars/:symbol/candles →
+//   { candles: [{ timestamp /*ms*/, o,h,l,c,v }], degraded: boolean }.
+// R7: `degraded: true` at HTTP 200 (not a 502) — chosen because three
+// separate client call sites (`charts/+page.svelte`, `MiniChart.svelte`,
+// `trading/+page.svelte`) already `await res.json()` unconditionally without
+// checking `res.ok`; a 200-with-a-flag reaches all three without touching
+// their fetch/error-handling shape, where a 502 would require re-plumbing
+// each one's `try`/`catch` to look at the response status at all.
 async function questdbCandles(event: RequestEvent, symbolRaw: string): Promise<Response> {
-  const rows = await fetchCandles(event, symbolRaw);
+  const { rows, degraded } = await fetchCandles(event, symbolRaw);
   return json({
     candles: rows.map((r) => ({
       timestamp: r.tsMs,
@@ -568,6 +597,7 @@ async function questdbCandles(event: RequestEvent, symbolRaw: string): Promise<R
       close: r.close,
       volume: r.volume,
     })),
+    degraded,
   });
 }
 
@@ -576,7 +606,7 @@ async function questdbCandles(event: RequestEvent, symbolRaw: string): Promise<R
 // Keys match what the chart expects (bb_upper/bb_middle/bb_lower, rsi, atr,
 // macd_line/macd_signal/macd_hist, ema9/sma20/vwap, …).
 async function chartIndicators(event: RequestEvent, symbolRaw: string): Promise<Response> {
-  const rows = await fetchCandles(event, symbolRaw);
+  const { rows } = await fetchCandles(event, symbolRaw);
   const candles: Candle[] = rows.map((r) => ({
     time: Math.floor(r.tsMs / 1000), // ms → s, matching the chart's candle time
     open: r.open,

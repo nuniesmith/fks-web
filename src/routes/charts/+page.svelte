@@ -1189,6 +1189,13 @@
         });
       } else {
         candles = [];
+        // R7: a 200 with an empty `candles` array is ambiguous — genuinely no
+        // history for this symbol/interval, or QuestDB was unreachable and
+        // the server degraded to `{candles: [], degraded: true}` rather than
+        // erroring. `res.ok` can't tell them apart (both are 200), so surface
+        // the server's own `degraded` flag instead of reading it as a quiet
+        // empty market.
+        barsError = Boolean(data.degraded);
       }
     } catch (e) {
       console.warn('[charts] Failed to load bars:', e);

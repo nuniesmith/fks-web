@@ -219,12 +219,21 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
     sentinel badge (`STATE_STALE_AFTER_MS = 15_000`) and on `/exchanges` +
     `/exchanges/[exchange]` at two levels — page poll
     `PAGE_STALE_AFTER_MS = 30_000` and per-venue
-    `VENUE_STALE_AFTER_MS = 900_000`. The 900s is **measured, not guessed**:
-    the live spot bot refreshes each venue every **300s** (12 intervals across
-    three venues, all 299–301s, 2026-07-28), so the threshold is 3× the true
-    period and is deliberate parity with the `BotVenueStale` Prometheus rule
-    (`> 900`). An earlier 90s estimate would have cried wolf every cycle —
-    pinned by `src/lib/utils/freshness.test.ts`.
+    `VENUE_STALE_AFTER_MS = 540_000`. The underlying **300s venue cadence is
+    measured, not guessed** (the live spot bot refreshes each venue every
+    300s — 12 intervals across three venues, all 299–301s, 2026-07-28). The
+    540s threshold (1.8× that period) **tracks the `BotVenueStale` Prometheus
+    rule** rather than being fixed on its own: it was 900s (3×) to match that
+    rule's original `> 900` threshold, but `fks` #244 lowered the rule to
+    `> 540` — aligning it with the spawner sampler's own 600s refusal point
+    (2× its 300s sample interval) — and PR #103 (2026-08-15) moved this
+    constant to match, after a window where the sampler had stopped
+    recording a venue and the pager had fired while `/exchanges` still
+    rendered it green. **This is a coupling, not an independent value: any
+    future change to `BotVenueStale`'s threshold must move
+    `VENUE_STALE_AFTER_MS` with it**, or the screen and the pager drift out
+    of sync again. An earlier 90s estimate would have cried wolf every
+    cycle — pinned by `src/lib/utils/freshness.test.ts`.
   - **The paper funding bot marks its book on TRADE EVENTS, so a 15+ hour
     venue stamp is HEALTHY IDLE — never flag it.** It is already gated out in
     code (`isFuturesVenue` in `src/routes/exchanges/[exchange]/+page.svelte`
@@ -346,8 +355,10 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   (s-vs-ms auto-detect, fresh/stale/unknown), and `Freshness.svelte` (own 1s
   ticker so the age counts up between fetches). Wired beside the cockpit
   sentinel badge at 15s, and on `/exchanges` + `/exchanges/[exchange]` at 30s
-  page-level / 900s per-venue — the latter pinned to a **measured** 300s venue
-  cadence. The funding bot's trade-event stamp is deliberately excluded.
+  page-level / 540s per-venue (#103, 2026-08-15 — tracks the `BotVenueStale`
+  Prometheus rule threshold, was 900s) — the latter pinned to a **measured**
+  300s venue cadence. The funding bot's trade-event stamp is deliberately
+  excluded.
 - **M5 — phone frame (#72).** Three measured fixes: (1) the auth gate could
   hide its own submit button at 320×380 (button at bottom=453px with nothing
   scrollable) — `/login`, `/setup` and `/invite/[token]` are now the page's
