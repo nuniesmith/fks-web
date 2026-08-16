@@ -40,12 +40,17 @@
   let chart: IChartApi | null = null;
   let series: ISeriesApi<'Candlestick'> | null = null;
   let loading = $state(true);
+  // R7: true when the bars fetch came back with QuestDB flagged unreachable
+  // (server `degraded: true`) or threw outright — distinct from a symbol that
+  // genuinely has no stored candles, which renders the blank chart as-is.
+  let barsError = $state(false);
   let barSSE: ReturnType<typeof createSSE<BarUpdate>> | null = null;
   let sseUnsub: (() => void) | null = null;
 
   async function initChart() {
     if (!container) return;
     loading = true;
+    barsError = false;
 
     const { createChart } = await import('lightweight-charts');
 
@@ -98,9 +103,16 @@
         }));
         series?.setData(candles);
         chart?.timeScale().fitContent();
+      } else {
+        // R7: an empty `candles` array at 200 is ambiguous — genuinely no
+        // history for this symbol/interval, or QuestDB was unreachable and
+        // the server degraded rather than erroring. Surface the server's own
+        // flag instead of leaving a silent blank tile.
+        barsError = Boolean(data.degraded);
       }
     } catch (e) {
       console.warn(`[MiniChart] Failed to load ${symbol}:`, e);
+      barsError = true;
     } finally {
       loading = false;
     }
@@ -121,6 +133,9 @@
             low: bar.low,
             close: bar.close,
           });
+          // Live bars can fill a tile whose history fetch was degraded — don't
+          // leave the "bars unreachable" overlay stuck over real candles.
+          barsError = false;
         } catch { /* ignore */ }
       }
     });
@@ -175,6 +190,10 @@
     {#if loading}
       <div class="mc-loading">
         <div class="mc-spinner"></div>
+      </div>
+    {:else if barsError}
+      <div class="mc-error" title="Couldn't reach the bars service — QuestDB may be down">
+        ⚠️ bars unreachable
       </div>
     {/if}
   </div>
@@ -231,4 +250,16 @@
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .mc-error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    padding: 8px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--red, #ea3943);
+  }
 </style>

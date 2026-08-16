@@ -37,7 +37,7 @@
 
   interface LayoutPanel {
     id: string;
-    type: 'stat' | 'sparkline' | 'alert-feed' | 'targets';
+    type: 'stat' | 'sparkline' | 'targets';
     title: string;
     query?: string;
     unit?: string;
@@ -48,21 +48,6 @@
 
   interface LayoutResponse {
     panels: LayoutPanel[];
-  }
-
-  interface Alert {
-    labels: {
-      alertname: string;
-      severity: string;
-      instance: string;
-      [key: string]: string;
-    };
-    age_str: string;
-    severity_color: string;
-  }
-
-  interface AlertsResponse {
-    data: Alert[];
   }
 
   interface ScrapeTarget {
@@ -171,14 +156,6 @@
     return 'green';
   }
 
-  function severityVariant(severity: string): 'red' | 'amber' | 'cyan' | 'default' {
-    const s = severity.toLowerCase();
-    if (s === 'critical') return 'red';
-    if (s === 'warning') return 'amber';
-    if (s === 'info') return 'cyan';
-    return 'default';
-  }
-
   function healthVariant(health: string): 'green' | 'red' | 'default' {
     const h = health.toLowerCase();
     if (h === 'up') return 'green';
@@ -255,9 +232,6 @@
             `/api/metrics/query_range?query=${encodeURIComponent(panel.query)}&start=${start}&end=${now}&step=60`
           );
           panelData[panel.id] = resp?.data?.result?.[0]?.values ?? [];
-        } else if (panel.type === 'alert-feed') {
-          const resp = await api.get<AlertsResponse>('/api/metrics/alerts');
-          panelData[panel.id] = resp?.data ?? [];
         } else if (panel.type === 'targets') {
           const resp = await api.get<TargetsResponse>('/api/metrics/targets');
           panelData[panel.id] = resp?.data?.activeTargets ?? [];
@@ -419,20 +393,6 @@
                     </svg>
                   {:else}
                     <span class="empty-msg">No data</span>
-                  {/if}
-                {:else if panel.type === 'alert-feed'}
-                  {@const panelAlerts = (panelData[panel.id] ?? []) as Alert[]}
-                  {#if panelAlerts.length === 0}
-                    <span class="ok-msg">✓ No active alerts</span>
-                  {:else}
-                    <ul class="mini-alert-list">
-                      {#each panelAlerts.slice(0, 5) as a}
-                        <li>
-                          <Badge variant={severityVariant(a.labels.severity)}>{a.labels.severity}</Badge>
-                          <span class="alert-name">{a.labels.alertname}</span>
-                        </li>
-                      {/each}
-                    </ul>
                   {/if}
                 {:else if panel.type === 'targets'}
                   {@const panelTargets = (panelData[panel.id] ?? []) as ScrapeTarget[]}
@@ -683,7 +643,6 @@
     height: 50px;
   }
 
-  .mini-alert-list,
   .mini-target-list {
     list-style: none;
     display: flex;
@@ -692,7 +651,6 @@
     width: 100%;
   }
 
-  .mini-alert-list li,
   .mini-target-list li {
     display: flex;
     align-items: center;
@@ -708,11 +666,6 @@
     /* Rigid in the scroll pane: keep the two `fill` panels as equal-width
        columns and let the pane scroll rather than crushing this row. */
     flex-shrink: 0;
-  }
-
-  .alert-name {
-    color: var(--t1);
-    font-weight: 500;
   }
 
   .targets-loading-pad {
@@ -903,15 +856,6 @@
     color: var(--t3);
     padding: 12px 0;
     text-align: center;
-  }
-
-  .ok-msg {
-    font-size: 11px;
-    color: var(--green);
-    padding: 12px 0;
-    text-align: center;
-    display: block;
-    width: 100%;
   }
 
   /* ── Responsive ──────────────────────────────────────────── */
