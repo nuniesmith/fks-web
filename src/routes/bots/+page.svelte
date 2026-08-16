@@ -41,6 +41,31 @@
     const MONEY_BOTS = new Set(["crypto-spot", "crypto-funding"]);
     const isMoneyBot = (name: string) =>
         MONEY_BOTS.has(name) || [...MONEY_BOTS].some((m) => name.includes(m));
+
+    /**
+     * NOT done here (robustness-plan A-1, deliberately): a red "LIVE" badge /
+     * mode-aware confirm copy keyed off `c.mode`. Investigated and skipped —
+     * the precondition doesn't hold, confirmed from source, not guesswork:
+     *   - `c.mode` comes from the `fks.mode` container label, which mirrors
+     *     `SpawnRequest.mode` — an operator-typed string, default "paper",
+     *     with NO coupling to real arming
+     *     (fks-spawner/crates/spawner/src/models.rs).
+     *   - The spot bot's actual live/paper switch is the `SPOT_LIVE` env var,
+     *     fully decoupled from `mode`
+     *     (fks-spawner/bots/spot-portfolio/src/bin/spot_portfolio.rs: "SPOT_LIVE=1
+     *     — arming LIVE trading… config baked live=false; env override").
+     *   - fks-state's own deploy runbook proves the gap in practice: its
+     *     reference `POST /spawn` for the REAL live-money spot bot passes
+     *     `"mode": "dry-run"` (FKS-RUNBOOK.md §5).
+     * A badge keyed off `c.mode` can therefore paint the live bot PAPER — a
+     * confident false negative, worse than the honest dim-gray label below.
+     * `ContainerInfo` also has no `env`, so `/containers` cannot see
+     * `SPOT_LIVE` either — there is no honest way to derive true arming from
+     * what's currently on the wire. Shipped instead: a tooltip on the label
+     * saying plainly that it's a declared value, not verified state (see
+     * `.c-mode` below). Do not "fix" this by wiring the naive badge — re-open
+     * only if `ContainerInfo` grows a verified arming signal from the spawner.
+     */
     import ProgressBar from "$components/ui/ProgressBar.svelte";
     import NetWorthHistoryPanel from "$components/bots/NetWorthHistoryPanel.svelte";
     import { fmtDateTime, fmtInt } from "$lib/utils/format";
@@ -280,6 +305,12 @@
                 memory_mb: Number.isFinite(mem) ? mem : undefined,
                 env: parseEnv(spawnEnvText),
                 secrets: selectedSecrets,
+                // Carries the form's Bot ID into the saved config so it's
+                // respawn-ready (`POST /configs/{name}/respawn` needs a
+                // bot_id to know which container to stop+recreate). Omitted
+                // when blank — a config with no Bot ID just isn't
+                // respawn-ready until saved again with one.
+                bot_id: spawnBotId.trim() || undefined,
             });
             feedback = { msg: `Saved config "${name}"`, ok: true };
             loadConfigs();
@@ -299,6 +330,41 @@
             loadConfigs();
         } catch {
             /* ignore — the list refresh reflects the real state */
+        }
+    }
+
+    // ─── Respawn (rotate-then-respawn — P2) ────────────────────────────────
+    // A key rotated in /settings only updates the secret store; the running
+    // bot keeps using the OLD key until it is stopped and recreated. This is
+    // that step: POST /configs/{name}/respawn atomically stops+force-removes
+    // the config's `fks-bot-{bot_id}` container (idempotent — skips cleanly
+    // if it isn't running) and spawns a fresh one from the SAME config, which
+    // re-injects CURRENT stored secrets. Gated by ConfirmButton, same as
+    // Stop/Restart/Force-remove below — no bare confirm().
+
+    let respawningConfig = $state<string | null>(null);
+
+    async function respawnConfig(c: BotConfig) {
+        if (!c.bot_id) return; // guarded by the disabled affordance below too
+        respawningConfig = c.name;
+        feedback = null;
+        try {
+            const res = await spawner.respawn(c.name, c.bot_id);
+            const oldId = res.old_container_id
+                ? res.old_container_id.slice(0, 12)
+                : "not running";
+            feedback = {
+                msg: `Respawned "${c.name}" (${c.bot_id}) — old ${oldId} → new ${res.new_container_id.slice(0, 12)}`,
+                ok: true,
+            };
+        } catch (e) {
+            const detail =
+                e instanceof ApiError ? `${e.status} ${e.statusText}` : String(e);
+            feedback = { msg: `Respawn "${c.name}" failed: ${detail}`, ok: false };
+        } finally {
+            respawningConfig = null;
+            containersPoll.refresh();
+            runsPoll.refresh();
         }
     }
 
@@ -533,6 +599,27 @@
                                     title={`Apply "${c.name}" (${c.image} · ${c.mode})`}
                                     >{c.name}</button
                                 >
+                                {#if c.bot_id}
+                                    <ConfirmButton
+                                        label="↻"
+                                        ariaLabel={`Respawn ${c.name}`}
+                                        confirmLabel={isMoneyBot(c.bot_id) ||
+                                        isMoneyBot(c.name)
+                                            ? `RESPAWN live bot "${c.bot_id}" — stop + recreate now with current keys?`
+                                            : `Respawn "${c.name}" (${c.bot_id})?`}
+                                        busy={respawningConfig === c.name}
+                                        disabled={respawningConfig !== null &&
+                                            respawningConfig !== c.name}
+                                        onconfirm={() => respawnConfig(c)}
+                                    />
+                                {:else}
+                                    <span
+                                        class="cfg-no-respawn"
+                                        title={`No Bot ID saved on "${c.name}" — set Bot ID above and Save config to enable respawn`}
+                                        aria-label={`Respawn unavailable for ${c.name}: no Bot ID saved`}
+                                        >↻</span
+                                    >
+                                {/if}
                                 <button
                                     type="button"
                                     class="cfg-del"
@@ -566,6 +653,10 @@
                         bind:value={spawnBotId}
                         placeholder="auto-generated UUID"
                     />
+                    <span class="help"
+                        >Also carried into "Save config" below — a saved
+                        config needs this to be Respawn-able.</span
+                    >
                 </label>
 
                 <label class="field">
@@ -785,7 +876,11 @@
                                 <span class="c-img dim" title={c.image}
                                     >{c.image}</span
                                 >
-                                <span class="c-mode dim">{c.mode}</span>
+                                <span
+                                    class="c-mode dim"
+                                    title="Declared label from the spawn request/config — NOT verified against real arming state. E.g. the spot bot arms live trading via a SPOT_LIVE env var that is entirely decoupled from this field (fks-spawner's own reference deploy example spawns the real live-money bot with mode=dry-run)."
+                                    >{c.mode}</span
+                                >
                             </div>
                             <div class="container-meta">
                                 {#if c.state === "running"}
@@ -1029,6 +1124,15 @@
     .cfg-del:hover {
         color: var(--red, #ea3943);
         background: var(--bg3);
+    }
+    .cfg-no-respawn {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 3px;
+        font-size: 10px;
+        color: var(--t4, var(--t3));
+        cursor: help;
+        opacity: 0.5;
     }
     .save-cfg-row {
         display: flex;

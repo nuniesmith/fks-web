@@ -320,7 +320,14 @@
         api_secret: credSecret,
         ...(credPassphrase ? { api_passphrase: credPassphrase } : {}),
       });
-      credFeedback = `${exchange} credentials saved ✓`;
+      // P2: this save only updates the secret store — it does NOT touch any
+      // already-running bot. A bot spawned/respawned before this save keeps
+      // using the OLD key in its container env until it is stopped and
+      // recreated, which is exactly the 2026-07 rotation trap (rotate a
+      // leaked key from the phone, see "saved", the live bot keeps trading
+      // on the revoked key until its auth calls start failing). Say so
+      // plainly instead of implying the operator is done.
+      credFeedback = `${exchange} credentials saved ✓ — running bots keep the OLD key until respawned (Bots → saved configs → ↻ Respawn).`;
       credFeedbackVariant = 'green';
       // Browser submits then forgets: clear the inputs and refresh the list.
       credExchange = '';
@@ -328,7 +335,8 @@
       credSecret = '';
       credPassphrase = '';
       loadCredentials();
-      clearFeedbackAfter(v => credFeedback = v);
+      // Longer copy needs longer than the default 3s to actually be read.
+      clearFeedbackAfter(v => credFeedback = v, 8000);
     } catch (err: any) {
       credFeedback = `Error: ${err.message ?? 'Failed to save'}`;
       credFeedbackVariant = 'red';

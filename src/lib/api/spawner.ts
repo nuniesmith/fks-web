@@ -31,6 +31,9 @@
  *   GET    /api/spawner/edges/<id>/backtests?limit=N → /edges/<id>/backtests
  *   POST   /api/spawner/edges/<id>/backtest          → 202 (launch run)
  *   POST   /api/spawner/edges            → /edges (UPSERT by edge_id)
+ *   POST   /api/spawner/configs/<name>/respawn → /configs/<name>/respawn
+ *          (db feature only — stop+recreate from the saved config, current
+ *          stored secrets re-injected; the rotate-then-respawn step)
  *
  * The vite dev server proxies `/api/spawner` → `http://fks_bot_spawner:8090/`
  * with the same rewrite as the production nginx config.
@@ -51,6 +54,7 @@ import type {
   ProfitResponse,
   RecordTransferRequest,
   RecordTransferResponse,
+  RespawnResponse,
   RunsResponse,
   SaveConfigRequest,
   SpawnRequest,
@@ -180,6 +184,22 @@ export const spawner = {
   deleteConfig: (name: string) =>
     api.delete<{ ok: boolean; name?: string }>(
       `${BASE}/configs/${encodeURIComponent(name)}`,
+    ),
+
+  /**
+   * Atomically redeploy a saved config's bot: stop + force-remove the
+   * existing `fks-bot-{bot_id}` container (idempotent — skips cleanly if it
+   * isn't running), then spawn a fresh one from the config through the SAME
+   * `/spawn` path — so CURRENT stored secrets are re-injected. This is the
+   * rotate-then-respawn step: rotating a key in `/settings` only updates the
+   * secret store, a running bot keeps using the OLD key until this runs.
+   * `botId` overrides the config's stored `bot_id` when passed; otherwise
+   * the spawner resolves it from the saved config (400 if neither exists).
+   */
+  respawn: (name: string, botId?: string) =>
+    api.post<RespawnResponse>(
+      `${BASE}/configs/${encodeURIComponent(name)}/respawn`,
+      botId ? { bot_id: botId } : {},
     ),
 
   // ── Edge registry (db feature) ─────────────────────────────────────────
