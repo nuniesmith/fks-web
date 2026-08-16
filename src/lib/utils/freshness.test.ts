@@ -90,22 +90,35 @@ describe('shouldWarn — flap resistance', () => {
 //
 // Measurement (2026-07-28): the live spot bot sampled every 15s for 20 minutes
 // yielded 12 per-venue refresh intervals across three venues — all 299-301s.
-// True period = 300s. UI threshold = 3x = 900s, matching BotVenueStale (>900s).
+// True period = 300s.
+//
+// UI threshold = 540s (1.8x the period), tracking BotVenueStale. It was 3x =
+// 900s to match that rule's old threshold; fks #244 lowered the rule to 540s to
+// align it with the spawner sampler's own 600s refusal (2x its 300s interval),
+// and the UI constant is now moved with it. Leaving it at 900s left a window
+// where the sampler had stopped recording and the pager had fired while the
+// page still rendered the venue green.
+//
+// This deliberately TIGHTENS what counts as stale: at 900s a venue could miss
+// two refreshes and still read fresh; at 540s one missed refresh (~600s) reads
+// stale. That is the honest reading, not an over-eager one — 600s is precisely
+// where the sampler refuses the reading, so from that age onward the venue's
+// net worth genuinely is no longer being recorded.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('measured venue cadence', () => {
   const PERIOD_MS = 300_000;
-  const VENUE_STALE_AFTER_MS = 900_000;
+  const VENUE_STALE_AFTER_MS = 540_000;
   const now = 1_785_300_000_000;
 
   it('a venue refreshing on its normal 300s cycle never reads stale', () => {
     // Worst case within a healthy cycle: just before the next refresh lands.
     expect(freshnessState(now - PERIOD_MS, now, VENUE_STALE_AFTER_MS)).toBe('fresh');
-    // Two missed cycles is still tolerated — jitter, not failure.
-    expect(freshnessState(now - 2 * PERIOD_MS, now, VENUE_STALE_AFTER_MS)).toBe('fresh');
   });
 
-  it('three missed cycles reads stale', () => {
-    expect(freshnessState(now - 3 * PERIOD_MS - 1, now, VENUE_STALE_AFTER_MS)).toBe('stale');
+  it('one missed refresh reads stale — the sampler has stopped recording by then', () => {
+    // ~600s: the spawner sampler's own refusal point (2x its 300s interval).
+    // Showing amber here is what keeps the screen and the pager consistent.
+    expect(freshnessState(now - 2 * PERIOD_MS, now, VENUE_STALE_AFTER_MS)).toBe('stale');
   });
 
   it('the old 90s estimate would have cried wolf every single cycle', () => {
