@@ -161,7 +161,9 @@ reason: `src/routes/analysis/` does not exist.)*
   browser cookie stripped at the trust boundary (#38)
 - ✅ SVK-1 through SVK-17 (all 19 workspaces, all components, all stores)
 - ✅ Panel.svelte refactor (header snippet, badge, noPad, fill) + full migration across 14 pages
-- ✅ All 20 pages with per-page `<title>` tags
+- ✅ Every page has a per-page `<title>` tag *(count as of that commit was 20;
+  routes have grown past it — `find src/routes -name '+page.svelte' | wc -l`
+  is the live count, and no doc should quote a fixed one)*
 - ✅ Playwright E2E rebuilt — 55 tests across 6 describe blocks *(count as of
   that commit; the suite has grown well past it — `npx playwright test --list`
   is the live number, and no doc should quote a fixed one)*
