@@ -33,13 +33,16 @@
 
   // Per-venue account-snapshot age, for SPOT venues only. MEASURED: 12 refresh
   // intervals across the live spot bot's three venues, all 299-301s -> a 300s
-  // period, and this is 3x it (matching the BotVenueStale rule at >900s).
+  // period; 540s is 1.8x it, tracking the BotVenueStale rule (fks #244 lowered
+  // that rule 900s -> 540s to align with the sampler's own 600s refusal; this
+  // constant must move with it or the UI renders green while the pager fires).
+  // See the twin comment in `exchanges/+page.svelte` for the full rationale.
   //
   // Gated on market !== 'futures' below: the funding bot marks its book on
   // TRADE EVENTS, so its snapshot is legitimately hours old while idle. A
   // threshold there would be permanently amber on a perfectly healthy bot,
   // which teaches the operator to ignore the indicator everywhere else.
-  const VENUE_STALE_AFTER_MS = 900_000;
+  const VENUE_STALE_AFTER_MS = 540_000;
   $effect(() => {
     status.start();
     return () => status.stop();

@@ -41,16 +41,27 @@
 
   // Per-venue account-snapshot age. MEASURED, not assumed: sampling the live
   // spot bot every 15s for 20 minutes gave 12 refresh intervals across its
-  // three venues, every one 299-301s. So the true period is 300s and this is
-  // 3x it — matching the BotVenueStale Prometheus rule (>900s) so the UI and
-  // the pager tell the same story.
+  // three venues, every one 299-301s. So the true period is 300s.
+  //
+  // 540s (1.8x the period), tracking the BotVenueStale Prometheus rule so the
+  // UI and the pager keep telling the same story. This was 900s to match that
+  // rule's OLD threshold; fks #244 lowered the rule to 540s (aligning it with
+  // the spawner sampler, which REFUSES to record a reading older than 600s =
+  // 2x its 300s interval) and this constant was not moved with it. That left a
+  // ~6-minute window where the sampler had stopped recording and the pager had
+  // fired while this page still rendered the venue green — the exact
+  // "screen says fine while it isn't" failure this indicator exists to catch.
+  //
+  // Deliberately NOT damped to match the alert's `for: 10m`: amber here is a
+  // leading visual warning, so it appears before the page does. Erring toward
+  // warning early is the safe direction; erring toward green is not.
   //
   // An earlier estimate of "~90-95s" was wrong: it read the SAMPLER's tick
   // spacing as the venue's refresh cadence. Two monotonically-growing age
   // observations bound the period only from below and cannot tell a healthy
   // long cycle from a stalled one, which is the failure this very indicator
   // exists to catch.
-  const VENUE_STALE_AFTER_MS = 900_000;
+  const VENUE_STALE_AFTER_MS = 540_000;
   $effect(() => {
     status.start();
     return () => status.stop();
