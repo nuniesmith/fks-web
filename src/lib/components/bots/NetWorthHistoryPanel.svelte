@@ -36,6 +36,7 @@
     type AccountClass,
   } from '$lib/treasury/accountClass';
   import { carryForwardTotal, groupSnapshots } from '$lib/treasury/rollup';
+  import { fmtMoney } from '$lib/utils/format';
 
   // One plotted line per bot, plus the latest value for the legend.
   interface BotSeries {
@@ -259,10 +260,6 @@
     hiddenBots = next;
   }
 
-  function money(value: number, currency: string): string {
-    const n = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return currency === 'USD' ? `$${n}` : `${n} ${currency}`;
-  }
 </script>
 
 <Panel title="Net-worth history — total roll-up">
@@ -322,7 +319,7 @@
           {includePaper ? 'Net worth (incl. paper)' : 'Real net worth'}
         </span>
         <span class="nwp-total-val">
-          {totalLatest != null ? money(totalLatest, totalCurrency) : '—'}
+          {fmtMoney(totalLatest, totalCurrency)}
         </span>
         {#if hasPaper}
           <label class="nwp-paper-toggle">
@@ -350,7 +347,7 @@
               >
                 <span class="nwp-swatch" style:background={b.color}></span>
                 <span class="nwp-bot">{b.botId}</span>
-                <span class="nwp-val">{money(b.latest, b.currency)}</span>
+                <span class="nwp-val">{fmtMoney(b.latest, b.currency)}</span>
               </button>
             {/each}
           </div>

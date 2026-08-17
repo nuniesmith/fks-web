@@ -6,7 +6,7 @@
     import Skeleton from "$components/ui/Skeleton.svelte";
     import EmptyState from "$components/ui/EmptyState.svelte";
     import FilterChips from "$components/ui/FilterChips.svelte";
-    import { fmtDateTime } from "$lib/utils/format";
+    import { fmtDateTime, fmtPrice } from "$lib/utils/format";
 
     // ─── Types ──────────────────────────────────────────────────────────
 
@@ -223,9 +223,7 @@
                                     ></td
                                 >
                                 <td class="mono"
-                                    >{sig.price != null
-                                        ? `$${sig.price.toFixed(2)}`
-                                        : "—"}</td
+                                    >{fmtPrice(sig.price)}</td
                                 >
                                 <td class="message dim">{sig.message ?? "—"}</td
                                 >

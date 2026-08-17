@@ -9,6 +9,7 @@
   import Badge from '$components/ui/Badge.svelte';
   import InnerTabs from '$components/ui/InnerTabs.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
+  import { fmtPrice, fmtDollar, fmtTime, fmtConfidence } from '$lib/utils/format';
   import type { PageData } from './$types';
 
   // ─── Server data (SSR prefetch) ────────────────────────────────────
@@ -442,35 +443,6 @@
     if (p) rcPointValue = p.pointValue;
   }
 
-  // ─── Formatting ─────────────────────────────────────────────────────
-  function fmtPrice(n: number | null | undefined): string {
-    if (n == null) return '—';
-    const abs = Math.abs(n);
-    const digits = abs < 1 ? 6 : abs < 100 ? 4 : 2;
-    return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  }
-
-  function fmtPnl(n: number | null | undefined): string {
-    if (n == null) return '—';
-    const sign = n >= 0 ? '+' : '';
-    return `${sign}$${n.toFixed(2)}`;
-  }
-
-  function fmtTime(ts: string | undefined): string {
-    if (!ts) return '—';
-    try {
-      const d = new Date(ts);
-      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    } catch {
-      return ts;
-    }
-  }
-
-  function fmtConfidence(n: number | undefined): string {
-    if (n == null) return '—';
-    return (n * 100).toFixed(0) + '%';
-  }
-
   // ─── Lifecycle ──────────────────────────────────────────────────────
   onMount(() => {
     loadChart();
@@ -600,7 +572,7 @@
                   <td class="muted">{fmtPrice(trade.tp)}</td>
                   <td class:green={(trade.pnl ?? 0) >= 0}
                       class:red={(trade.pnl ?? 0) < 0}>
-                    {fmtPnl(trade.pnl)}
+                    {fmtDollar(trade.pnl)}
                   </td>
                   <td class="muted">{trade.strategy || '—'}</td>
                   <td>

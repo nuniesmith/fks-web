@@ -38,7 +38,7 @@
   import type { ExchangesStatus } from '$lib/types/exchanges';
   import type { LiveStatusResp } from '$lib/types/cockpit-live';
   import AlertInbox from '$lib/components/monitoring/AlertInbox.svelte';
-  import { fmtPrice } from '$lib/utils/format';
+  import { fmtPrice, fmtUsdt } from '$lib/utils/format';
   import { alertInbox } from '$lib/stores/alertInbox';
   import type { InboxAlert } from '$lib/types/alertInbox';
 
@@ -267,10 +267,6 @@
   }
 
   // ── Formatting ────────────────────────────────────────────────────────────
-  function usdt(n: number): string {
-    const sign = n > 0 ? '+' : '';
-    return `${sign}${n.toFixed(2)} USDT`;
-  }
   function ago(ms: number): string {
     const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
     if (s < 90) return `${s}s`;
@@ -288,7 +284,7 @@
   <title>Cockpit — FKS Terminal</title>
 </svelte:head>
 
-<div class="cockpit-page">
+<div class="page-scroll page-scroll--capped cockpit-page">
   <p class="page-blurb">
     Armed-futures co-pilot for the KuCoin funding-reversion bot — bot state of
     record from its Postgres store, armed-path telemetry from Prometheus, and
@@ -423,7 +419,7 @@
     <div class="stat-row">
       <StatCard
         label="Session realized (UTC day)"
-        value={usdt(inst.session.realizedUsdt)}
+        value={fmtUsdt(inst.session.realizedUsdt)}
         valueColor={inst.session.realizedUsdt > 0
           ? 'var(--green)'
           : inst.session.realizedUsdt < 0
@@ -805,18 +801,10 @@
 </Modal>
 
 <style>
-  .cockpit-page {
-    /* One scroll region (page archetype) so the below-fold risk-gate,
-       telemetry and order-error panels are reachable on laptop viewports. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-    max-width: 1200px;
-  }
+  /* Scroll story + the capped reading width now owned by the shared
+     .page-scroll / .page-scroll--capped archetype (M-3) — .cockpit-page
+     stays in the markup purely as the e2e locator anchor
+     (tests/e2e/viewport.spec.ts). */
   .page-blurb {
     font-size: 12px;
     color: var(--t2);

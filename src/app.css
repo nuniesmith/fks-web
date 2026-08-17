@@ -43,6 +43,13 @@
   overflow-y: auto;
   min-width: 0;
 }
+/* Opt-in modifier for a .page-scroll page that wants a capped reading width
+   instead of stretching full-bleed on wide monitors (M-3; currently only
+   cockpit — the money-critical co-pilot reads better unstretched). Combine:
+   class="page-scroll page-scroll--capped". */
+.page-scroll--capped {
+  max-width: 1200px;
+}
 
 /* ── Keyboard focus ─────────────────────────────────────────
    Repairs the ~31 `all: unset` buttons app-wide: `all: unset` strips

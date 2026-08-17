@@ -18,7 +18,7 @@
   import MiniChart from '$lib/components/ui/MiniChart.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { api } from '$api/client';
-  import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
+  import { fmtDollar, fmtMoney, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
   import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
   import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
@@ -97,10 +97,6 @@
     },
   ];
 
-  function usd(n: number): string {
-    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
   /**
    * Age of a funding-bot venue's LAST TRADE EVENT — not a poll age.
    *
@@ -128,7 +124,7 @@
   <title>Futures — FKS Terminal</title>
 </svelte:head>
 
-<div class="futures-page">
+<div class="page-scroll futures-page">
   <p class="page-blurb">
     Trading types built on top of the
     <a class="detail-link" href="/exchanges">backing accounts</a> — each pairs a
@@ -258,7 +254,7 @@
               <div class="venue-head">
                 <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
                 <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-                <span class="venue-total">{usd(v.total_value)}</span>
+                <span class="venue-total">{fmtMoney(v.total_value)}</span>
               </div>
               <div class="venue-meta">
                 <span>data source: exchange-apiws (KuCoin futures)</span>
@@ -339,17 +335,9 @@
   .fut-chart {
     height: 320px;
   }
-  .futures-page {
-    /* One scroll region (page archetype) — below-fold holdings / venue
-       grids were previously clipped by the overflow:hidden shell. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .futures-page carries only page-specific rules (currently none beyond
+     the e2e locator anchor kept in markup). */
   .page-blurb {
     margin: 0;
     font-size: 0.8rem;

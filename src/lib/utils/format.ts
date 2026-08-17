@@ -90,6 +90,25 @@ export function fmtSignedMoney(value: number | null | undefined, currency = 'USD
 }
 
 /**
+ * Format a USDT-denominated P&L figure: "+12.34 USDT" / "-5.00 USDT" /
+ * "0.00 USDT" (flat).
+ *
+ * Deliberately NOT `fmtDollar` (M-1) — the cockpit's live/paper funding-bot
+ * session PnL is quoted in USDT, not USD, and the suffix notation (vs.
+ * `fmtDollar`'s `$` prefix) is how the two are told apart on the one screen
+ * that shows both a bot's USDT session PnL and USD figures side by side.
+ * Extracted verbatim from `cockpit/+page.svelte`'s local `usdt()` — same
+ * sign convention (explicit `+` only on strictly positive; zero and negative
+ * rely on `toFixed`'s own minus, so zero is unsigned) — no display change on
+ * the live-money page.
+ */
+export function fmtUsdt(n: number | undefined | null): string {
+  if (n == null) return '—';
+  const sign = n > 0 ? '+' : '';
+  return `${sign}${n.toFixed(2)} USDT`;
+}
+
+/**
  * Format a confidence value.
  * Accepts either a fraction (0–1) or a percentage (1–100).
  * Returns "73%" style string.

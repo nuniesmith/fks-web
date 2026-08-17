@@ -16,7 +16,7 @@
   import Freshness from '$lib/components/ui/Freshness.svelte';
   import NetWorthHistory from '$lib/components/exchanges/NetWorthHistory.svelte';
   import { createPoll } from '$lib/stores/poll';
-  import { fmtDollar, fmtPct, fmtFixed } from '$lib/utils/format';
+  import { fmtDollar, fmtMoney, fmtPct, fmtFixed } from '$lib/utils/format';
   import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus } from '$lib/types/exchanges';
 
@@ -89,11 +89,6 @@
     expectedVenues != null && expectedVenues > 0 && venues.length < expectedVenues,
   );
 
-  /** Plain USD for balances (fmtDollar force-signs, which is for PnL only). */
-  function usd(n: number): string {
-    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
   function venueKey(v: VenueStatus): string {
     return `${v.exchange}:${v.mode}`;
   }
@@ -103,7 +98,7 @@
   <title>Exchanges — FKS Terminal</title>
 </svelte:head>
 
-<div class="exchanges-page">
+<div class="page-scroll exchanges-page">
   <p class="page-blurb">
     Backing accounts — the backbone the platform grows from. Trading types built
     on top (crypto futures, CME/COMEX, …) live under
@@ -139,7 +134,7 @@
       <div class="stat-row">
         <StatCard
           label={hasRealVenue ? 'Net worth (real venues)' : 'Net worth (paper only)'}
-          value={usd(realNetWorth)}
+          value={fmtMoney(realNetWorth)}
           color="cyan"
         />
         <!-- `spotDoc` is AsyncSection's non-null hand-back, so the old
@@ -165,7 +160,7 @@
             <div class="venue-head">
               <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
               <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-              <span class="venue-total">{usd(v.total_value)}</span>
+              <span class="venue-total">{fmtMoney(v.total_value)}</span>
             </div>
             <div class="venue-meta">
               <span>cash {fmtFixed(v.cash)} {v.cash_asset}</span>
@@ -187,7 +182,7 @@
                     <tr>
                       <td>{h.asset}</td>
                       <td>{fmtFixed(h.qty, 6)}</td>
-                      <td>{usd(h.value)}</td>
+                      <td>{fmtMoney(h.value)}</td>
                       <td>{fmtPct(h.weight * 100)} / {fmtPct(h.target_weight * 100)}</td>
                     </tr>
                   {/each}
@@ -220,17 +215,9 @@
 </div>
 
 <style>
-  .exchanges-page {
-    /* One scroll region (page archetype) — below-fold venue rows were
-       previously clipped by the overflow:hidden shell. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .exchanges-page carries only page-specific rules (currently none beyond
+     the e2e locator anchor kept in markup). */
   .page-blurb {
     margin: 0;
     font-size: 0.8rem;

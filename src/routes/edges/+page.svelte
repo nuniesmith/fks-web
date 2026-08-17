@@ -184,7 +184,7 @@
   <title>Edges — FKS Terminal</title>
 </svelte:head>
 
-<div class="page">
+<div class="page-scroll page">
   <Panel title="Edge portfolio" fill>
     {#snippet header()}
       <button type="button" class="btn" onclick={load} disabled={loading} title="Reload the edge list">
@@ -345,14 +345,9 @@
 </Modal>
 
 <style>
-  .page {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: 8px;
-    gap: 8px;
-    overflow: auto;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .page stays in the markup as a stable structural anchor, matching the
+     other document pages. */
   .btn {
     background: var(--bg3);
     border: 1px solid var(--b2);
