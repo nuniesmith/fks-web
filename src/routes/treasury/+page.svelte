@@ -251,7 +251,7 @@
   <title>Treasury — FKS Terminal</title>
 </svelte:head>
 
-<div class="page">
+<div class="page-scroll page">
   {#if samplingPaused}
     <p class="sampling-paused" role="status" data-testid="sampling-paused">
       <strong>Net-worth sampling is paused.</strong> Bots are reporting stale venue figures, so the
@@ -379,14 +379,9 @@
 </div>
 
 <style>
-  .page {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px;
-    height: 100%;
-    overflow: auto;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .page stays in the markup purely as the e2e locator anchor
+     (tests/e2e/viewport.spec.ts:231). */
   .sampling-paused {
     margin: 0;
     padding: 7px 9px;

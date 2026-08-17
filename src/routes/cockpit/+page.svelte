@@ -284,7 +284,7 @@
   <title>Cockpit — FKS Terminal</title>
 </svelte:head>
 
-<div class="cockpit-page">
+<div class="page-scroll page-scroll--capped cockpit-page">
   <p class="page-blurb">
     Armed-futures co-pilot for the KuCoin funding-reversion bot — bot state of
     record from its Postgres store, armed-path telemetry from Prometheus, and
@@ -801,18 +801,10 @@
 </Modal>
 
 <style>
-  .cockpit-page {
-    /* One scroll region (page archetype) so the below-fold risk-gate,
-       telemetry and order-error panels are reachable on laptop viewports. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-    max-width: 1200px;
-  }
+  /* Scroll story + the capped reading width now owned by the shared
+     .page-scroll / .page-scroll--capped archetype (M-3) — .cockpit-page
+     stays in the markup purely as the e2e locator anchor
+     (tests/e2e/viewport.spec.ts). */
   .page-blurb {
     font-size: 12px;
     color: var(--t2);

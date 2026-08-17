@@ -124,7 +124,7 @@
   <title>Futures — FKS Terminal</title>
 </svelte:head>
 
-<div class="futures-page">
+<div class="page-scroll futures-page">
   <p class="page-blurb">
     Trading types built on top of the
     <a class="detail-link" href="/exchanges">backing accounts</a> — each pairs a
@@ -335,17 +335,9 @@
   .fut-chart {
     height: 320px;
   }
-  .futures-page {
-    /* One scroll region (page archetype) — below-fold holdings / venue
-       grids were previously clipped by the overflow:hidden shell. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .futures-page carries only page-specific rules (currently none beyond
+     the e2e locator anchor kept in markup). */
   .page-blurb {
     margin: 0;
     font-size: 0.8rem;

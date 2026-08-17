@@ -98,7 +98,7 @@
   <title>Exchanges — FKS Terminal</title>
 </svelte:head>
 
-<div class="exchanges-page">
+<div class="page-scroll exchanges-page">
   <p class="page-blurb">
     Backing accounts — the backbone the platform grows from. Trading types built
     on top (crypto futures, CME/COMEX, …) live under
@@ -215,17 +215,9 @@
 </div>
 
 <style>
-  .exchanges-page {
-    /* One scroll region (page archetype) — below-fold venue rows were
-       previously clipped by the overflow:hidden shell. */
-    height: 100%;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px;
-  }
+  /* Scroll story now owned by the shared .page-scroll archetype (M-3) —
+     .exchanges-page carries only page-specific rules (currently none beyond
+     the e2e locator anchor kept in markup). */
   .page-blurb {
     margin: 0;
     font-size: 0.8rem;
