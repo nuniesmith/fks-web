@@ -38,7 +38,7 @@
   import type { ExchangesStatus } from '$lib/types/exchanges';
   import type { LiveStatusResp } from '$lib/types/cockpit-live';
   import AlertInbox from '$lib/components/monitoring/AlertInbox.svelte';
-  import { fmtPrice } from '$lib/utils/format';
+  import { fmtPrice, fmtUsdt } from '$lib/utils/format';
   import { alertInbox } from '$lib/stores/alertInbox';
   import type { InboxAlert } from '$lib/types/alertInbox';
 
@@ -267,10 +267,6 @@
   }
 
   // ── Formatting ────────────────────────────────────────────────────────────
-  function usdt(n: number): string {
-    const sign = n > 0 ? '+' : '';
-    return `${sign}${n.toFixed(2)} USDT`;
-  }
   function ago(ms: number): string {
     const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
     if (s < 90) return `${s}s`;
@@ -423,7 +419,7 @@
     <div class="stat-row">
       <StatCard
         label="Session realized (UTC day)"
-        value={usdt(inst.session.realizedUsdt)}
+        value={fmtUsdt(inst.session.realizedUsdt)}
         valueColor={inst.session.realizedUsdt > 0
           ? 'var(--green)'
           : inst.session.realizedUsdt < 0

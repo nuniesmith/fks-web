@@ -18,7 +18,7 @@
   import MiniChart from '$lib/components/ui/MiniChart.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { api } from '$api/client';
-  import { fmtDollar, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
+  import { fmtDollar, fmtMoney, fmtPct, fmtFixed, fmtInt } from '$lib/utils/format';
   import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
   import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
@@ -96,10 +96,6 @@
       dataSource: 'per type',
     },
   ];
-
-  function usd(n: number): string {
-    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
 
   /**
    * Age of a funding-bot venue's LAST TRADE EVENT — not a poll age.
@@ -258,7 +254,7 @@
               <div class="venue-head">
                 <Badge variant={modeVariant(v.mode)}>{v.mode}</Badge>
                 <a class="detail-link" href={`/exchanges/${v.exchange}`}>details →</a>
-                <span class="venue-total">{usd(v.total_value)}</span>
+                <span class="venue-total">{fmtMoney(v.total_value)}</span>
               </div>
               <div class="venue-meta">
                 <span>data source: exchange-apiws (KuCoin futures)</span>

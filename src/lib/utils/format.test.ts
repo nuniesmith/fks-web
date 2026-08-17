@@ -5,6 +5,7 @@ import {
   fmtDollar,
   fmtMoney,
   fmtSignedMoney,
+  fmtUsdt,
   fmtConfidence,
   fmtFixed,
   fmtInt,
@@ -88,6 +89,32 @@ describe("fmtMoney / fmtSignedMoney (promoted from treasury/cards)", () => {
     expect(fmtSignedMoney(-5)).toBe("-$5.00");
     expect(fmtSignedMoney(4567.89)).toBe("+$4,567.89");
     expect(fmtSignedMoney(0)).toBe("$0.00");
+  });
+});
+
+// M-1: promoted verbatim out of `cockpit/+page.svelte`'s local `usdt()` — the
+// cockpit quotes the funding bot's session PnL in USDT, not USD, so this is
+// NOT a `fmtDollar` substitute (suffix notation vs. `$` prefix is how the two
+// currencies are told apart on a screen that shows both). Sign convention is
+// intentionally asymmetric with `fmtDollar`/`fmtSignedMoney`: only a strictly
+// positive figure gets an explicit `+`; zero and negative rely on `toFixed`'s
+// own minus, so zero renders unsigned ("0.00 USDT", not "+0.00 USDT"). This
+// pins the pre-existing cockpit behaviour exactly — extraction must not
+// change what the live-money page renders.
+describe("fmtUsdt", () => {
+  it("signs strictly-positive values only; zero and negative are unsigned/native", () => {
+    expect(fmtUsdt(12.34)).toBe("+12.34 USDT");
+    expect(fmtUsdt(0)).toBe("0.00 USDT");
+    expect(fmtUsdt(-5)).toBe("-5.00 USDT");
+  });
+
+  it("returns — for null/undefined", () => {
+    expect(fmtUsdt(null)).toBe("—");
+    expect(fmtUsdt(undefined)).toBe("—");
+  });
+
+  it("large values are NOT grouped (verbatim extraction, no display change)", () => {
+    expect(fmtUsdt(1234567.8)).toBe("+1234567.80 USDT");
   });
 });
 

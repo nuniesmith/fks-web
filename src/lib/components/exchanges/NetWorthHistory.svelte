@@ -36,6 +36,7 @@
   import Skeleton from '$lib/components/ui/Skeleton.svelte';
   import { api } from '$lib/api/client';
   import { alertInbox } from '$lib/stores/alertInbox';
+  import { fmtMoney } from '$lib/utils/format';
   import {
     promRangeToLine,
     promRangeByLabel,
@@ -236,16 +237,13 @@
     breakdownSeries = [];
   });
 
-  function usd(n: number): string {
-    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
 </script>
 
 <Panel title="Net worth history">
   {#snippet header()}
     <div class="nw-controls">
       {#if latest !== null}
-        <span class="nw-latest">{usd(latest)}</span>
+        <span class="nw-latest">{fmtMoney(latest)}</span>
       {/if}
       <button
         type="button"

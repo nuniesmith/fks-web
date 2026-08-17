@@ -13,7 +13,7 @@
   import StatCard from '$lib/components/ui/StatCard.svelte';
   import Freshness from '$lib/components/ui/Freshness.svelte';
   import { createPoll } from '$lib/stores/poll';
-  import { fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
+  import { fmtMoney, fmtPct, fmtFixed, fmtTime } from '$lib/utils/format';
   import { modeVariant } from '$lib/utils/mode';
   import { normalizeFuturesEvent } from '$lib/utils/tradeEvents';
   import type { ExchangesStatus, TradeEvent } from '$lib/types/exchanges';
@@ -85,10 +85,6 @@
   /** The venue's events normalized for the futures table (unused on spot venues). */
   let futuresRows = $derived(isFuturesVenue ? events.map(normalizeFuturesEvent) : []);
 
-  function usd(n: number): string {
-    return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
   function epochLabel(secs: number | undefined | null): string {
     if (!secs) return '—';
     return fmtTime(new Date(secs * 1000).toISOString());
@@ -129,7 +125,7 @@
     </div>
 
     <div class="stat-row">
-      <StatCard label="Total value" value={usd(venue.total_value)} color="cyan" />
+      <StatCard label="Total value" value={fmtMoney(venue.total_value)} color="cyan" />
       <StatCard label={`Cash (${venue.cash_asset})`} value={fmtFixed(venue.cash)} />
       <StatCard
         label="Max drift"
@@ -150,8 +146,8 @@
               <tr>
                 <td>{h.asset}</td>
                 <td>{fmtFixed(h.qty, 6)}</td>
-                <td>{usd(h.price)}</td>
-                <td>{usd(h.value)}</td>
+                <td>{fmtMoney(h.price)}</td>
+                <td>{fmtMoney(h.value)}</td>
                 <td>{fmtPct(h.weight * 100)}</td>
                 <td>{fmtPct(h.target_weight * 100)}</td>
                 <td class:neg={Math.abs(h.weight - h.target_weight) >= 0.25}>
@@ -198,7 +194,7 @@
                   </td>
                   <td>{r.symbol ?? '—'}</td>
                   <td>{fmtFixed(r.size, 4)}</td>
-                  <td>{r.price != null ? usd(r.price) : '—'}</td>
+                  <td>{fmtMoney(r.price)}</td>
                   <td class:pos={r.ret_pct != null && r.ret_pct > 0} class:neg={r.ret_pct != null && r.ret_pct < 0}>
                     {r.ret_pct != null ? fmtPct(r.ret_pct) : '—'}
                   </td>
@@ -224,8 +220,8 @@
                   <td class:pos={e.side === 'Buy'} class:neg={e.side === 'Sell'}>{e.side ?? '—'}</td>
                   <td>{e.asset ?? '—'}</td>
                   <td>{fmtFixed(e.volume ?? null, 6)}</td>
-                  <td>{e.price != null ? usd(e.price) : '—'}</td>
-                  <td>{e.usd != null ? usd(e.usd) : '—'}</td>
+                  <td>{fmtMoney(e.price)}</td>
+                  <td>{fmtMoney(e.usd)}</td>
                   <td>{e.live ? 'live' : 'dry-run'}</td>
                 </tr>
               {/each}
