@@ -282,3 +282,53 @@ test("6. the banner is suppressed on /login — no 'sign in again' stacked on th
   await expect(page.locator(".gate")).toBeVisible();
   await expect(banner(page)).toHaveCount(0);
 });
+
+// ── Regression: the banner must not survive a successful sign-in ───────────
+// Reported 2026-08-21 on iPhone and desktop: the operator signed in, every
+// request worked, and "Session expired — sign in again" stayed up. Cause: the
+// `sessionExpired` store is sticky and documented itself as being reset by "a
+// real sign-in (full document load)", but SvelteKit intercepts BOTH the
+// banner's <a href="/login"> and the login form's use:enhance submit, so no
+// document load ever happens and the module-level store survived.
+test("6. a SUCCESSFUL sign-in clears the sticky session banner", async ({ page }) => {
+  // Raise the banner on a NON-gate page, exactly as a real adapter denial would.
+  const seen = await denyEveryApiCall(page, MARKED_401);
+  await page.goto("/monitoring");
+  await expect(banner(page)).toBeVisible();
+
+  // Follow the banner's own Sign in link. SvelteKit intercepts this, so it is a
+  // CLIENT-SIDE navigation and the module-level store survives it — half the bug.
+  // (The banner is hidden on /login itself via `!onGate`, so asserting there
+  // would be vacuous; the assertion that matters is back on a real page.)
+  await banner(page).getByRole("link", { name: /sign in/i }).click();
+  await page.waitForURL(/\/login/);
+
+  // Non-vacuity on the setup half: the denials really happened.
+  await expectHydratedAndDenied(seen);
+
+  // Credentials now accepted: stop denying the API (the session is valid from
+  // here) and mock the form action as the redirect result `use:enhance` sees.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  let actionHit = false;
+  await page.route("**/login?/login", (route) => {
+    actionHit = true;
+    return route.fulfill({
+      status: 200,
+      headers: { "x-sveltekit-action": "true" },
+      contentType: "application/json",
+      body: JSON.stringify({ type: "redirect", status: 303, location: "/monitoring" }),
+    });
+  });
+
+  await page.fill("#username", "operator");
+  await page.fill("#password", "correct-horse");
+  await page.click('button[type="submit"]');
+
+  // Land back on a NON-gate page with a working session.
+  await page.waitForURL(/\/monitoring/);
+  expect(actionHit).toBe(true); // non-vacuity: the sign-in really was exercised
+
+  // The banner must be gone. Before the fix the sticky store survived every
+  // client-side hop and it stayed up here forever.
+  await expect(banner(page)).toHaveCount(0, { timeout: 5000 });
+});

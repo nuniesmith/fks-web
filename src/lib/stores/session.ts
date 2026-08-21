@@ -41,8 +41,25 @@ export const SESSION_REQUIRED = 'session-required';
  * it is NOT cleared by a later successful request, because `/api/health` is on
  * the adapter's `PUBLIC_EXACT` allowlist and StatusBar polls it every cycle —
  * an "any success clears it" rule would wipe the banner seconds after it
- * appeared while the session was still dead. A real sign-in navigates (full
- * document load), which resets the module.
+ * appeared while the session was still dead.
+ *
+ * ## Who clears it, and why NOT "a full document load" (corrected 2026-08-21)
+ *
+ * This previously claimed "a real sign-in navigates (full document load),
+ * which resets the module". **That was false, and it shipped a real bug.**
+ * SvelteKit's router intercepts internal navigations, so BOTH the banner's own
+ * `<a href="/login">` AND the login form's `use:enhance` submit are
+ * client-side — neither reloads the document, so this module-level store
+ * survived a successful sign-in. The operator signed in, every request then
+ * worked, and the banner stayed up claiming the session was expired (reported
+ * on iPhone and desktop, 2026-08-21).
+ *
+ * It is now cleared explicitly by `routes/login/+page.svelte` on a SUCCESSFUL
+ * sign-in only. A failed sign-in leaves it set. Clearing here cannot mask a
+ * genuine expiry, because the very next adapter denial re-sets it.
+ *
+ * If you add another sign-in path, clear this flag there too — nothing will
+ * fail loudly if you forget, which is exactly how this bug survived.
  */
 export const sessionExpired = writable(false);
 

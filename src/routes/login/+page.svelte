@@ -1,5 +1,6 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
+  import { sessionExpired } from '$stores/session';
   import { page } from '$app/stores';
   // Shared auth-gate chrome (.gate/.panel/.input/.btn/…) — ONE definition for
   // /login, /setup and /invite. See src/styles/gate.css.
@@ -44,8 +45,24 @@
       action="?/login"
       use:enhance={() => {
         loading = true;
-        return async ({ update }) => {
+        return async ({ result, update }) => {
           loading = false;
+          // Clear the sticky session-expired flag on a SUCCESSFUL sign-in.
+          //
+          // `sessionExpired` is deliberately sticky and documents itself as
+          // being reset by "a real sign-in (full document load)". That is not
+          // true here: SvelteKit's router intercepts BOTH this `use:enhance`
+          // submit AND the banner's own `<a href="/login">`, so neither is a
+          // document load and the module-level store survives. The operator
+          // therefore signed in successfully and kept staring at
+          // "Session expired — sign in again" while every request worked.
+          //
+          // Cleared only on success, so a FAILED sign-in keeps the banner.
+          // This cannot mask a genuine expiry: the flag is re-set by the very
+          // next adapter denial (401 + x-fks-auth: session-required).
+          if (result.type === 'redirect' || result.type === 'success') {
+            sessionExpired.set(false);
+          }
           await update();
         };
       }}
