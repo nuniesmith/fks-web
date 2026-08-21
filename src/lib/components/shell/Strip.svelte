@@ -4,7 +4,7 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import type { StripData } from '$lib/types';
-  import { fmtPrice, fmtPct } from '$lib/utils/format';
+  import { fmtPrice, fmtPct, pnlVariant } from '$lib/utils/format';
 
   const sse = createSSE<StripData>('/sse/strip');
 
@@ -53,8 +53,8 @@
     <span class="val">{fmtPrice(data?.focus?.price)}</span>
     <span
       class="val"
-      class:green={data?.focus?.change_pct != null && data.focus.change_pct >= 0}
-      class:red={data?.focus?.change_pct != null && data.focus.change_pct < 0}
+      class:green={pnlVariant(data?.focus?.change_pct) === 'green'}
+      class:red={pnlVariant(data?.focus?.change_pct) === 'red'}
     >
       {fmtPct(data?.focus?.change_pct)}
     </span>
@@ -62,10 +62,15 @@
 
   <div class="strip-cell" aria-label="Profit and loss">
     <span class="lbl">P&L</span>
+    <!-- `/sse/strip` has no adapter dispatch (gracefulEmpty's idle SSE stub),
+         so `data` is permanently null in the shipped app today. `pnlVariant`
+         returns 'default' (no colour class) for null/undefined — the `?? 0`
+         fallback this replaced made `0 >= 0` true forever, painting a
+         fabricated green P&L on every page, desktop and phone. -->
     <span
       class="val"
-      class:green={(data?.pnl?.daily ?? 0) >= 0}
-      class:red={(data?.pnl?.daily ?? 0) < 0}
+      class:green={pnlVariant(data?.pnl?.daily) === 'green'}
+      class:red={pnlVariant(data?.pnl?.daily) === 'red'}
     >
       ${data?.pnl?.daily?.toFixed(2) ?? '—'}
     </span>

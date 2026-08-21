@@ -142,6 +142,7 @@ export type SignalVariant = 'green' | 'red' | 'amber' | 'default';
 export type RiskVariant = 'green' | 'amber' | 'red' | 'default';
 export type RegimeVariant = 'green' | 'red' | 'amber' | 'cyan' | 'purple' | 'default';
 export type DirectionVariant = 'green' | 'red' | 'default';
+export type PnlVariant = 'green' | 'red' | 'default';
 
 /**
  * Map a 0–100 score to a colour bucket for badges / progress bars.
@@ -180,6 +181,22 @@ export function riskVariant(dd: number | undefined | null): RiskVariant {
   if (dd > 5) return 'red';
   if (dd > 2) return 'amber';
   return 'green';
+}
+
+/**
+ * Map a P&L figure to a colour variant. `null`/`undefined` is `'default'`
+ * (no colour claim at all) — never green.
+ *
+ * This is the fix for a real bug: the top strip's `class:green={(daily ?? 0)
+ * >= 0}` treated "no data" as "$0, which is >= 0", painting the P&L cell
+ * green forever while `/sse/strip` had no backend behind it. Absent data
+ * must render neutral, the same way `riskVariant(null)` already does —
+ * fabricating a colour from a coalesced zero is the platform's dominant bug
+ * pattern, not a one-off.
+ */
+export function pnlVariant(daily: number | undefined | null): PnlVariant {
+  if (daily == null) return 'default';
+  return daily >= 0 ? 'green' : 'red';
 }
 
 /**
