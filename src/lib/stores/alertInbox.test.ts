@@ -11,11 +11,14 @@ import { get as readStore } from "svelte/store";
 import { api } from "$api/client";
 import type { AlertInbox, InboxAlert } from "$lib/types/alertInbox";
 import {
+  ALERT_AGE_BANNER_MS,
+  ALERT_AGE_LABEL_MS,
   CHIP_STALE_AFTER_MS,
   NO_PROM_DOWN,
   PROM_DOWN_THRESHOLD,
   describeChip,
   foldPromDown,
+  oldestUnackedAlert,
   unackedCount,
   type ChipInputs,
 } from "./alertInbox";
@@ -24,11 +27,16 @@ vi.mock("$api/client", () => ({ api: { get: vi.fn() } }));
 
 const NOW = 1_800_000_000_000;
 
-function alert(severity: string, acked = false): InboxAlert {
+function alert(
+  severity: string,
+  acked = false,
+  ageMs = 60_000,
+  alertname = "X",
+): InboxAlert {
   return {
-    key: `k-${severity}-${acked}`,
-    labels: { alertname: "X", severity },
-    activeAt: new Date(NOW - 60_000).toISOString(),
+    key: `k-${severity}-${acked}-${ageMs}`,
+    labels: { alertname, severity },
+    activeAt: new Date(NOW - ageMs).toISOString(),
     age_str: "1m",
     state: "firing",
     severity_color: "",
@@ -60,7 +68,7 @@ function chip(over: Partial<ChipInputs> = {}) {
 
 describe("describeChip — the honest-quiet baseline", () => {
   it("hides only when a recent, successful poll said there is nothing unacked", () => {
-    expect(chip()).toEqual({ state: null, label: "", title: "" });
+    expect(chip()).toEqual({ state: null, label: "", title: "", banner: null });
   });
 
   it("counts unacked alerts, red when any is critical", () => {
@@ -83,6 +91,163 @@ describe("describeChip — the honest-quiet baseline", () => {
       inbox: inbox({ unacked_count: 1, alerts: [alert("critical", true), alert("warning")] }),
     });
     expect(v.state).toBe("warning");
+  });
+});
+
+/**
+ * §2.3 — age escalation. Calibration reference: the 2026-08-14 treasury
+ * blackout alert fired correctly, delivered to Discord correctly, and sat
+ * unacknowledged for 43 hours because the chip rendered a 3-minute-old alert
+ * identically to a 3-day-old one. These pin the fix: the chip must read
+ * differently as an unacked alert ages, and a persistent shell banner must
+ * appear well before 43h — not exactly at it.
+ */
+describe("describeChip — age escalation (the 43h-unacked incident)", () => {
+  it("stays plain (no age suffix, no banner) below the label threshold", () => {
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [alert("warning", false, ALERT_AGE_LABEL_MS - 1_000)],
+      }),
+    });
+    expect(v.label).toBe("⚠ 1 unacked");
+    expect(v.state).toBe("warning");
+    expect(v.banner).toBeNull();
+  });
+
+  it("shows the age inline once past the label threshold, still no banner", () => {
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [alert("critical", false, ALERT_AGE_LABEL_MS + 60_000)],
+      }),
+    });
+    expect(v.label).toMatch(/⚠ 1 unacked · .+ unacked/);
+    // Still 'critical', not 'overdue' — the banner threshold is separate and
+    // higher, by design (a fourth, more urgent tier, not the same one).
+    expect(v.state).toBe("critical");
+    expect(v.banner).toBeNull();
+  });
+
+  it("escalates to 'overdue' and raises the banner past the banner threshold", () => {
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [alert("critical", false, ALERT_AGE_BANNER_MS + 3_600_000, "BotAllVenuesStale")],
+      }),
+    });
+    expect(v.state).toBe("overdue");
+    expect(v.banner).not.toBeNull();
+    expect(v.banner?.text).toMatch(/^BotAllVenuesStale unacked for /);
+    expect(v.banner?.href).toBe("/monitoring");
+    expect(v.banner?.severity).toBe("critical");
+  });
+
+  it("names the OLDEST unacked alert in the banner, not just any overdue one", () => {
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 2,
+        alerts: [
+          alert("warning", false, ALERT_AGE_BANNER_MS + 60_000, "Newer"),
+          alert("critical", false, ALERT_AGE_BANNER_MS + 7_200_000, "Oldest"),
+        ],
+      }),
+    });
+    expect(v.banner?.text).toMatch(/^Oldest unacked for /);
+  });
+
+  it("banner severity follows the OLDEST alert's own severity, even if it is only 'warning'", () => {
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [alert("warning", false, ALERT_AGE_BANNER_MS + 1_000, "SlowLeak")],
+      }),
+    });
+    expect(v.state).toBe("overdue");
+    expect(v.banner?.severity).toBe("warning");
+  });
+
+  it("excludes ACKED alerts from the age computation entirely", () => {
+    // An old critical alert that has already been acked must not drive the
+    // banner — acking is the mechanism that is supposed to silence this.
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [
+          alert("critical", true, ALERT_AGE_BANNER_MS + 1_000_000, "OldButAcked"),
+          alert("warning", false, 30_000, "FreshOne"),
+        ],
+      }),
+    });
+    expect(v.state).toBe("warning");
+    expect(v.banner).toBeNull();
+  });
+
+  it("a re-fired alert (new activeAt) is young again, even under the same alertname as an old acked one", () => {
+    // Mirrors alertAck/logic.test.ts's "RE-FIRE = new activeAt": a resolved
+    // alert that fires again gets a NEW activeAt/key, so the OLD (acked)
+    // instance and the NEW (unacked) instance coexist here exactly as the
+    // real inbox payload would shape them. This function must not need to
+    // know that re-fire rule to respect it — it only ever reads each row's
+    // own `activeAt`, never a cached "have I seen this alertname" notion.
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 1,
+        alerts: [
+          alert("critical", true, ALERT_AGE_BANNER_MS + 1_000_000, "BotAllVenuesStale"), // old, acked, resolved
+          alert("critical", false, 5_000, "BotAllVenuesStale"), // re-fired moments ago
+        ],
+      }),
+    });
+    expect(v.state).toBe("critical"); // not 'overdue' — the re-fired instance is seconds old
+    expect(v.banner).toBeNull();
+  });
+
+  it("unparseable activeAt is excluded, never treated as age-zero/fresh", () => {
+    const bad: InboxAlert = {
+      ...alert("critical"),
+      activeAt: "not-a-real-timestamp",
+    };
+    // A second, genuinely fresh alert keeps unacked_count > 0 so branch 1 is
+    // reached; the malformed one must simply not participate in the max.
+    const v = chip({
+      inbox: inbox({ unacked_count: 2, alerts: [bad, alert("warning", false, 10_000)] }),
+    });
+    expect(v.label).toBe("⚠ 2 unacked"); // no age suffix — nothing verifiable
+    expect(v.banner).toBeNull();
+  });
+
+  it("unparseable activeAt on the ONLY unacked alert never fabricates a banner", () => {
+    const bad: InboxAlert = {
+      ...alert("critical"),
+      activeAt: "",
+    };
+    const v = chip({ inbox: inbox({ unacked_count: 1, alerts: [bad] }) });
+    expect(v.state).toBe("critical"); // severity still counted — just no age claim
+    expect(v.label).toBe("⚠ 1 unacked");
+    expect(v.banner).toBeNull();
+  });
+});
+
+describe("oldestUnackedAlert", () => {
+  it("returns null when every alert is acked or absent", () => {
+    expect(oldestUnackedAlert([], NOW)).toBeNull();
+    expect(oldestUnackedAlert([alert("critical", true)], NOW)).toBeNull();
+  });
+
+  it("picks the largest age among unacked alerts with a valid activeAt", () => {
+    const best = oldestUnackedAlert(
+      [alert("warning", false, 10_000), alert("critical", false, 500_000)],
+      NOW,
+    );
+    expect(best?.ageMs).toBe(500_000);
+    expect(best?.alert.labels.severity).toBe("critical");
+  });
+
+  it("clamps a future activeAt (clock skew) to age 0, never negative", () => {
+    const skewed: InboxAlert = { ...alert("warning"), activeAt: new Date(NOW + 60_000).toISOString() };
+    const best = oldestUnackedAlert([skewed], NOW);
+    expect(best?.ageMs).toBe(0);
   });
 });
 

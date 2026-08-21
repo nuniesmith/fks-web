@@ -290,6 +290,7 @@
       class="alert-chip"
       class:critical={chip.state === 'critical'}
       class:warning={chip.state === 'warning'}
+      class:overdue={chip.state === 'overdue'}
       class:unknown={chip.state === 'unknown'}
       href="/monitoring"
       title={chip.title}
@@ -384,6 +385,23 @@
     color: var(--amber);
     background: var(--amber-dim, rgba(200, 150, 0, 0.1));
     border-color: var(--amber-brd, rgba(200, 150, 0, 0.35));
+  }
+  /* §2.3 age escalation: an unacked alert past ALERT_AGE_BANNER_MS (6h) —
+     the shell banner is also up by this point, but the chip has to carry the
+     same urgency for anyone who has already dismissed-by-navigating past it.
+     Same red as `.critical`, plus a slow pulse so "still not the same alert
+     you saw an hour ago" reads at a glance, not just on hover-read of the
+     title. */
+  .alert-chip.overdue {
+    color: var(--red);
+    background: var(--red-dim, rgba(220, 60, 60, 0.12));
+    border-color: var(--red-brd, rgba(220, 60, 60, 0.4));
+    font-weight: 700;
+    animation: chip-overdue-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes chip-overdue-pulse {
+    0%, 100% { filter: brightness(1); }
+    50%      { filter: brightness(1.4); }
   }
   /* Honest grey. "We cannot see the alert feed" is not an alarm and must not
      compete with a real one — but it must not be invisible either, which is

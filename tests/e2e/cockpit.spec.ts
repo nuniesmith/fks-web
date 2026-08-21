@@ -548,7 +548,9 @@ function inboxAlert(name: string, labels: Record<string, string>) {
   return {
     key: `k-${name}`,
     labels: { alertname: name, ...labels },
-    activeAt: "2026-07-28T00:00:00Z",
+    // Relative to wall-clock — a fixed past date would eventually cross the
+    // alertInbox age-escalation thresholds unrelated to what this suite tests.
+    activeAt: new Date(Date.now() - 5 * 60_000).toISOString(),
     age_str: "5m",
     annotations: { summary: `${name} summary` },
     state: "firing",

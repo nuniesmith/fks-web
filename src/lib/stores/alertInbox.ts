@@ -28,7 +28,7 @@
 import { derived, type Readable } from "svelte/store";
 import { createPoll } from "$lib/stores/poll";
 import { formatAge, freshnessState, toEpochMs } from "$lib/utils/freshness";
-import type { AlertInbox } from "$lib/types/alertInbox";
+import type { AlertInbox, InboxAlert } from "$lib/types/alertInbox";
 
 export const alertInbox = createPoll<AlertInbox>("/api/alerts/inbox", 30_000);
 
@@ -45,7 +45,75 @@ export const unackedCount: Readable<number> = derived(alertInbox, ($i) =>
   $i && $i.prom_available ? $i.unacked_count : 0,
 );
 
-export type ChipState = "critical" | "warning" | "unknown" | null;
+export type ChipState = "critical" | "warning" | "overdue" | "unknown" | null;
+
+/**
+ * How long an unacked alert may sit before the chip starts showing its own
+ * age inline (e.g. "⚠ 1 unacked · 1h12m unacked"), on top of the plain
+ * count. Below this, "just fired" and "fired a few minutes ago" render
+ * identically on purpose: the bare count is enough context for a fresh
+ * alert, and re-labeling the chip within its first minutes would just
+ * duplicate the per-row `age_str` already visible in the full inbox.
+ */
+export const ALERT_AGE_LABEL_MS = 60 * 60 * 1000; // 1h
+
+/**
+ * How long an unacked alert may sit before the chip escalates to the
+ * dedicated `overdue` tier AND the shell renders a persistent banner
+ * (`+layout.svelte`) naming it — one that survives navigation, unlike the
+ * chip.
+ *
+ * Calibration: on 2026-08-14 a treasury blackout alert fired correctly,
+ * delivered to Discord correctly, and then sat unacknowledged for **43
+ * hours** before anyone looked — the chip's flat "⚠ 1 unacked" (identical at
+ * 3 minutes or 3 days) is the UI half of exactly that failure. 6h gives
+ * roughly a 7x safety margin against that reference incident — this design
+ * would have raised the banner ~37h before the alert was actually found —
+ * while staying long enough that a solo operator's normal overnight gap
+ * does not greet them with a false alarm the moment they wake up.
+ */
+export const ALERT_AGE_BANNER_MS = 6 * 60 * 60 * 1000; // 6h
+
+/** What the persistent shell banner (`+layout.svelte`) should say. */
+export interface ChipBanner {
+  /** e.g. "BotAllVenuesStale unacked for 2d 4h". */
+  text: string;
+  /** Where the banner should send the operator. */
+  href: string;
+  /** Severity of the named alert — drives the banner's colour; never invented. */
+  severity: "critical" | "warning";
+}
+
+/**
+ * The oldest currently-unacked alert, by `activeAt`.
+ *
+ * `activeAt` — never `updatedAt` — is the only honest source of "how long has
+ * this actually been firing": a re-fired alert gets a NEW `activeAt`
+ * (`src/lib/server/alertAck/logic.test.ts` "RE-FIRE = new activeAt"), so age
+ * correctly resets on re-fire without this function needing to know that
+ * rule to respect it.
+ *
+ * A missing or unparseable `activeAt` is EXCLUDED from the search rather than
+ * treated as `age = 0` — the latter would silently render the honest-unknown
+ * case as the single most reassuring claim available ("just fired"). Excluded
+ * alerts simply do not drive escalation; they do not fabricate freshness
+ * either.
+ */
+export function oldestUnackedAlert(
+  alerts: InboxAlert[],
+  nowMs: number,
+): { alert: InboxAlert; ageMs: number } | null {
+  let best: { alert: InboxAlert; ageMs: number } | null = null;
+  for (const a of alerts) {
+    if (a.acked) continue;
+    const activeMs = Date.parse(a.activeAt);
+    if (!Number.isFinite(activeMs)) continue;
+    // Clock-skew floor, same convention as `formatAge`'s own Math.max(0, …).
+    const ageMs = Math.max(0, nowMs - activeMs);
+    if (best == null || ageMs > best.ageMs) best = { alert: a, ageMs };
+  }
+  return best;
+}
 
 /**
  * How long the inbox poll may go without a SUCCESS before the chip admits it
@@ -131,9 +199,17 @@ export interface ChipView {
   label: string;
   /** Tooltip + accessible name; `''` when hidden. */
   title: string;
+  /**
+   * Non-null only when an unacked alert has aged past `ALERT_AGE_BANNER_MS` —
+   * the shell (`+layout.svelte`) renders this as a persistent banner that
+   * survives navigation. `null` in every other state, including `unknown`:
+   * a poll/Prometheus outage means we cannot even verify the age, so it must
+   * not be asserted.
+   */
+  banner: ChipBanner | null;
 }
 
-const HIDDEN: ChipView = { state: null, label: "", title: "" };
+const HIDDEN: ChipView = { state: null, label: "", title: "", banner: null };
 
 /**
  * The StatusBar chip, as a pure function of what we know and when we last knew
@@ -163,14 +239,40 @@ export function describeChip(input: ChipInputs): ChipView {
       (a) => !a.acked && (a.labels.severity ?? "").toLowerCase() === "critical",
     );
     const n = inbox.unacked_count;
+
+    // Age dimension (the 2026-08-14 43h-unacked incident, see
+    // ALERT_AGE_BANNER_MS): the count alone renders a 3-minute-old alert
+    // identically to a 3-day-old one. Deliberately scanning ALL unacked
+    // alerts rather than filtering to critical/channel:money — the cockpit's
+    // own armed-path filter (`cockpit/+page.svelte` isArmedAlert) is this
+    // codebase's scar tissue for why a label-scoped clause silently drops
+    // the exact alert it existed to catch, the moment some rule doesn't
+    // stamp that label. Any sufficiently old unacked alert escalates here.
+    const oldest = oldestUnackedAlert(inbox.alerts, nowMs);
+    const overdue = oldest != null && oldest.ageMs >= ALERT_AGE_BANNER_MS;
+    const aging = oldest != null && oldest.ageMs >= ALERT_AGE_LABEL_MS;
+
     return {
-      state: anyCritical ? "critical" : "warning",
-      label: `⚠ ${n} unacked`,
+      state: overdue ? "overdue" : anyCritical ? "critical" : "warning",
+      label: `⚠ ${n} unacked${aging ? ` · ${formatAge(oldest!.ageMs)} unacked` : ""}`,
       title:
         `${n} unacknowledged alert${n === 1 ? "" : "s"} — open the inbox` +
         (inbox.configured
           ? ""
-          : " · ack store unavailable, these cannot be acknowledged here"),
+          : " · ack store unavailable, these cannot be acknowledged here") +
+        (overdue
+          ? ` · oldest (${oldest!.alert.labels.alertname ?? "alert"}) has been unacked for ${formatAge(oldest!.ageMs)}`
+          : ""),
+      banner: overdue
+        ? {
+            text: `${oldest!.alert.labels.alertname ?? "alert"} unacked for ${formatAge(oldest!.ageMs)}`,
+            href: "/monitoring",
+            severity:
+              (oldest!.alert.labels.severity ?? "").toLowerCase() === "critical"
+                ? "critical"
+                : "warning",
+          }
+        : null,
     };
   }
 
@@ -188,6 +290,11 @@ export function describeChip(input: ChipInputs): ChipView {
         lastGood == null
           ? `alert feed unavailable — the inbox poll has never succeeded${age ? ` (${age} of trying)` : ""}, so unacknowledged alerts cannot be counted`
           : `alert feed unavailable — no successful inbox poll for ${age}, so unacknowledged alerts cannot be counted`,
+      // Our own poll is dead, so we cannot even verify whether the LAST
+      // known unacked alert is still unacked, let alone how old it is —
+      // asserting a banner here would be the exact "unknown rendered as a
+      // claim" bug this branch exists to prevent.
+      banner: null,
     };
   }
 
@@ -198,6 +305,7 @@ export function describeChip(input: ChipInputs): ChipView {
       label: "alerts ?",
       title:
         "alert feed unavailable — Prometheus is unreachable, so firing alerts cannot be counted (Alertmanager paging is likely down with it)",
+      banner: null,
     };
   }
 
@@ -209,6 +317,7 @@ export function describeChip(input: ChipInputs): ChipView {
       label: "alerts ?",
       title:
         'alert feed degraded — the acknowledgement store is unavailable, so "no unacknowledged alerts" cannot be verified',
+      banner: null,
     };
   }
 

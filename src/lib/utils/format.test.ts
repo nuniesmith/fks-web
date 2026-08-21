@@ -12,6 +12,7 @@ import {
   scoreColor,
   signalVariant,
   riskVariant,
+  pnlVariant,
   regimeVariant,
   directionVariant,
   fmtTime,
@@ -178,6 +179,24 @@ describe("riskVariant", () => {
     expect(riskVariant(2)).toBe("green"); // > 2 is strict
     expect(riskVariant(0)).toBe("green");
     expect(riskVariant(null)).toBe("default");
+  });
+});
+
+describe("pnlVariant", () => {
+  it("is green at/above zero, red below zero", () => {
+    expect(pnlVariant(100)).toBe("green");
+    expect(pnlVariant(0)).toBe("green"); // boundary: >= 0 is green, not strict
+    expect(pnlVariant(-0.01)).toBe("red");
+    expect(pnlVariant(-500)).toBe("red");
+  });
+
+  it("is 'default' (no colour claim) for missing data — never green", () => {
+    // The regression this pins: Strip.svelte used to compute
+    // `class:green={(daily ?? 0) >= 0}`, which coalesced null to 0 and made
+    // `0 >= 0` paint green forever against a backend (`/sse/strip`) that has
+    // no dispatch. Absent must render neutral, matching riskVariant(null).
+    expect(pnlVariant(null)).toBe("default");
+    expect(pnlVariant(undefined)).toBe("default");
   });
 });
 

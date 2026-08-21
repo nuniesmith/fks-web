@@ -54,7 +54,10 @@ function firingInbox(opts: FiringOpts = {}) {
       {
         key: `k-${alertname}`,
         labels: { alertname, severity: "warning", channel: "money" },
-        activeAt: "2026-07-29T00:00:00Z",
+        // Relative to wall-clock — a fixed past date would eventually cross
+        // the alertInbox age-escalation thresholds, unrelated to what this
+        // suite (the net-worth-sampling-pause banner) tests.
+        activeAt: new Date(Date.now() - 35 * 60_000).toISOString(),
         age_str: "35m",
         state: "firing",
         severity_color: "",

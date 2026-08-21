@@ -30,7 +30,10 @@ const ALL_VENUES_STALE = {
     channel: "money",
     bot_id: "crypto-spot",
   },
-  activeAt: "2026-07-29T00:00:00Z",
+  // Relative to wall-clock, matching age_str — a fixed past date would
+  // eventually cross the alertInbox age-escalation thresholds and start
+  // rendering the (unrelated) 'overdue' chip tier / shell banner here.
+  activeAt: new Date(Date.now() - 15 * 60_000).toISOString(),
   age_str: "15m",
   annotations: {
     summary: "Bot crypto-spot: ALL real-money venues stale — bot is blind",
@@ -48,7 +51,7 @@ const ALL_VENUES_STALE = {
 const BARE = {
   key: "k-bare",
   labels: { alertname: "DiskSpaceLow", severity: "warning", instance: "oryx:9100" },
-  activeAt: "2026-07-29T00:00:00Z",
+  activeAt: new Date(Date.now() - 3 * 60_000).toISOString(),
   age_str: "3m",
   state: "firing",
   severity_color: "var(--amber)",

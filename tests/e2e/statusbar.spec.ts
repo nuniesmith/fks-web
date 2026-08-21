@@ -30,7 +30,11 @@ function firing(severity: string) {
   return {
     key: `k-${severity}`,
     labels: { alertname: "BotAllVenuesStale", severity, channel: "money" },
-    activeAt: "2026-07-29T00:00:00Z",
+    // Relative to real wall-clock time (this route handler runs in the Node
+    // test process, not the page's faked clock), matching `age_str` — a
+    // hardcoded past date would eventually cross ALERT_AGE_BANNER_MS and
+    // silently start asserting the (unrelated) 'overdue' chip tier here.
+    activeAt: new Date(Date.now() - 5 * 60_000).toISOString(),
     age_str: "5m",
     state: "firing",
     severity_color: "",
@@ -284,7 +288,7 @@ test.describe("/monitoring: the ack cluster is reachable on a phone", () => {
             {
               key: "phone-reachability",
               labels: { alertname: "BotAllVenuesStale", severity: "critical", channel: "money" },
-              activeAt: "2026-07-29T00:00:00Z",
+              activeAt: new Date(Date.now() - 5 * 60_000).toISOString(),
               age_str: "5m",
               state: "firing",
               severity_color: "red",
