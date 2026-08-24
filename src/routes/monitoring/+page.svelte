@@ -117,6 +117,16 @@
 
   let layoutPanels = $state<LayoutPanel[]>([]);
   let panelData = $state<Record<string, any>>({});
+  // WHY a separate error map: every fetch below used to `catch` into null, and
+  // null renders identically to "the metric legitimately has no value". A panel
+  // showing "—" could mean Prometheus is down, the proxy 502'd, the session
+  // expired, or the query genuinely returned nothing — four very different
+  // problems, one indistinguishable dash. Observed 2026-08-24: every panel on
+  // this page was empty while Prometheus was healthy and answering
+  // `sum(up)`=10, and the page could not say why.
+  let panelErrors = $state<Record<string, string>>({});
+  let healthErrors = $state<(string | null)[]>([null, null, null, null]);
+  let targetsError = $state<string | null>(null);
   let layoutLoading = $state(true);
 
   let targets = $state<ScrapeTarget[]>([]);
@@ -131,6 +141,16 @@
   let timers: ReturnType<typeof setInterval>[] = [];
 
   // ─── Helpers ────────────────────────────────────────────────────────
+  /** Short, renderable reason a fetch failed — never a stack trace. */
+  function errMsg(e: unknown): string {
+    if (e && typeof e === 'object' && 'status' in e) {
+      const st = (e as { status?: number }).status;
+      const msg = (e as { message?: string }).message ?? 'request failed';
+      return st ? `${st} ${msg}` : msg;
+    }
+    return e instanceof Error ? e.message : 'request failed';
+  }
+
   function extractValue(resp: MetricResponse): number | null {
     if (resp?.data?.result?.length > 0) {
       const raw = resp.data.result[0].value[1];
@@ -193,11 +213,14 @@
     try {
       const results = await Promise.all(
         healthStats.map((s) =>
-          api.get<MetricResponse>(`/api/metrics/query?query=${encodeURIComponent(s.query)}`)
-            .catch(() => null)
+          api
+            .get<MetricResponse>(`/api/metrics/query?query=${encodeURIComponent(s.query)}`)
+            .then((r) => ({ ok: true as const, r }))
+            .catch((e) => ({ ok: false as const, e }))
         )
       );
-      healthValues = results.map((r) => (r ? extractValue(r) : null));
+      healthValues = results.map((x) => (x.ok ? extractValue(x.r) : null));
+      healthErrors = results.map((x) => (x.ok ? null : errMsg(x.e)));
     } catch {
       // keep previous values
     } finally {
@@ -236,20 +259,27 @@
           const resp = await api.get<TargetsResponse>('/api/metrics/targets');
           panelData[panel.id] = resp?.data?.activeTargets ?? [];
         }
-      } catch {
+        delete panelErrors[panel.id];
+      } catch (e) {
+        // Keep the last good value (a blip should not blank a panel) but RECORD
+        // why the refresh failed, so a persistent failure is visible instead of
+        // masquerading as "no data".
         panelData[panel.id] = panelData[panel.id] ?? null;
+        panelErrors[panel.id] = errMsg(e);
       }
     });
     await Promise.all(fetches);
     panelData = { ...panelData };
+    panelErrors = { ...panelErrors };
   }
 
   async function fetchTargets(): Promise<void> {
     try {
       const resp = await api.get<TargetsResponse>('/api/metrics/targets');
       targets = resp?.data?.activeTargets ?? [];
-    } catch {
-      // keep previous
+      targetsError = null;
+    } catch (e) {
+      targetsError = errMsg(e);
     } finally {
       targetsLoading = false;
     }
@@ -337,8 +367,12 @@
           {#each healthStats as stat, i}
             <StatCard
               label={stat.label}
-              value={healthValues[i] !== null ? Math.round(healthValues[i]! * 10) / 10 : '—'}
-              unit={stat.unit}
+              value={healthValues[i] !== null
+                ? Math.round(healthValues[i]! * 10) / 10
+                : healthErrors[i]
+                  ? '⚠'
+                  : '—'}
+              unit={healthErrors[i] ? '' : stat.unit}
               warn={stat.warn}
               crit={stat.crit}
             />
@@ -367,7 +401,13 @@
                 <span class="grid-card-type">{panel.type}</span>
               </div>
               <div class="grid-card-body">
-                {#if panel.type === 'stat'}
+                {#if panelErrors[panel.id]}
+                  <!-- An explicit failure, NOT "no data". These are different
+                       states and the operator needs to tell them apart. -->
+                  <span class="panel-err" title={panelErrors[panel.id]}
+                    >⚠ {panelErrors[panel.id]}</span
+                  >
+                {:else if panel.type === 'stat'}
                   {@const val = panelData[panel.id] as number | null | undefined}
                   <span
                     class="big-number"
@@ -437,7 +477,11 @@
             <Skeleton lines={3} height="14px" />
           </div>
         {:else if targets.length === 0}
-          <span class="empty-msg">No active targets</span>
+          {#if targetsError}
+            <span class="panel-err" title={targetsError}>⚠ {targetsError}</span>
+          {:else}
+            <span class="empty-msg">No active targets</span>
+          {/if}
         {:else}
           <table class="target-table">
             <thead>
@@ -849,6 +893,13 @@
   /* ── Shared Helpers ──────────────────────────────────────── */
   .dim {
     color: var(--t3);
+  }
+
+  .panel-err {
+    font-size: 0.72rem;
+    color: var(--amber, #d79921);
+    line-height: 1.3;
+    word-break: break-word;
   }
 
   .empty-msg {
