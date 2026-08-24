@@ -58,6 +58,26 @@ describe("isPublic", () => {
 });
 
 describe("upstreamHeaders", () => {
+  /// REGRESSION (2026-08-24). `fetch` transparently decompresses a gzipped
+  /// upstream response, so the proxied body is plaintext — but the upstream's
+  /// `Content-Encoding: gzip` was being copied onto it. The browser tried to
+  /// gunzip uncompressed JSON, the fetch rejected, and the page rendered the
+  /// failure as "no data": every Prometheus panel on /monitoring was blank
+  /// while Prometheus was healthy and answering `sum(up)`=10.
+  ///
+  /// Prometheus was the only upstream honouring accept-encoding at the time, so
+  /// three routes broke and seven more were latent.
+  it("strips content-encoding — the body is already decompressed by fetch", () => {
+    const src = new Headers();
+    src.set("Content-Encoding", "gzip");
+    src.set("Content-Type", "application/json");
+
+    const out = upstreamHeaders(src);
+
+    expect(out.get("content-encoding")).toBeNull();
+    expect(out.get("content-type")).toBe("application/json");
+  });
+
   it("strips hop-by-hop AND boundary credentials, preserving the rest", () => {
     const src = new Headers();
     src.set("Host", "evil.example");
