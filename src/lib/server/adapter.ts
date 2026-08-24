@@ -109,6 +109,22 @@ const HOP = new Set([
   "cookie",
   "x-internal-token",
   "authorization",
+  // content-encoding MUST be stripped, and its absence was a real bug
+  // (2026-08-24). `fetch` transparently DECOMPRESSES a gzipped upstream
+  // response, so `res.body` is already plaintext — but the proxy copied the
+  // upstream's `Content-Encoding: gzip` onto it. The browser then tried to
+  // gunzip uncompressed JSON, the fetch rejected, and the page's `.catch()`
+  // rendered it as "no data". Every Prometheus panel on /monitoring was blank
+  // while Prometheus was healthy and answering `sum(up)`=10.
+  //
+  // Prometheus was the only upstream honouring accept-encoding, so the three
+  // /api/metrics/* routes broke and the other seven `forward()` routes were
+  // latent — they would break the moment any of their upstreams enabled gzip.
+  //
+  // Correct in BOTH directions for the same reason: the runtime has already
+  // decoded the payload by the time these headers are copied, so declaring an
+  // encoding that is no longer applied is always a lie.
+  "content-encoding",
 ]);
 
 /**
@@ -271,6 +287,12 @@ export const ADMIN_ONLY_BACKEND_PREFIXES: readonly string[] = [
  */
 export const ADMIN_ONLY_MUTATION_RULES: readonly string[] = [
   "/api/cockpit/rearm",
+  // Taking the Rithmic session BACK is the dangerous direction, exactly like
+  // re-arming a halted bot: Rithmic allows one session per credential, so a
+  // resume can revoke the operator's own trading app mid-trade. Releasing it
+  // (`/api/rithmic/kill`) is the safe direction and is deliberately NOT here —
+  // it falls to R3 (operator+), mirroring the cockpit kill/rearm split.
+  "/api/rithmic/resume",
   "/api/settings/exchange-keys",
   "/api/settings/kraken-keys",
   "/api/settings/kucoin-keys",
