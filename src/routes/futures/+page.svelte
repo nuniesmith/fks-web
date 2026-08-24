@@ -22,6 +22,7 @@
   import { modeVariant } from '$lib/utils/mode';
   import type { ExchangesStatus, VenueStatus, PositionStatus } from '$lib/types/exchanges';
   import type { RithmicPositionsView, RithmicPosition } from '$lib/types/rithmic';
+  import RithmicSessionControl from '$lib/components/futures/RithmicSessionControl.svelte';
 
   const status = createPoll<ExchangesStatus>('/api/exchanges/status', 10_000);
   // Q-1: aliased at top level so Svelte auto-subscribes ($statusUpdatedAt /
@@ -138,6 +139,12 @@
         {rithmicEnabled ? 'connected' : 'not configured'}
       </Badge>
     {/snippet}
+    {#if rithmicEnabled}
+      <!-- Shown BEFORE the data branches: when no bars have arrived the
+           operator most needs to know whether the session is released, and
+           whether the connector is even reachable. -->
+      <RithmicSessionControl />
+    {/if}
     {#if !rithmicEnabled}
       <EmptyState
         icon="🎛"

@@ -113,8 +113,17 @@ const INTERNAL_TOKEN = env.INTERNAL_TOKEN ?? env.NGINX_INTERNAL_TOKEN ?? "";
 // direct `fetch(${SPAWNER_URL}…)` helper (secrets + notifications + capabilities)
 // MUST route its headers through here, or #47's strip-set leaves it token-less
 // against an enforcing spawner (auth-chain H5).
+// rithmic-connector: read-only futures feed + the operator kill switch. Behind
+// the `rithmic` compose profile, so it is frequently ABSENT — every route below
+// degrades to a clear "unreachable" rather than erroring the page.
+const RITHMIC_URL = env.RITHMIC_INTERNAL_URL ?? "http://fks_rithmic_connector:9091";
+
 function withInternalToken(base: string, headers: Headers): Headers {
-  if (INTERNAL_TOKEN && base === SPAWNER_URL) {
+  // Internal upstreams that authenticate with the service-identity token. The
+  // rithmic-connector joined this set when its kill/resume routes shipped —
+  // those MUTATE (they hand the single-session Rithmic credential to or from
+  // the operator's phone), so unlike its read-only /status they are guarded.
+  if (INTERNAL_TOKEN && (base === SPAWNER_URL || base === RITHMIC_URL)) {
     headers.set("x-internal-token", INTERNAL_TOKEN);
   }
   return headers;
@@ -413,6 +422,33 @@ async function janusPerformance(event: RequestEvent): Promise<Response> {
 // data service, which queried Prometheus and reshaped). We reprise that role:
 // query/query_range/targets are a straight pass-through (identical shapes), and
 // alerts/layout get a light reshape.
+
+/// GET /api/rithmic/status → the connector snapshot, or an explicit
+/// `reachable: false` when the profile is not running.
+///
+/// Deliberately NOT `forward()`: a 502 from an absent upstream would leave the
+/// UI guessing. The kill switch is what the operator uses to free their trading
+/// session, so "I could not reach the connector" and "the connector says it is
+/// live" must never look alike.
+async function rithmicStatus(event: RequestEvent): Promise<Response> {
+  try {
+    const headers = withInternalToken(RITHMIC_URL, upstreamHeaders(event.request.headers));
+    const r = await fetch(`${RITHMIC_URL}/status`, {
+      headers,
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!r.ok) {
+      return json({ reachable: false, reason: `connector returned ${r.status}` });
+    }
+    const snap: any = await r.json();
+    return json({ reachable: true, ...snap });
+  } catch {
+    return json({
+      reachable: false,
+      reason: "connector unreachable (the `rithmic` compose profile may be down)",
+    });
+  }
+}
 
 // /api/metrics/alerts → reshape Prometheus /api/v1/alerts ({data:{alerts:[…]}})
 // into the page's { data: Alert[] } with an age_str derived from activeAt.
@@ -1517,6 +1553,23 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
 
   // ── /monitoring → Prometheus (fks_prometheus:9090) ──────────────────────────
   // Instant/range queries + targets are identical in shape → straight proxy.
+  // ── /api/rithmic/* → the read-only connector + its operator kill switch ────
+  // Rithmic allows ONE session per credential, so the platform and the
+  // operator's R|Trader Pro app cannot both be connected. These let the
+  // operator hand the session over deliberately instead of the two fighting.
+  //
+  // The connector lives behind the `rithmic` compose profile and is often DOWN.
+  // A down connector must read as "unreachable", never as "not killed" — the
+  // operator uses this to free their trading session, so an ambiguous answer is
+  // the one failure that matters.
+  if (pathname === "/api/rithmic/status") {
+    return rithmicStatus(event);
+  }
+  if (pathname === "/api/rithmic/kill" || pathname === "/api/rithmic/resume") {
+    const action = pathname.endsWith("/kill") ? "kill" : "resume";
+    return forward(event, RITHMIC_URL, `/${action}`);
+  }
+
   if (pathname === "/api/metrics/query") {
     return forward(event, PROMETHEUS_URL, "/api/v1/query" + search);
   }
