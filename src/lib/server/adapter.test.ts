@@ -11,6 +11,7 @@ import {
   roleDenies,
   roleRank,
   routeRequest,
+  ADMIN_ONLY_MUTATION_RULES,
   upstreamHeaders,
 } from "./adapter";
 
@@ -54,6 +55,18 @@ describe("isPublic", () => {
     for (const p of ["/", "/charts", "/settings", "/api/health/extra", "/healthzz"]) {
       expect(isPublic(p)).toBe(false);
     }
+  });
+});
+
+describe("rithmic session RBAC", () => {
+  /// The asymmetry is the whole point and mirrors the cockpit's kill/rearm
+  /// split: RELEASING the Rithmic session is safe (operator+), TAKING IT BACK
+  /// can revoke the operator's own phone mid-trade, so it is admin-only.
+  /// Getting these the wrong way round would let a non-admin yank the session
+  /// out from under a live manual trade.
+  it("gates resume admin-only but leaves kill to operator+", () => {
+    expect(ADMIN_ONLY_MUTATION_RULES).toContain("/api/rithmic/resume");
+    expect(ADMIN_ONLY_MUTATION_RULES).not.toContain("/api/rithmic/kill");
   });
 });
 
