@@ -143,6 +143,27 @@ describe("describeChip — age escalation (the 43h-unacked incident)", () => {
     expect(v.banner?.severity).toBe("critical");
   });
 
+  /**
+   * The banner's Ack button acknowledges `banner.alert`, and the operator reads
+   * `banner.text` before clicking it. If those two ever describe different
+   * alerts, the button silently acknowledges something the operator never saw —
+   * a mis-acknowledgement of a live money alert. Pin that they are the SAME
+   * alert, so `alert` cannot be re-pointed at "whatever is oldest now" without
+   * this failing.
+   */
+  it("carries the very alert the banner text names, so Ack cannot target another", () => {
+    const oldest = alert("critical", false, ALERT_AGE_BANNER_MS + 7_200_000, "Oldest");
+    const v = chip({
+      inbox: inbox({
+        unacked_count: 2,
+        alerts: [alert("warning", false, ALERT_AGE_BANNER_MS + 60_000, "Newer"), oldest],
+      }),
+    });
+    expect(v.banner?.alert).toBe(oldest); // identity, not a copy
+    expect(v.banner?.text).toContain(v.banner!.alert.labels.alertname!);
+    expect(v.banner?.alert.labels.alertname).toBe("Oldest");
+  });
+
   it("names the OLDEST unacked alert in the banner, not just any overdue one", () => {
     const v = chip({
       inbox: inbox({

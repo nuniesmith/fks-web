@@ -223,19 +223,25 @@ test.describe("Navigation", () => {
 
     const nav = page.getByRole("navigation", { name: "Workspace navigation" });
 
-    // All four group labels should be present (they're aria-hidden decorative spans)
-    await expect(
-      nav.locator(".group-lbl", { hasText: "Markets" }),
-    ).toBeVisible();
+    // All FIVE group labels should be present (aria-hidden decorative spans).
+    //
+    // "Trading" became "Trade" + "Money" on 2026-08-25: the old group carried
+    // seven tabs, twice any other, and mixed "what should I do" with "where is
+    // my money". Note the assertion is `hasText`, i.e. a SUBSTRING match — had
+    // "Trade" been left in the old list it would still have matched "Trading"
+    // and this test would have passed against either structure. Each label is
+    // therefore asserted explicitly rather than trusting one to imply the rest.
+    for (const label of ["Markets", "Trade", "Money", "Analysis", "System"]) {
+      await expect(
+        nav.locator(".group-lbl", { hasText: label }),
+      ).toBeVisible();
+    }
+
+    // And the old name must be GONE — otherwise a half-applied regroup (both
+    // "Trade" and a leftover "Trading") satisfies every assertion above.
     await expect(
       nav.locator(".group-lbl", { hasText: "Trading" }),
-    ).toBeVisible();
-    await expect(
-      nav.locator(".group-lbl", { hasText: "Analysis" }),
-    ).toBeVisible();
-    await expect(
-      nav.locator(".group-lbl", { hasText: "System" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
   });
 
   test("Docs tab is present in Analysis group", async ({ page }) => {

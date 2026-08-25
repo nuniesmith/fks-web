@@ -82,6 +82,17 @@ export interface ChipBanner {
   href: string;
   /** Severity of the named alert — drives the banner's colour; never invented. */
   severity: "critical" | "warning";
+  /**
+   * The exact alert `text` names, so the banner's Ack button can acknowledge
+   * THAT alert and not merely "whatever is oldest right now".
+   *
+   * Carried here rather than re-derived in the shell deliberately. Two
+   * independent calls to `oldestUnackedAlert` can disagree — a poll landing
+   * between render and click is all it takes — and acking a DIFFERENT alert
+   * from the one the operator just read is a silent mis-acknowledgement of a
+   * money alert. Same object, one source, cannot drift.
+   */
+  alert: InboxAlert;
 }
 
 /**
@@ -271,6 +282,7 @@ export function describeChip(input: ChipInputs): ChipView {
               (oldest!.alert.labels.severity ?? "").toLowerCase() === "critical"
                 ? "critical"
                 : "warning",
+            alert: oldest!.alert,
           }
         : null,
     };

@@ -48,8 +48,17 @@
                 },
             ],
         },
+        // SPLIT OUT OF THE OLD SEVEN-ITEM "Trading" GROUP (2026-08-25). That
+        // group held twice as many tabs as any other and mixed two different
+        // questions: "what should I do / what did I do" (Trading, Signals,
+        // Perf, Cockpit) against "where is my money and is it safe" (Treasury,
+        // Exchanges, Futures). It was also named the same as the tab inside it,
+        // so "Trading" meant two things one line apart.
+        //
+        // Keyboard shortcuts are per-TAB, not per-group, so every existing
+        // binding (3 Trading, 4 Signals, 5 Perf …) is unchanged by the regroup.
         {
-            label: "Trading",
+            label: "Trade",
             color: "var(--green, #16c784)",
             tabs: [
                 {
@@ -66,7 +75,19 @@
                     key: "4",
                     href: "/signals",
                 },
+                // Armed-futures co-pilot: kill sentinel + risk-rail state for
+                // the funding bot (M2). Lives with the ACTIONS, not with the
+                // balances — its reason to exist is the one money-critical
+                // mutation on it, and during an incident it must be found next
+                // to the other things you can DO, not filed under reporting.
+                { id: "cockpit", label: "Cockpit", dot: "var(--red)", href: "/cockpit" },
                 { id: "performance", label: "Perf", key: "5", href: "/performance" },
+            ],
+        },
+        {
+            label: "Money",
+            color: "var(--amber, #f0a500)",
+            tabs: [
                 // Money home page — real net worth, profit vs deposits, the
                 // paycheck-DCA transfer ledger + accounts registry (spawner db
                 // feature via /api/spawner/{net-worth,transfers,profit,accounts}).
@@ -78,12 +99,9 @@
                 },
                 // Backing accounts (spot venues + hardware wallet) — the backbone.
                 { id: "exchanges", label: "Exchanges", href: "/exchanges" },
-                // Trading types on top of the backing accounts (crypto futures live,
-                // CME/COMEX planned).
+                // Trading types on top of the backing accounts (crypto futures
+                // live, CME/COMEX via the Rithmic session control).
                 { id: "futures", label: "Futures", href: "/futures" },
-                // Armed-futures co-pilot: kill sentinel + risk-rail state for
-                // the funding bot (M2).
-                { id: "cockpit", label: "Cockpit", dot: "var(--red)", href: "/cockpit" },
             ],
         },
         {
