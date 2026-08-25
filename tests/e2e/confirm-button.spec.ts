@@ -496,9 +496,33 @@ test.describe("ConfirmButton: taps land on the button, not a neighbour", () => {
     await expect(btns.first()).toBeVisible();
     expect(await btns.count(), "the mocked channels must render their Delete").toBeGreaterThan(0);
 
-    const misses = await page.evaluate(() => {
+    // Each button is SCROLLED INTO VIEW before probing. `elementFromPoint` is
+    // viewport-relative and returns null for anything off-screen, so probing at
+    // the page's initial scroll position tested only whichever buttons happened
+    // to fit and reported the rest as misses — which a longer /settings page
+    // then "broke" without introducing any hazard. A control below the fold
+    // receives no taps at all, so that is not what this guard is about;
+    // conflating "not visible" with "overlapped by a neighbour" is the same
+    // category error as the layout-box distance the comment above rejects.
+    //
+    // WHAT THIS DOES AND DOES NOT COVER, stated plainly because the scroll
+    // changes the guard's reach in both directions:
+    //   GAINED — every ConfirmButton is now probed, including ones below the
+    //            initial fold, which previously went untested or were reported
+    //            as `null` misses purely for being off-screen.
+    //   LOST   — a button resting ON the workspace/StatusBar seam. Centring it
+    //            means it is never at the edge. This was measured, not assumed:
+    //            reverting the `.page-scroll` bottom padding leaves this test
+    //            PASSING, so it no longer detects that case.
+    // The seam is addressed in CSS instead (`.page-scroll { padding-bottom }`),
+    // which prevents it rather than detecting it. A guard for it would need to
+    // probe at a scroll offset that deliberately parks a control on the seam.
+    const misses = await page.evaluate(async () => {
       const out: string[] = [];
-      for (const b of Array.from(document.querySelectorAll(".confirm-btn")) as HTMLElement[]) {
+      const btns = Array.from(document.querySelectorAll(".confirm-btn")) as HTMLElement[];
+      for (const b of btns) {
+        b.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
         const r = b.getBoundingClientRect();
         for (const y of [r.top + 4, r.top + r.height / 2, r.bottom - 4]) {
           const hit = document.elementFromPoint(r.left + r.width / 2, y);

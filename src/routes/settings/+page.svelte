@@ -8,6 +8,7 @@
   import EmptyState from '$components/ui/EmptyState.svelte';
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import { createPoll } from '$lib/stores/poll';
+  import RithmicAccountsPanel from '$lib/components/settings/RithmicAccountsPanel.svelte';
   import { fmtRelative, fmtDateTime } from '$lib/utils/format';
   import {
     NOTIFY_EVENT_KINDS,
@@ -960,6 +961,14 @@
          row has a Test button that POSTs to the spawner's test route (fks #181),
          which decrypts the stored webhook, sends a synthetic event, and reports
          only the outcome — the URL never returns to the browser. -->
+    <!-- Rithmic logins. Placed directly after API Connections because it is
+         the same job — which credentials this platform holds and what each is
+         for — and one Rithmic login is useless without the other panel's
+         credential entry. -->
+    <Panel title="Rithmic Accounts">
+      <RithmicAccountsPanel />
+    </Panel>
+
     <Panel title="Notifications">
       {#if channelList !== null && !channelDbEnabled}
         <div class="status-display key-status">

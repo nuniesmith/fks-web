@@ -32,6 +32,26 @@
   flex-direction: column;
   gap: 10px;
   padding: 10px;
+  /* A CONTROL MUST NEVER COME TO REST HALF-CLIPPED AT THE BOTTOM EDGE.
+   *
+   * `.workspace` hands this pane an exact-height overflow:hidden box with the
+   * StatusBar painted directly below it. Without slack, a button can settle
+   * straddling that boundary: its visible top half is tappable, while a tap
+   * aimed at the clipped half lands on whatever is painted underneath — on
+   * /settings that is the logout control, one row below a channel's Delete.
+   *
+   * Surfaced when a new /settings panel pushed a channel's Delete onto that
+   * seam and the ConfirmButton hit-test e2e reported it reaching `logout-btn`.
+   *
+   * NOT covered by a test. That e2e now scrolls each control to centre before
+   * probing, which is why it no longer catches this — verified by reverting
+   * this rule and watching the suite stay green. This padding PREVENTS the
+   * condition rather than detecting it; treat it as load-bearing, not
+   * decorative, because nothing will fail if it is removed.
+   *
+   * 44px = one touch target, so the last control can always be scrolled
+   * entirely clear of the seam. */
+  padding-bottom: 44px;
 }
 .page-fixed {
   height: 100%;
