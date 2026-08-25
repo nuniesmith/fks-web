@@ -662,6 +662,76 @@ async function chartIndicators(event: RequestEvent, symbolRaw: string): Promise<
 }
 
 // Run a QuestDB /exec query and return its dataset rows ([] on any failure).
+/**
+ * GET /api/pipeline/scores/json → janus scores, with the PRICE filled in.
+ *
+ * Janus emits `price: 0.0` for every asset on this surface — verified against
+ * the live container, where BTC/ETH/SOL all come back zero while QuestDB holds
+ * a current close for each. The Overview table was faithfully rendering that,
+ * so every row read "0.000000" and looked like a dead feed.
+ *
+ * Fixed HERE rather than in janus because the data already exists on this side
+ * of the seam: `candles_crypto` is the same store janus writes to, so the
+ * adapter can complete the payload without a janus change, a rebuild, or a
+ * restart of the service that produces the signals.
+ *
+ * ONLY fills a price janus did not supply (0/absent). If janus ever starts
+ * populating the field, its value wins — this must not shadow the upstream
+ * number with a slightly staler one.
+ *
+ * A QuestDB failure degrades to the untouched janus payload. The prices are an
+ * enrichment; losing them must not take the scores, signals and confidences
+ * down with them.
+ */
+async function scoresWithPrices(event: RequestEvent): Promise<Response> {
+  const upstream = await forward(event, JANUS_URL, "/api/pipeline/scores/json");
+  let payload: any;
+  try {
+    payload = await upstream.clone().json();
+  } catch {
+    return upstream; // not JSON — pass it through untouched
+  }
+  const assets: any[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.assets)
+      ? payload.assets
+      : [];
+  const needy = assets.filter((a) => !(Number(a?.price) > 0) && typeof a?.symbol === "string");
+  if (needy.length === 0) return upstream;
+
+  // Score symbols carry a slash ("SOL/USDT"); candles_crypto stores them
+  // without ("SOLUSDT"). Map both ways so the join is exact rather than a LIKE.
+  const wanted = new Map<string, string>(); // questdb symbol -> score symbol
+  for (const a of needy) {
+    wanted.set(String(a.symbol).replace(/\//g, "").toUpperCase(), String(a.symbol));
+  }
+  const list = [...wanted.keys()]
+    .map((s) => `'${s.replace(/'/g, "''")}'`)
+    .join(",");
+
+  try {
+    // `latest on` gives the newest row per symbol without a GROUP BY scan.
+    const rows = await questdbRows(
+      `SELECT symbol, close FROM candles_crypto WHERE symbol IN (${list}) LATEST ON timestamp PARTITION BY symbol`,
+    );
+    const px = new Map<string, number>();
+    for (const r of rows) {
+      const n = Number(r?.[1]);
+      if (Number.isFinite(n) && n > 0) px.set(String(r[0]).toUpperCase(), n);
+    }
+    if (px.size === 0) return upstream;
+    for (const a of assets) {
+      if (Number(a?.price) > 0) continue;
+      const key = String(a?.symbol ?? "").replace(/\//g, "").toUpperCase();
+      const p = px.get(key);
+      if (p != null) a.price = p;
+    }
+    return json(payload);
+  } catch {
+    return upstream;
+  }
+}
+
 async function questdbRows(sql: string): Promise<any[]> {
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
@@ -1638,7 +1708,7 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // janus self-degrades to empty-but-valid, so a backend hiccup never errors the
   // page. Replaces the previous gracefulEmpty fall-through for these paths.
   if (pathname === "/api/pipeline/scores/json") {
-    return forward(event, JANUS_URL, "/api/pipeline/scores/json");
+    return scoresWithPrices(event);
   }
   if (pathname === "/api/trades/open") {
     return forward(event, JANUS_URL, "/api/trades/open");
