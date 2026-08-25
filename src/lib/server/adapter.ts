@@ -293,6 +293,13 @@ export const ADMIN_ONLY_MUTATION_RULES: readonly string[] = [
   // (`/api/rithmic/kill`) is the safe direction and is deliberately NOT here —
   // it falls to R3 (operator+), mirroring the cockpit kill/rearm split.
   "/api/rithmic/resume",
+  // Managing which Rithmic logins exist, which are ENABLED, and which single
+  // account is the hand-traded `main`. This is a credential/config surface in
+  // the same class as the *-keys routes: flipping `main` changes which funded
+  // prop account the operator is pointed at, and enabling a login is what makes
+  // its credential get used at all. Reads are R1-free (the list carries no
+  // secrets, only `has_credentials`), so this covers mutations only.
+  "/api/rithmic/accounts",
   "/api/settings/exchange-keys",
   "/api/settings/kraken-keys",
   "/api/settings/kucoin-keys",

@@ -50,6 +50,12 @@ import {
 } from "$lib/server/cockpit";
 import { alertAckPost, alertInboxGet } from "$lib/server/alertAck";
 import { getAlertAckStore } from "$lib/server/alertAck/store";
+import {
+  rithmicAccountsDelete,
+  rithmicAccountsGet,
+  rithmicAccountsPost,
+} from "$lib/server/rithmicAccounts";
+import { getRithmicAccountStore } from "$lib/server/rithmicAccounts/store";
 // Shared with the browser half on purpose — one definition of the
 // session-expiry marker, so a rename cannot silently disable the banner. The
 // module imports only `svelte/store` (isomorphic); nothing here touches the
@@ -1376,6 +1382,42 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
       return sessionRequired();
     }
     return alertAckPost(event.request, getAlertAckStore(), auth.session.username);
+  }
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── Rithmic account management (fks 016) ───────────────────────────────────
+  //   GET    /api/rithmic/accounts      → list (metadata only, NEVER a secret)
+  //   POST   /api/rithmic/accounts      → create/update one
+  //   DELETE /api/rithmic/accounts/:id  → remove the metadata row
+  //
+  // Mutations are ADMIN-only via ADMIN_ONLY_MUTATION_RULES (adapter.ts): this is
+  // a credential/config surface — flipping `main` changes which funded prop
+  // account the operator is pointed at. The GET is not, because the payload
+  // carries `has_credentials` and no credential.
+  //
+  // Matched BEFORE the connector proxy below, which claims `/api/rithmic/*` and
+  // would otherwise forward these straight to the read-only connector, where
+  // they are unmapped.
+  if (pathname === "/api/rithmic/accounts") {
+    if (event.request.method === "GET") {
+      return rithmicAccountsGet(getRithmicAccountStore());
+    }
+    if (event.request.method === "POST") {
+      let body: unknown;
+      try {
+        body = await event.request.json();
+      } catch {
+        return json({ error: "bad_request", message: "body must be JSON" }, 400);
+      }
+      return rithmicAccountsPost(getRithmicAccountStore(), body);
+    }
+  }
+  if (
+    pathname.startsWith("/api/rithmic/accounts/") &&
+    event.request.method === "DELETE"
+  ) {
+    const id = decodeURIComponent(pathname.slice("/api/rithmic/accounts/".length));
+    return rithmicAccountsDelete(getRithmicAccountStore(), id);
   }
   // ══════════════════════════════════════════════════════════════════════════
 

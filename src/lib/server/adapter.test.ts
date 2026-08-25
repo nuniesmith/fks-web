@@ -68,6 +68,21 @@ describe("rithmic session RBAC", () => {
     expect(ADMIN_ONLY_MUTATION_RULES).toContain("/api/rithmic/resume");
     expect(ADMIN_ONLY_MUTATION_RULES).not.toContain("/api/rithmic/kill");
   });
+
+  /// Account management is a CREDENTIAL/CONFIG surface: enabling a login is what
+  /// causes its credential to be used, and flipping `main` changes which funded
+  /// prop account the operator is pointed at. Mutations are admin-only; the READ
+  /// is not, because the payload carries `has_credentials` and never a secret —
+  /// gating the list would hide which accounts exist from an operator who is
+  /// allowed to trade them.
+  it("gates account mutations admin-only but leaves the list readable", () => {
+    expect(ADMIN_ONLY_MUTATION_RULES).toContain("/api/rithmic/accounts");
+    expect(roleDenies("/api/rithmic/accounts", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/rithmic/accounts/tpt-a", "DELETE", "operator")).toBe(true);
+    expect(roleDenies("/api/rithmic/accounts", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/rithmic/accounts", "GET", "operator")).toBe(false);
+    expect(roleDenies("/api/rithmic/accounts", "GET", "viewer")).toBe(false);
+  });
 });
 
 describe("upstreamHeaders", () => {
