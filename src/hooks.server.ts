@@ -1710,6 +1710,25 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   if (pathname === "/api/pipeline/scores/json") {
     return scoresWithPrices(event);
   }
+  // ── /janus-ai sessions + memories ─────────────────────────────────────────
+  // These were UNMAPPED, so they fell through to `gracefulEmpty` → a 200 `{}`,
+  // and the page rendered two permanently empty panes that looked broken. The
+  // degrade is right in general (an unmapped READ should not error a page) but
+  // wrong here: janus answers 404 on every candidate path — measured on the
+  // live container across /api/janus-ai/sessions, /api/sessions, /api/memories
+  // and /api/v1/memories — so the panes are not empty, the feature does not
+  // exist, and an empty 200 states the first while the truth is the second.
+  //
+  // Mapped so janus's own answer reaches the client. If these are implemented
+  // later this starts working with no change here; until then the UI gets a
+  // 404 it can name honestly instead of silence it cannot distinguish from
+  // "no data yet".
+  if (pathname === "/api/janus-ai/sessions") {
+    return forward(event, JANUS_URL, "/api/janus-ai/sessions");
+  }
+  if (pathname === "/api/janus/memories") {
+    return forward(event, JANUS_URL, `/api/janus/memories${event.url.search}`);
+  }
   if (pathname === "/api/trades/open") {
     return forward(event, JANUS_URL, "/api/trades/open");
   }

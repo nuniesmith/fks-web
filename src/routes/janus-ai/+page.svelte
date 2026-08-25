@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { api } from '$api/client';
+  import { api, ApiError } from '$api/client';
   import Badge from '$components/ui/Badge.svelte';
   import InnerTabs from '$components/ui/InnerTabs.svelte';
   import Panel from '$components/ui/Panel.svelte';
@@ -235,13 +235,34 @@
     }
   }
 
+
+  /**
+   * Turn a fetch failure into something an operator can act on.
+   *
+   * A 404 from janus on these surfaces means the endpoint DOES NOT EXIST — the
+   * feature was never built backend-side, verified across every candidate path
+   * on the live container. Rendering that as a bare "404: Not Found" invites a
+   * hunt for a broken route; naming it stops the hunt. Anything else is a real
+   * failure and is reported verbatim rather than being flattened into the same
+   * reassuring sentence.
+   */
+  function describeFetchError(e: unknown, what: string): string {
+    if (e instanceof ApiError && e.status === 404) {
+      return `Not implemented — janus exposes no ${what} endpoint. This pane is waiting on backend work, not on data.`;
+    }
+    if (e instanceof ApiError) {
+      return `${e.status}: ${typeof e.body === 'string' ? e.body : e.statusText}`;
+    }
+    return e instanceof Error ? e.message : String(e);
+  }
+
   async function fetchSessions() {
     try {
       const res = await api.get<SessionsResponse>('/api/janus-ai/sessions');
       sessionsData = res;
       sessionsError = null;
     } catch (e: unknown) {
-      sessionsError = e instanceof Error ? e.message : String(e);
+      sessionsError = describeFetchError(e, 'sessions');
     } finally {
       sessionsLoading = false;
     }
@@ -279,7 +300,7 @@
       memoriesData = res;
       memoriesError = null;
     } catch (e: unknown) {
-      memoriesError = e instanceof Error ? e.message : String(e);
+      memoriesError = describeFetchError(e, 'memories');
     } finally {
       memoriesLoading = false;
     }
@@ -627,7 +648,12 @@
           {#if sessionsLoading && !sessionsData}
             <Skeleton lines={6} />
           {:else if sessionsError && !sessionsData}
-            <EmptyState icon="⚠️" title="Couldn't load sessions" variant="error" hint={sessionsError} />
+            <EmptyState
+              icon={sessionsError.startsWith('Not implemented') ? '🚧' : '⚠️'}
+              title={sessionsError.startsWith('Not implemented') ? 'Sessions not available' : "Couldn't load sessions"}
+              variant={sessionsError.startsWith('Not implemented') ? 'default' : 'error'}
+              hint={sessionsError}
+            />
           {:else if sessions.length === 0}
             <EmptyState icon="📭" title="No sessions found" hint="Create a session to start a focused analysis run.">
               {#snippet action()}
@@ -778,7 +804,12 @@
           {#if memoriesLoading && !memoriesData}
             <Skeleton lines={6} />
           {:else if memoriesError && !memoriesData}
-            <EmptyState icon="⚠️" title="Couldn't load memories" variant="error" hint={memoriesError} />
+            <EmptyState
+              icon={memoriesError.startsWith('Not implemented') ? '🚧' : '⚠️'}
+              title={memoriesError.startsWith('Not implemented') ? 'Memories not available' : "Couldn't load memories"}
+              variant={memoriesError.startsWith('Not implemented') ? 'default' : 'error'}
+              hint={memoriesError}
+            />
           {:else if filteredMemories().length === 0}
             <EmptyState icon="∅" title="No memories found" hint="Trade memories appear here once recorded." />
           {:else}
