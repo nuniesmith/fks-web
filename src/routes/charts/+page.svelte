@@ -366,7 +366,18 @@
   const quickPicks = ['MGC', 'MES', 'MNQ', 'MCL', 'BTC/USD', 'ETH/USD', 'SOL/USD'];
 
   // ─── Symbol search ─────────────────────────────────────────────────────────
-  let searchQuery = $state('');
+  /**
+   * The in-progress edit, or `null` when the field is not being edited (then it
+   * displays the active `symbol`).
+   *
+   * MUST be nullable, not `''`. It was `$state('')` rendered as
+   * `value={searchQuery || symbol}`, and an EMPTY STRING IS FALSY: backspacing
+   * the last character made the field snap straight back to the active symbol,
+   * so the next keystroke appended to "BTCUSDT" instead of replacing it. `null`
+   * distinguishes "not editing" from "editing, currently empty" — which `''`
+   * cannot.
+   */
+  let searchQuery = $state<string | null>(null);
   let searchResults = $state<AssetSearchResult[]>([]);
   let showDropdown = $state(false);
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1636,15 +1647,23 @@
 
   function selectResult(result: AssetSearchResult) {
     setSymbol(result.symbol);
-    searchQuery = ''; showDropdown = false;
+    // null, not '': the edit is OVER, so the field goes back to displaying the
+    // (now newly-set) active symbol.
+    searchQuery = null; showDropdown = false;
   }
 
   function handleSearchKey(e: KeyboardEvent) {
     if (e.key === 'Enter') {
-      const q = searchQuery.trim().toUpperCase();
-      if (q) { setSymbol(q); searchQuery = ''; showDropdown = false; }
+      // `?? ''` — searchQuery is null whenever the field is not mid-edit, and
+      // Enter can arrive then (focus via keyboard, IME commit). Without this
+      // guard that is a TypeError on .trim().
+      const q = (searchQuery ?? '').trim().toUpperCase();
+      if (q) { setSymbol(q); searchQuery = null; showDropdown = false; }
     }
-    if (e.key === 'Escape') showDropdown = false;
+    // Escape abandons the edit and restores the active symbol, rather than
+    // leaving a half-typed string sitting in a field that no longer matches
+    // the chart.
+    if (e.key === 'Escape') { showDropdown = false; searchQuery = null; }
   }
 
   // Persist symbol+timeframe to localStorage and reflect them in the URL (shareable).
@@ -1804,14 +1823,22 @@
           id="chart-sym-search"
           type="text"
           class="input search-input"
-          value={searchQuery || symbol}
+          value={searchQuery ?? symbol}
           oninput={(e) => {
             const v = (e.target as HTMLInputElement).value;
             searchQuery = v;
             handleSearch(v);
           }}
-          onfocus={() => { searchQuery = ''; if (searchResults.length) showDropdown = true; }}
-          onblur={() => setTimeout(() => { searchQuery = ''; }, 200)}
+          onfocus={(e) => {
+            // Show the ACTIVE symbol and select it, rather than blanking the
+            // field: you can see what you are on, typing replaces it wholesale,
+            // and backspace edits it — the behaviour every trading terminal
+            // has. Blanking on focus threw away that context for no gain.
+            searchQuery = symbol;
+            (e.target as HTMLInputElement).select();
+            if (searchResults.length) showDropdown = true;
+          }}
+          onblur={() => setTimeout(() => { searchQuery = null; }, 200)}
           onkeydown={handleSearchKey}
           placeholder="Search assets…"
           autocomplete="off"
