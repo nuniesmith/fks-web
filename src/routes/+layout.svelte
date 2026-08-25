@@ -20,6 +20,7 @@
     import StatusBar from "$components/shell/StatusBar.svelte";
     import { sessionExpired } from "$stores/session";
     import { alertInbox, describeChip, promDownStreak } from "$stores/alertInbox";
+    import { api, ApiError } from "$api/client";
     import type { WorkspaceConfig } from "$lib/workspaces";
 
     // Data is loaded by +layout.ts — workspace is already resolved there.
@@ -86,6 +87,42 @@
         }),
     );
     let showAlertBanner = $derived(alertChip.banner != null);
+
+    // ── Ack the banner's alert in place ────────────────────────────────────
+    // The banner names ONE alert; this acknowledges THAT alert, taken from
+    // `banner.alert` rather than re-derived, so a poll landing between render
+    // and click cannot make the button acknowledge a different one than the
+    // operator just read.
+    let ackBusy = $state(false);
+    let ackError = $state("");
+
+    async function ackBannerAlert(): Promise<void> {
+        const target = alertChip.banner?.alert;
+        if (!target || ackBusy) return;
+        ackBusy = true;
+        ackError = "";
+        try {
+            await api.post("/api/alerts/ack", {
+                key: target.key,
+                labels: target.labels,
+                activeAt: target.activeAt,
+            });
+            // Re-read rather than optimistically hiding: the banner must
+            // disappear because the SERVER says it is acked, not because the
+            // client assumed so.
+            await alertInbox.refresh();
+        } catch (e) {
+            const msg =
+                e instanceof ApiError
+                    ? e.status === 403
+                        ? "ack denied — acknowledging alerts needs the operator role"
+                        : `${e.status}: ${typeof e.body === "string" ? e.body : e.statusText}`
+                    : String(e);
+            ackError = `Ack failed — ${msg}. The alert is still unacknowledged.`;
+        } finally {
+            ackBusy = false;
+        }
+    }
 </script>
 
 <div class="terminal" class:has-banner={showSessionBanner || showAlertBanner}>
@@ -105,8 +142,32 @@
             role="alert"
         >
             <span class="ab-msg">⚠ {alertChip.banner.text}</span>
+            <!-- ACK IN PLACE, rather than a dismiss.
+                 A plain dismiss would recreate the exact failure this banner
+                 exists to prevent: the 43h incident happened because a signal
+                 was easy to make go away without anything being recorded. An
+                 ack is the honest clear — it is attributed to the signed-in
+                 operator, stored in `webui_alert_acks`, and a RE-FIRE returns
+                 under a new `activeAt`, so acknowledging cannot hide a
+                 genuinely new incident.
+                 Hidden when the ack store is unreachable: a button that cannot
+                 possibly work is worse than no button. -->
+            {#if $alertInbox?.configured}
+                <button
+                    class="ab-ack"
+                    disabled={ackBusy}
+                    onclick={ackBannerAlert}
+                >{ackBusy ? 'Acking…' : 'Ack'}</button>
+            {/if}
             <a class="ab-link" href={alertChip.banner.href}>Open alerts</a>
         </div>
+        {#if ackError}
+            <!-- Failure is stated, never swallowed: the banner staying up is
+                 ambiguous on its own (the poll may simply not have refreshed
+                 yet), and "I clicked Ack" must not be mistaken for "it was
+                 acknowledged". -->
+            <div class="alert-age-banner ack-error" role="status">{ackError}</div>
+        {/if}
     {/if}
     {#if showSessionBanner}
         <!-- IN FLOW and at the VERY TOP, both measured decisions.
@@ -261,7 +322,53 @@
         color: var(--amber);
     }
     .ab-msg {
+        /* Takes the slack so the two controls sit together on the right rather
+           than drifting apart on a wide screen. */
+        flex: 1 1 auto;
         min-width: 0;
+    }
+    /* The ack control. Deliberately quieter than `.ab-link` — this is the
+       destructive-ish direction (the warning goes away), so it should not be
+       the most eye-catching thing in a bar that exists to be noticed. */
+    .ab-ack {
+        flex-shrink: 0;
+        padding: 3px 10px;
+        border: 1px solid currentColor;
+        border-radius: var(--r);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        /* 44px coarse-pointer floor, matching the rest of the money path — a
+           mis-tap here acknowledges a live alert. */
+        min-height: 24px;
+    }
+    .ab-ack:hover:not(:disabled) {
+        background: color-mix(in srgb, currentColor 14%, transparent);
+    }
+    .ab-ack:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+    @media (pointer: coarse) {
+        .ab-ack {
+            min-height: 44px;
+            padding: 3px 14px;
+        }
+    }
+    /* Failure line: red regardless of the banner's own severity, because a
+       failed ack is its own problem and must not be mistaken for part of the
+       alert it failed to clear. */
+    .alert-age-banner.ack-error {
+        justify-content: flex-start;
+        background: var(--red-dim, rgba(220, 60, 60, 0.12));
+        border-bottom: 1px solid var(--red-brd, rgba(220, 60, 60, 0.4));
+        color: var(--red);
+        font-weight: 500;
+        text-transform: none;
     }
     .alert-age-banner.critical .ab-link {
         border-color: var(--red-brd, rgba(220, 60, 60, 0.4));
