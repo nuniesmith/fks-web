@@ -97,11 +97,27 @@
     (assetInfo.source_chain ?? [])[0] === 'kraken' ||
     (assetInfo.source_chain ?? [])[0] === 'binance'
   );
-  // Active data source ('kraken' | 'binance' | 'sse' | 'none')
-  let activeSource = $state<'kraken' | 'binance' | 'sse' | 'none'>('none');
+  /**
+   * How often to re-read the newest bars for a non-crypto (futures) symbol.
+   * Declared here, above `dataSource`, which renders the cadence in its label.
+   * Full rationale on `connectBarPoll` below.
+   */
+  const BAR_POLL_MS = 20_000;
+
+  // Active data source ('kraken' | 'binance' | 'sse' | 'poll' | 'none')
+  let activeSource = $state<'kraken' | 'binance' | 'sse' | 'poll' | 'none'>('none');
+  /**
+   * The label must name what is ACTUALLY feeding the chart. It previously read
+   * "SSE bars" for every non-crypto symbol, including futures — where the SSE
+   * bridge is unconfigured by default AND janus has no futures bars to send, so
+   * the chart sat still while claiming a live stream. Naming the QuestDB poll
+   * with its cadence makes a stale futures chart self-explanatory instead of
+   * looking like a broken feed.
+   */
   let dataSource = $derived(
     activeSource === 'binance' ? 'Binance WS'
     : activeSource === 'kraken' ? 'Kraken WS'
+    : activeSource === 'poll' ? `QuestDB ${BAR_POLL_MS / 1000}s`
     : isCrypto ? 'Kraken WS'
     : 'SSE bars'
   );
@@ -1031,10 +1047,70 @@
     barSSE.connect();
   }
 
+  /**
+   * How often to re-read the newest bars for a non-crypto (futures) symbol.
+   *
+   * WHY POLL AT ALL. Futures never tick on this chart today. `/sse/bars/:sym`
+   * only carries data when `JANUS_BARS_SSE_URL` points at a janus SSE base, and
+   * that is EMPTY by default — but more fundamentally janus has no futures bars
+   * to serve: the Rithmic connector writes `candles_futures` in QuestDB
+   * directly and never passes through janus. So the SSE path was subscribing to
+   * a stub and waiting forever, while the UI labelled the source "SSE bars".
+   *
+   * WHY 20s IS ENOUGH, rather than plumbing a streaming bridge. The connector
+   * aggregates ONE-MINUTE bars, so the freshest thing that can possibly exist is
+   * up to 60s old; a 20s poll is never the binding constraint on latency. The
+   * measured QuestDB write lag is 6-46s after a minute closes, which already
+   * dominates this. A streaming path would add infrastructure to deliver data
+   * that is not produced any faster.
+   */
+  let barPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Re-read the last few bars and merge them in. `update()` on an existing
+   * timestamp REPLACES that candle, so re-sending the in-progress bar each tick
+   * is how it grows — and overlapping fetches are idempotent rather than
+   * duplicating rows.
+   *
+   * Deliberately silent on failure: this is a refresh of already-rendered data,
+   * so a blip should leave the last good chart standing rather than blanking it
+   * or raising an error banner over a chart that is merely a few seconds stale.
+   */
+  function connectBarPoll() {
+    stopBarPoll();
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=1&limit=5`,
+          { headers: { Accept: 'application/json' } }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.candles) || !candleSeries) return;
+        for (const c of data.candles as CandleBar[]) {
+          const candle: CandleData = {
+            time: Math.floor(c.timestamp / 1000) as any,
+            open: c.open, high: c.high, low: c.low, close: c.close,
+            volume: c.volume ?? 0,
+          };
+          candleSeries.update(candle);
+          updateCandleCache(candle);
+        }
+      } catch { /* keep the last good chart */ }
+    };
+    void tick();
+    barPollTimer = setInterval(() => void tick(), BAR_POLL_MS);
+  }
+
+  function stopBarPoll() {
+    if (barPollTimer !== null) { clearInterval(barPollTimer); barPollTimer = null; }
+  }
+
   function disconnectLiveData() {
     disconnectKrakenWS();   // also cancels krakenFailTimer
     disconnectBinanceWS();
     if (barSSE) { barSSE.disconnect(); barSSE = null; }
+    stopBarPoll();
     activeSource = 'none';
   }
 
@@ -1262,7 +1338,14 @@
         connectKrakenWS(krakenTicker);
       }
     } else {
+      // Non-crypto (futures). BOTH paths: the SSE bridge stays wired so that
+      // configuring JANUS_BARS_SSE_URL later starts working with no change
+      // here, and the poll guarantees the chart actually advances today. They
+      // cannot fight — both funnel into `candleSeries.update()`, which is keyed
+      // by timestamp, so whichever arrives second simply replaces the same bar.
       connectBarSSE();
+      connectBarPoll();
+      activeSource = 'poll';
     }
   }
 
