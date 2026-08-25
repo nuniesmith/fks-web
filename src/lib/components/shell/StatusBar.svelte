@@ -220,7 +220,7 @@
   <span class="status-item status-agg" aria-label={worstLabel}>
     <span
       class="dot"
-      class:dot-pulse={worstState === 'ok'}
+      class:dot-pulse={worstState === 'warn' || worstState === 'down'}
       style="background: {dotColor(worstState)}"
     ></span>
     {aggText}
@@ -229,7 +229,7 @@
   <span class="status-item" aria-label={dotLabel('Redis', redisState)}>
     <span
       class="dot"
-      class:dot-pulse={redisState === 'ok'}
+      class:dot-pulse={redisState === 'warn' || redisState === 'down'}
       style="background: {dotColor(redisState)}"
     ></span>
     Redis
@@ -243,7 +243,7 @@
   <span class="status-item" aria-label={dotLabel('Janus', janusState)}>
     <span
       class="dot"
-      class:dot-pulse={janusState === 'ok'}
+      class:dot-pulse={janusState === 'warn' || janusState === 'down'}
       style="background: {dotColor(janusState)}"
     ></span>
     Janus
@@ -255,7 +255,7 @@
   <span class="status-item" aria-label={dotLabel('Feed', feedState)}>
     <span
       class="dot"
-      class:dot-pulse={feedState === 'ok'}
+      class:dot-pulse={feedState === 'warn' || feedState === 'down'}
       style="background: {dotColor(feedState)}"
     ></span>
     Feed
@@ -345,7 +345,19 @@
     transition: background 0.4s ease;
   }
 
-  /* Subtle breathing animation when service is healthy */
+  /* MOTION MARKS A PROBLEM, NOT HEALTH.
+   *
+   * This animation used to be applied when a service was OK, so all three dots
+   * breathed continuously whenever everything was fine. Two things wrong with
+   * that. It reads as flickering on a 5px dot — reported from a normal Firefox
+   * session, and it is the animation, not the browser. And it inverts the
+   * signal an alerting surface exists to carry: if movement means "healthy",
+   * the eye learns to treat motion as reassurance, and a real fault — which was
+   * rendered STATIC — competes for attention against three things already
+   * moving.
+   *
+   * Now only warn/down pulse. A healthy bar is completely still, so any
+   * movement in it means something needs looking at. */
   .dot-pulse {
     animation: breathe 3s ease-in-out infinite;
   }
@@ -353,6 +365,15 @@
   @keyframes breathe {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.55; }
+  }
+
+  /* An operator who has asked the OS for less motion gets none: the colour
+   * already carries the state, so the animation is pure emphasis and is safe to
+   * drop entirely. */
+  @media (prefers-reduced-motion: reduce) {
+    .dot-pulse {
+      animation: none;
+    }
   }
 
   .health-val {
@@ -402,6 +423,14 @@
   @keyframes chip-overdue-pulse {
     0%, 100% { filter: brightness(1); }
     50%      { filter: brightness(1.4); }
+  }
+  /* Kept for the overdue chip too — this one is correctly marking an ANOMALY,
+     so it stays, but a reduced-motion request still wins. Colour and weight
+     already carry the state without it. */
+  @media (prefers-reduced-motion: reduce) {
+    .alert-chip.overdue {
+      animation: none;
+    }
   }
   /* Honest grey. "We cannot see the alert feed" is not an alarm and must not
      compete with a real one — but it must not be invisible either, which is

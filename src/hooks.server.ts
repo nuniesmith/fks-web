@@ -672,23 +672,61 @@ async function questdbRows(sql: string): Promise<any[]> {
 }
 
 // GET /api/assets/search?q= → the chart's symbol picker. Real symbols straight
-// from QuestDB `candles_crypto` (so you can only pick symbols that have data).
+// from QuestDB, so you can only pick symbols that actually have data.
+//
+// BOTH tables, because searching only `candles_crypto` made every futures
+// contract UNREACHABLE from /charts: GC/NQ/ES live in `candles_futures` and
+// never appeared, even though `resolveCandleTable` has always known how to
+// route them once a symbol is chosen.
+//
+// Futures results carry their VENUE-TAGGED symbol (`rithmic:GC`) as `symbol`,
+// not the bare ticker. That tag is exactly what `resolveCandleTable` keys on to
+// pick candles_futures — hand the chart a bare "GC" and it queries
+// candles_crypto and finds nothing. The bare ticker goes in `name` so the
+// dropdown still reads cleanly.
+//
+// Two queries rather than one UNION: the tables have different columns
+// (candles_futures has no `exchange`), so a UNION needs padding that makes the
+// mapping harder to read for no gain at 30 rows.
 async function symbolSearch(event: RequestEvent): Promise<Response> {
   // Sanitised + uppercased — goes into a SQL literal (injection guard).
   const q = sanitizeSymbol(event.url.searchParams.get("q"), 24).toUpperCase();
   if (!q) return json({ results: [] });
-  const rows = await questdbRows(
-    `SELECT DISTINCT symbol, exchange FROM candles_crypto ` +
-      `WHERE upper(symbol) LIKE '%${q}%' ORDER BY symbol LIMIT 30`,
-  );
-  return json({
-    results: rows.map((row) => ({
-      symbol: String(row[0]),
-      name: String(row[0]),
-      type: "crypto",
-      exchange: row[1] != null ? String(row[1]) : undefined,
-    })),
+
+  const [cryptoRows, futuresRows] = await Promise.all([
+    questdbRows(
+      `SELECT DISTINCT symbol, exchange FROM candles_crypto ` +
+        `WHERE upper(symbol) LIKE '%${q}%' ORDER BY symbol LIMIT 30`,
+    ),
+    questdbRows(
+      `SELECT DISTINCT symbol FROM candles_futures ` +
+        `WHERE upper(symbol) LIKE '%${q}%' ORDER BY symbol LIMIT 30`,
+    ),
+  ]);
+
+  const futures = futuresRows.map((row) => {
+    const tagged = String(row[0]); // e.g. "rithmic:GC"
+    const idx = tagged.indexOf(":");
+    const venue = idx > 0 ? tagged.slice(0, idx) : "";
+    const ticker = idx > 0 ? tagged.slice(idx + 1) : tagged;
+    return {
+      symbol: tagged,
+      name: ticker,
+      type: "futures",
+      exchange: venue || undefined,
+    };
   });
+  const crypto = cryptoRows.map((row) => ({
+    symbol: String(row[0]),
+    name: String(row[0]),
+    type: "crypto",
+    exchange: row[1] != null ? String(row[1]) : undefined,
+  }));
+
+  // Futures first: they are the operator's live decision instrument, and a
+  // search for "ES" must not bury ES futures under crypto pairs that merely
+  // contain those letters.
+  return json({ results: [...futures, ...crypto].slice(0, 30) });
 }
 
 // GET /api/assets/:short → the chart's asset-routing lookup (AssetInfo). We map
@@ -697,6 +735,22 @@ async function symbolSearch(event: RequestEvent): Promise<Response> {
 async function assetInfo(event: RequestEvent, shortRaw: string): Promise<Response> {
   const sym = sanitizeSymbol(shortRaw, 24).toUpperCase();
   if (!sym) return json({});
+
+  // FUTURES FIRST, and matched on the venue tag. A venue-tagged symbol is
+  // unambiguous — nothing in candles_crypto carries a `venue:` prefix — so this
+  // cannot shadow a crypto pair. Answering futures with `{}` (the old
+  // behaviour) dropped the page onto its slash heuristic, which classifies a
+  // tagged futures symbol as crypto and points the live path at the wrong feed.
+  const futuresRows = await questdbRows(
+    `SELECT symbol FROM candles_futures WHERE upper(symbol) = '${sym}' LIMIT 1`,
+  );
+  if (futuresRows[0]?.[0] != null) {
+    const tagged = String(futuresRows[0][0]);
+    const idx = tagged.indexOf(":");
+    const venue = idx > 0 ? tagged.slice(0, idx) : "rithmic";
+    return json({ type: "futures", source: venue, source_chain: [venue] });
+  }
+
   const rows = await questdbRows(
     `SELECT exchange FROM candles_crypto ` +
       `WHERE upper(symbol) = '${sym}' OR upper(symbol) LIKE '${sym}/%' ` +
