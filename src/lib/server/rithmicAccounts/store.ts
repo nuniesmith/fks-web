@@ -21,12 +21,30 @@ import type { RithmicAccount } from "$lib/types/rithmic";
 
 type Sql = ReturnType<typeof postgres>;
 
+/**
+ * The narrow shape the shell needs, deliberately NOT the full row.
+ *
+ * This is loaded on every page, so it carries only what the strip renders.
+ * Shipping `profit_target` / `min_account_balance` to every page would put the
+ * account's money figures into the HTML of screens that have no business
+ * showing them — including ones the operator might screen-share.
+ */
+export type RithmicFocusAccount = {
+  id: string;
+  label: string;
+  stage: RithmicAccount["stage"];
+  /** Whether account_id + fcm_id + ib_id are all set; positions need all three. */
+  positions_ready: boolean;
+};
+
 /** The writable shape — `has_credentials` is derived, never stored here. */
 export type RithmicAccountUpsert = Omit<RithmicAccount, "has_credentials" | "updated_at">;
 
 export interface RithmicAccountStore {
   configured(): Promise<boolean>;
   list(): Promise<RithmicAccount[]>;
+  /** The one enabled `main` trading account, for the shell strip. */
+  focused(): Promise<RithmicFocusAccount | null>;
   upsert(row: RithmicAccountUpsert): Promise<void>;
   remove(id: string): Promise<void>;
 }
@@ -117,6 +135,40 @@ export class PgRithmicAccountStore implements RithmicAccountStore {
    * role, so the operator's history of which accounts are mains is preserved
    * and switching back is one click.
    */
+  /**
+   * The single enabled `main` trading account.
+   *
+   * A partial unique index guarantees at most one, so `LIMIT 1` cannot silently
+   * pick between rivals. Returns null when the table is absent or empty — the
+   * shell must render either way, so a missing account is a normal state here
+   * rather than an error, unlike the settings panel where the DIFFERENCE
+   * between "no accounts" and "cannot store accounts" is the whole point.
+   *
+   * `positions_ready` mirrors the connector's own gate, including the trim:
+   * a value of " " passes a NOT NULL check and is rejected by the connector,
+   * so testing for non-blank here keeps the strip honest about whether the
+   * positions reader can actually start.
+   */
+  async focused(): Promise<RithmicFocusAccount | null> {
+    if (!(await this.configured())) return null;
+    const rows = await this.sql<Record<string, unknown>[]>`
+      SELECT id, label, stage,
+             (COALESCE(btrim(account_id), '') <> ''
+              AND COALESCE(btrim(fcm_id), '') <> ''
+              AND COALESCE(btrim(ib_id), '') <> '') AS positions_ready
+      FROM rithmic_accounts
+      WHERE kind = 'trading' AND role = 'main' AND enabled
+      LIMIT 1`;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: String(r.id),
+      label: String(r.label),
+      stage: (r.stage ?? null) as RithmicAccount["stage"],
+      positions_ready: r.positions_ready === true,
+    };
+  }
+
   async upsert(row: RithmicAccountUpsert): Promise<void> {
     await this.sql.begin(async (tx) => {
       if (row.enabled && row.role === "main") {

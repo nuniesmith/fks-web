@@ -23,6 +23,20 @@ class MemStore implements RithmicAccountStore {
     if (this.throwOnList) throw new Error("connection refused");
     return [...this.rows.values()].map((r) => ({ ...r, has_credentials: false }));
   }
+  async focused() {
+    if (!this.present) return null;
+    const r = [...this.rows.values()].find(
+      (x) => x.kind === "trading" && x.role === "main" && x.enabled,
+    );
+    if (!r) return null;
+    const set = (v: string | null | undefined) => String(v ?? "").trim() !== "";
+    return {
+      id: r.id,
+      label: r.label,
+      stage: r.stage,
+      positions_ready: set(r.account_id) && set(r.fcm_id) && set(r.ib_id),
+    };
+  }
   async upsert(row: RithmicAccountUpsert) {
     if (this.throwOnWrite) throw new Error("constraint violation");
     if (row.enabled && row.role === "main") {
@@ -196,5 +210,70 @@ describe("DELETE /api/rithmic/accounts/:id", () => {
     expect(v.ok).toBe(true);
     expect(v.note).toMatch(/left untouched/);
     expect((await s.list())).toHaveLength(0);
+  });
+});
+
+describe("focused() — the account the shell strip names", () => {
+  const row = (over: Partial<RithmicAccountUpsert> = {}): RithmicAccountUpsert =>
+    ({
+      id: "tpt-150k",
+      label: "TPT 150K",
+      kind: "trading",
+      enabled: true,
+      role: "main",
+      stage: "pro",
+      system_name: null,
+      fcm_id: null,
+      ib_id: null,
+      account_id: null,
+      starting_balance: null,
+      profit_target: null,
+      min_account_balance: null,
+      max_contracts: null,
+      ...over,
+    }) as RithmicAccountUpsert;
+
+  it("returns null when nothing is declared, so the strip says 'none'", async () => {
+    expect(await new MemStore().focused()).toBeNull();
+  });
+
+  it("ignores data feeds and disabled or copytrade rows", async () => {
+    const s = new MemStore();
+    await s.upsert(row({ id: "feed", kind: "data", role: null, stage: null }));
+    await s.upsert(row({ id: "off", enabled: false }));
+    await s.upsert(row({ id: "mirror", role: "copytrade" }));
+    expect(await s.focused()).toBeNull();
+  });
+
+  it("names the enabled main trading account", async () => {
+    const s = new MemStore();
+    await s.upsert(row());
+    expect(await s.focused()).toMatchObject({ id: "tpt-150k", label: "TPT 150K" });
+  });
+
+  it("reports positions_ready only when ALL THREE identifiers are set", async () => {
+    const s = new MemStore();
+    await s.upsert(row({ account_id: "TPT3990732" }));
+    expect((await s.focused())?.positions_ready).toBe(false);
+    await s.upsert(row({ account_id: "TPT3990732", fcm_id: "F" }));
+    expect((await s.focused())?.positions_ready).toBe(false);
+    await s.upsert(row({ account_id: "TPT3990732", fcm_id: "F", ib_id: "I" }));
+    expect((await s.focused())?.positions_ready).toBe(true);
+  });
+
+  it("treats whitespace as unset, mirroring the connector's trim", async () => {
+    // The connector trims before testing, so " " passes a NOT NULL check here
+    // and is rejected there. Reporting it ready would put a green account name
+    // in the strip while the positions reader never starts.
+    const s = new MemStore();
+    await s.upsert(row({ account_id: "A", fcm_id: "   ", ib_id: "I" }));
+    expect((await s.focused())?.positions_ready).toBe(false);
+  });
+
+  it("returns null when the table is absent rather than throwing at page load", async () => {
+    const s = new MemStore();
+    await s.upsert(row());
+    s.present = false;
+    expect(await s.focused()).toBeNull();
   });
 });
