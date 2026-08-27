@@ -188,6 +188,34 @@ export function validateRithmicAccount(
  * account is live is exactly the kind of change an operator must not discover
  * afterwards.
  */
+/**
+ * Which of the Rithmic connection identifiers are still missing.
+ *
+ * The connector's `positions_ready()` requires account_id, fcm_id AND ib_id to
+ * be non-blank, and skips the read-only PnL/positions reader otherwise —
+ * SILENTLY, by design, so that market data keeps flowing when they are unset.
+ *
+ * That silence is what this exists to break. Two of three configured looks
+ * exactly like zero of three from the outside: /futures shows no positions
+ * while the feed is plainly healthy, and nothing anywhere says why. Returning
+ * the NAMES rather than a boolean means the UI can say which one to go and find.
+ *
+ * Whitespace counts as missing, because the connector trims before testing —
+ * a value of " " would read as configured here and be rejected there.
+ */
+export const RITHMIC_TRIPLE = ['account_id', 'fcm_id', 'ib_id'] as const;
+
+export type RithmicTripleField = (typeof RITHMIC_TRIPLE)[number];
+
+export function missingTriple(
+  account: Partial<Pick<RithmicAccount, RithmicTripleField | 'kind'>> | null | undefined,
+): RithmicTripleField[] {
+  // Only trading logins subscribe to positions; a data feed has nothing to
+  // report, so reporting it as incomplete would be noise.
+  if (!account || account.kind !== 'trading') return [];
+  return RITHMIC_TRIPLE.filter((k) => !String(account[k] ?? '').trim());
+}
+
 export function mainToDemote(
   draft: Partial<RithmicAccount>,
   others: RithmicAccount[],

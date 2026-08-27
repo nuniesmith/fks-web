@@ -23,6 +23,7 @@
   import {
     STAGE_META,
     mainToDemote,
+    missingTriple,
     validateRithmicAccount,
     type RithmicAccount,
     type RithmicAccountsView,
@@ -45,6 +46,19 @@
     role: 'main',
     stage: 'test',
   };
+
+  /**
+   * The connection triple: account_id + fcm_id + ib_id.
+   *
+   * These are NOT credentials — they are routing identifiers, useless without
+   * the user/password that stay in `exchange_secrets`. That is why they can be
+   * rendered here while the panel's no-credential rule still holds. Do not
+   * "complete the set" by adding a password field.
+   *
+   * Logic lives in `missingTriple` so it can be unit-tested; see its doc for
+   * why the connector's silence when it is incomplete is the problem.
+   */
+  let tripleMissing = $derived(missingTriple(draft));
 
   async function load(): Promise<void> {
     try {
@@ -284,11 +298,53 @@
               <input type="number" step="0.01" bind:value={draft.min_account_balance} placeholder="146703.50" />
             </label>
           {/if}
+          <label class="ra-f">
+            <span>System name</span>
+            <input
+              bind:value={draft.system_name}
+              placeholder="Rithmic Paper Trading"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          {#if draft.kind === 'trading'}
+            <label class="ra-f">
+              <span>Account ID</span>
+              <input
+                bind:value={draft.account_id}
+                placeholder="TPT3990732"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            <label class="ra-f">
+              <span>FCM ID</span>
+              <input bind:value={draft.fcm_id} spellcheck="false" autocomplete="off" />
+            </label>
+            <label class="ra-f">
+              <span>IB ID</span>
+              <input bind:value={draft.ib_id} spellcheck="false" autocomplete="off" />
+            </label>
+          {/if}
           <label class="ra-f ra-f-check">
             <input type="checkbox" bind:checked={draft.enabled} />
             <span>Enabled</span>
           </label>
         </div>
+
+        {#if draft.kind === 'trading'}
+          <p class="ra-triple" class:ready={tripleMissing.length === 0}>
+            {#if tripleMissing.length === 0}
+              ✓ Connection triple complete — the read-only positions reader can start.
+            {:else}
+              Positions stay OFF until <strong>all three</strong> of Account ID, FCM ID and IB
+              ID are set — the connector skips the reader silently, so this looks the same as
+              a healthy feed with nothing to show. Missing:
+              <strong>{tripleMissing.join(', ')}</strong>. These are identifiers, not
+              credentials; the login itself is entered through the keys flow.
+            {/if}
+          </p>
+        {/if}
 
         {#if draft.kind === 'trading' && draft.role === 'copytrade'}
           <!-- Do not let this read as a working feature. -->
@@ -389,6 +445,13 @@
     margin: 0; font-size: 0.74rem; color: var(--amber);
     background: var(--amber-dim); padding: 0.3rem 0.5rem; border-radius: var(--r);
   }
+  /* Incomplete is the state worth noticing, so it inherits the amber warning
+     look; complete drops to a quiet green rather than another loud banner. */
+  .ra-triple {
+    margin: 0; font-size: 0.74rem; color: var(--amber);
+    background: var(--amber-dim); padding: 0.3rem 0.5rem; border-radius: var(--r);
+  }
+  .ra-triple.ready { color: var(--green); background: var(--green-dim); }
   .ra-errs { margin: 0; padding-left: 1.1rem; font-size: 0.74rem; color: var(--red); }
   .ra-actions { display: flex; gap: 0.4rem; align-items: center; }
 </style>
