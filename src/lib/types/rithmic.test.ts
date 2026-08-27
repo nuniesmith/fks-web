@@ -3,6 +3,7 @@ import {
   STAGE_META,
   validateRithmicAccount,
   mainToDemote,
+  missingTriple,
   type RithmicAccount,
 } from "./rithmic";
 
@@ -131,5 +132,37 @@ describe("STAGE_META", () => {
       expect(m.label.length).toBeGreaterThan(0);
       expect(m.note.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('missingTriple', () => {
+  const trading = { kind: 'trading' as const };
+
+  it('names every field that is still blank', () => {
+    expect(missingTriple({ ...trading })).toEqual(['account_id', 'fcm_id', 'ib_id']);
+    expect(missingTriple({ ...trading, account_id: 'TPT3990732' })).toEqual(['fcm_id', 'ib_id']);
+  });
+
+  it('is empty only when all three are present', () => {
+    expect(
+      missingTriple({ ...trading, account_id: 'A', fcm_id: 'F', ib_id: 'I' })
+    ).toEqual([]);
+  });
+
+  it('treats whitespace as missing, because the connector trims before testing', () => {
+    // " " would read as configured here and be rejected there — the exact
+    // mismatch that makes positions silently not start.
+    expect(missingTriple({ ...trading, account_id: 'A', fcm_id: '  ', ib_id: 'I' })).toEqual([
+      'fcm_id',
+    ]);
+  });
+
+  it('says nothing about data feeds, which never subscribe to positions', () => {
+    expect(missingTriple({ kind: 'data' })).toEqual([]);
+  });
+
+  it('survives null and undefined rather than throwing at render time', () => {
+    expect(missingTriple(null)).toEqual([]);
+    expect(missingTriple(undefined)).toEqual([]);
   });
 });
