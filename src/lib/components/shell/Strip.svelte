@@ -17,6 +17,16 @@
   let user = $derived($page.data.user as { username: string; role: string } | null);
   let authDisabled = $derived($page.data.authDisabled === true);
 
+  // ─── The hand-traded account ────────────────────────────────────────
+  // Loaded in +layout.server.ts and null on ANY failure, so this cell shows
+  // "no account" rather than the shell failing to render. The strip is
+  // decoration; reaching /cockpit to hit the kill switch is not.
+  let account = $derived(
+    $page.data.focusAccount as
+      | { id: string; label: string; stage: string | null; positions_ready: boolean }
+      | null,
+  );
+
   $effect(() => {
     const sym = data?.focus?.symbol;
     if (sym) {
@@ -60,36 +70,59 @@
     </span>
   </div>
 
-  <div class="strip-cell" aria-label="Profit and loss">
+  <!-- ACCOUNT replaces the old REGIME cell. Regime had the same dead feed as
+       P&L/RISK below, and the strip must not grow: it is the one row present on
+       every page including a 320px phone. Which account you are trading is also
+       the more useful fact — it is the thing every number further down the
+       screen is implicitly about. -->
+  <div class="strip-cell" aria-label="Hand-traded account">
+    <span class="lbl">ACCT</span>
+    {#if account}
+      <span class="val" title="{account.label} ({account.id})">
+        {account.label}
+        {#if account.stage}<span class="acct-stage">{account.stage}</span>{/if}
+        <!-- Positions need account_id + fcm_id + ib_id; the connector skips the
+             reader SILENTLY without them, so an unmarked account name would
+             imply a working positions feed that is not running. -->
+        {#if !account.positions_ready}<span class="acct-warn" title="account_id / fcm_id / ib_id incomplete — the positions reader is not running">no pos</span>{/if}
+      </span>
+    {:else}
+      <span class="val muted" title="No enabled main trading account is declared in Settings">none</span>
+    {/if}
+  </div>
+
+  <!-- ⚠ P&L AND RISK ARE NOT WIRED. `/sse/strip` has no adapter dispatch, so it
+       falls to gracefulEmpty's idle SSE stub and `data` is permanently null in
+       the shipped app. These render "n/a", NOT "—": a dash next to a dollar
+       sign reads as a real, flat number, and a fabricated flat P&L on every
+       page is the exact failure a previous fix here already had to undo (a
+       `?? 0` fallback made `0 >= 0` true forever and painted it green).
+       "n/a" cannot be misread as a value.
+
+       Do not "restore" a dash, and do not delete these cells either — the
+       layout slot is where a real feed will land, and removing them hides that
+       the platform still owes the operator a P&L. -->
+  <div class="strip-cell" aria-label="Profit and loss (no data source)">
     <span class="lbl">P&L</span>
-    <!-- `/sse/strip` has no adapter dispatch (gracefulEmpty's idle SSE stub),
-         so `data` is permanently null in the shipped app today. `pnlVariant`
-         returns 'default' (no colour class) for null/undefined — the `?? 0`
-         fallback this replaced made `0 >= 0` true forever, painting a
-         fabricated green P&L on every page, desktop and phone. -->
     <span
-      class="val"
-      class:green={pnlVariant(data?.pnl?.daily) === 'green'}
-      class:red={pnlVariant(data?.pnl?.daily) === 'red'}
+      class="val muted"
+      title="Not wired: /sse/strip has no backend. This is not a flat P&L."
     >
-      ${data?.pnl?.daily?.toFixed(2) ?? '—'}
+      {data?.pnl?.daily != null ? `$${data.pnl.daily.toFixed(2)}` : 'n/a'}
     </span>
   </div>
 
-  <div class="strip-cell" aria-label="Risk drawdown">
+  <div class="strip-cell" aria-label="Risk drawdown (no data source)">
     <span class="lbl">RISK</span>
     <span
       class="val"
+      class:muted={data?.risk?.dd_pct == null}
       class:amber={(data?.risk?.dd_pct ?? 0) > 2}
       class:red={(data?.risk?.dd_pct ?? 0) > 5}
+      title="Not wired: /sse/strip has no backend. This is not a zero drawdown."
     >
-      DD {data?.risk?.dd_pct?.toFixed(1) ?? '—'}%
+      {data?.risk?.dd_pct != null ? `DD ${data.risk.dd_pct.toFixed(1)}%` : 'n/a'}
     </span>
-  </div>
-
-  <div class="strip-cell" aria-label="Market regime">
-    <span class="lbl">REGIME</span>
-    <span class="val muted">{data?.regime?.label ?? '—'}</span>
   </div>
 
   <div class="strip-cell clock" aria-label="Clock" aria-live="off">
@@ -196,4 +229,15 @@
     /* RISK (now the last visible cell) sheds its trailing divider. */
     .strip-cell:nth-child(3) { border-right: none; }
   }
+  /* Stage and the incomplete-triple flag ride inside the ACCT value so the cell
+     stays one grid slot — the strip is the only row on a 320px phone. */
+  .acct-stage {
+    font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--t2); margin-left: 0.3rem;
+  }
+  .acct-warn {
+    font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--amber); margin-left: 0.3rem;
+  }
+
 </style>
