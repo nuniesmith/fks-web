@@ -98,10 +98,59 @@
     secretLabel: string;
     secretPlaceholder: string;
     /** Third slot (api_passphrase). Absent = field hidden for this provider. */
-    third?: { label: string; placeholder: string; required: boolean; hint?: string };
+    third?: {
+      label: string;
+      placeholder: string;
+      required: boolean;
+      hint?: string;
+      /** Render a <select> instead of free text. First entry is the default. */
+      options?: readonly string[];
+      /** Masked unless explicitly false. A Rithmic system name is not a secret
+       *  and masking it only makes a typo impossible to spot. */
+      secret?: boolean;
+    };
     /** Has a public reachability ping in hooks.server.ts (rithmic has none). */
     testable: boolean;
   }
+
+  /** The system names `rprotocol.rithmic.com` actually accepts.
+   *
+   *  Enumerated from the gateway itself on 2026-09-03 via
+   *  `scripts/rithmic-list-systems.py` in the fks repo, which sends an
+   *  UNAUTHENTICATED RequestRithmicSystemInfo — it cannot contribute to a
+   *  failed-login lockout, so it is safe to re-run when this list looks stale.
+   *
+   *  Typing this by hand is how you get `permission denied` from a gateway that
+   *  is working perfectly: the login is rejected for an unknown system before
+   *  the credentials are ever considered. */
+  const RITHMIC_SYSTEMS = [
+    'Rithmic Paper Trading',
+    'Rithmic 01',
+    'Rithmic 04 Colo',
+    'Apex',
+    '4PropTrader',
+    'Bulenox',
+    'DayTraders.com',
+    'Earn2Trade',
+    'FundedFuturesNetwork',
+    'GoatFundedFutures',
+    'HalcyonTrader',
+    'LegendsTrading',
+    'LucidTrading',
+    'MES Capital',
+    'PropShopTrader',
+    'TheTradingPit',
+    'ThriveTrading',
+    'TopstepTrader',
+    'TRADEFUNDED',
+    'TradeFundrr',
+    'Tradeify',
+    'Tradeify-Test',
+    'tradesea',
+    'tradesea-c',
+    'tradesea-d',
+    'tradesea-test',
+  ] as const;
 
   const EXCHANGE_PURPOSE =
     'Read-only: balances, trade history, book-level data — not autonomous trading.';
@@ -150,10 +199,14 @@
       keyLabel: 'User', keyPlaceholder: 'Rithmic login user…',
       secretLabel: 'Password', secretPlaceholder: 'Rithmic password…',
       third: {
-        label: 'System', placeholder: 'e.g. Rithmic Paper Trading', required: true,
+        label: 'System', placeholder: 'Rithmic Paper Trading', required: true,
+        options: RITHMIC_SYSTEMS,
+        secret: false,
         hint:
-          'Stored in the standard 3-slot secret record: User → api_key, ' +
-          'Password → api_secret, System → api_passphrase.',
+          'The gateway rejects an unknown system BEFORE checking credentials, ' +
+          'so a typo here reads as \u0022permission denied\u0022. List enumerated from ' +
+          'rprotocol.rithmic.com. Stored in the standard 3-slot record: ' +
+          'User \u2192 api_key, Password \u2192 api_secret, System \u2192 api_passphrase.',
       },
       // No public ping endpoint — R|API is a proprietary gateway protocol.
       testable: false,
@@ -297,7 +350,12 @@
     credExchange = '';
     credKey = '';
     credSecret = '';
-    credPassphrase = '';
+    // An option-backed third slot pre-selects its FIRST entry. Leaving it empty
+    // renders a blank <select> that submits '' — which the gateway rejects as
+    // an unknown system, i.e. the same "permission denied" the dropdown exists
+    // to prevent.
+    const opts = PROVIDER_BY_ID.get(credProviderId)?.third?.options;
+    credPassphrase = opts ? opts[0] : '';
   }
 
   async function saveCredential() {
@@ -916,14 +974,28 @@
                 ? credProvider.third.label + (credProvider.third.required ? '' : ' (optional)')
                 : 'API Passphrase (optional — only if the venue uses one)'}
             </label>
-            <input
-              id="cred-api-passphrase"
-              class="form-input"
-              type="password"
-              placeholder={credProvider?.third?.placeholder ?? 'Only if the venue requires one…'}
-              bind:value={credPassphrase}
-              autocomplete="off"
-            />
+            {#if credProvider?.third?.options}
+              <!-- A closed set the gateway publishes: pick, do not type. -->
+              <select
+                id="cred-api-passphrase"
+                class="form-input"
+                bind:value={credPassphrase}
+              >
+                {#each credProvider.third.options as sys (sys)}
+                  <option value={sys}>{sys}</option>
+                {/each}
+              </select>
+            {:else}
+              <input
+                id="cred-api-passphrase"
+                class="form-input"
+                type={credProvider?.third?.secret === false ? 'text' : 'password'}
+                placeholder={credProvider?.third?.placeholder ?? 'Only if the venue requires one…'}
+                bind:value={credPassphrase}
+                autocomplete="off"
+                spellcheck="false"
+              />
+            {/if}
             {#if credProvider?.third?.hint}
               <span class="form-hint">{credProvider.third.hint}</span>
             {/if}
