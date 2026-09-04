@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   candleSymbolCondition,
+  pickStoredInstrument,
   pickStoredSymbol,
   type CandleRow,
   humanizeSince,
@@ -493,5 +494,44 @@ describe("mapCandleRows symbol disambiguation", () => {
   /** Rows with no symbol column (older shape) must still map. */
   it("tolerates rows without a symbol column", () => {
     expect(mapCandleRows([[1_000_000, 1, 2, 0.5, 1.5, 7]])).toHaveLength(1);
+  });
+});
+
+describe("pickStoredInstrument", () => {
+  /** Symbol alone is not an instrument: the table dedups on
+   *  (timestamp, symbol, exchange, interval), so two venues storing the same
+   *  symbol are two different order books sharing a name. */
+  it("picks one venue when a symbol trades on several", () => {
+    const picked = pickStoredInstrument("BTC", [
+      ["BTCUSDT", "kraken"],
+      ["BTCUSDT", "binance"],
+    ]);
+    expect(picked).toEqual({ symbol: "BTCUSDT", exchange: "binance" });
+  });
+
+  it("is deterministic — candidate order cannot change the answer", () => {
+    const a = pickStoredInstrument("BTC", [
+      ["BTCUSDT", "binance"],
+      ["BTCUSDT", "kraken"],
+    ]);
+    const b = pickStoredInstrument("BTC", [
+      ["BTCUSDT", "kraken"],
+      ["BTCUSDT", "binance"],
+    ]);
+    expect(a).toEqual(b);
+  });
+
+  it("resolves the symbol preference first, then the venue", () => {
+    // USDT wins over USD by QUOTE_SUFFIXES order, and only that symbol's
+    // venues are then considered — a venue on the losing symbol is irrelevant.
+    const picked = pickStoredInstrument("BTC", [
+      ["BTCUSD", "aaa_exchange"],
+      ["BTCUSDT", "zzz_exchange"],
+    ]);
+    expect(picked).toEqual({ symbol: "BTCUSDT", exchange: "zzz_exchange" });
+  });
+
+  it("reports nothing rather than inventing an instrument", () => {
+    expect(pickStoredInstrument("BTC", [])).toBeNull();
   });
 });

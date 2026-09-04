@@ -12,6 +12,7 @@ import {
   reshapeRiskConfig,
   resampleCandles,
   candleSymbolCondition,
+  pickStoredInstrument,
   pickStoredSymbol,
   resolveCandleTable,
   riskConfigRecognized,
@@ -529,31 +530,95 @@ const METRICS_LAYOUT = {
 // this the two cases were both `[]`, so an outage rendered identically to
 // "this symbol has no candles" with zero error signal; `fetchCandles` below
 // turns a `null` into the `degraded` flag the client branches on.
-async function queryCandles(
+/** A single stored book: one symbol on one venue. `exchange: null` means the
+ *  table has no venue split for this row (the futures path, already tagged). */
+type ResolvedInstrument = { symbol: string; exchange: string | null };
+
+/** Cached so the extra lookup is paid once per symbol, not per chart poll.
+ *
+ *  POSITIVE RESULTS ONLY. A book that exists keeps existing, so caching it is
+ *  safe. Caching absence is not: ingestion adds symbols over time, so a symbol
+ *  that has no rows now may have them in ten minutes, and a cached `null`
+ *  would keep that chart permanently blank until the process restarted. The
+ *  degraded-flag tests caught exactly this — a negative cached by one case
+ *  silently short-circuited every later one. */
+const instrumentCache = new Map<string, ResolvedInstrument>();
+
+/**
+ * Which single stored book should a chart symbol draw?
+ *
+ * Returns the instrument, `null` when the table holds nothing matching, or
+ * `"failed"` when the lookup itself could not be completed — the same
+ * three-way distinction `queryCandles` makes, so a QuestDB outage stays
+ * distinguishable from an empty result.
+ */
+async function resolveInstrument(
   sym: string,
+  table: "candles_crypto" | "candles_futures",
+  exact: boolean,
+): Promise<ResolvedInstrument | null | "failed"> {
+  // Futures symbols are already venue-tagged (`rithmic:GC`), so the symbol
+  // alone identifies the book and no lookup is needed.
+  if (exact) return { symbol: sym, exchange: null };
+
+  const key = `${table}:${sym}`;
+  const hit = instrumentCache.get(key);
+  if (hit !== undefined) return hit;
+
+  const sql =
+    `SELECT DISTINCT symbol, exchange FROM ${table} ` +
+    `WHERE ${candleSymbolCondition(sym, false)}`;
+  try {
+    const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) return "failed";
+    const j: any = await r.json();
+    const rows: Array<[string, string]> = Array.isArray(j?.dataset)
+      ? j.dataset
+          .map((row: unknown[]) => [String(row?.[0] ?? ""), String(row?.[1] ?? "")])
+          .filter(([sy]: string[]) => sy.length > 0)
+      : [];
+    const picked = pickStoredInstrument(sym, rows);
+    if (picked !== null) instrumentCache.set(key, picked);
+    return picked;
+  } catch {
+    // Not cached: a network blip must not pin this symbol to a wrong answer.
+    return "failed";
+  }
+}
+
+async function queryCandles(
+  resolved: ResolvedInstrument,
   iv: string,
   days: number,
   lim: number,
   beforeIso?: string,
   table: "candles_crypto" | "candles_futures" = "candles_crypto",
-  exact = false,
 ): Promise<CandleRow[] | null> {
   // With `beforeIso` (history pagination) the days window anchors to that
   // cutoff instead of now(), so scrolling far back keeps returning rows.
   const timeCond = beforeIso
     ? `timestamp < '${beforeIso}' AND timestamp >= dateadd('d', -${days}, cast('${beforeIso}' as timestamp))`
     : `timestamp >= dateadd('d', -${days}, now())`;
-  // Futures symbols are stored fully venue-tagged, so match exactly; crypto
-  // symbols tolerate the separator-bearing AND concatenated pair forms.
+  // EXACT predicates on a RESOLVED instrument, applied before LIMIT.
   //
-  // The matcher is permissive ON PURPOSE, so `symbol` is SELECTed alongside the
-  // bars and a single spelling is chosen from what actually came back (see
-  // mapCandleRows). Querying the permissive set and rendering everything it
-  // returns would merge two different books — BTCUSDT and BTCUSD — into one
-  // series, at two prices, interleaved by timestamp, looking entirely normal.
-  const symCond = candleSymbolCondition(sym, exact);
+  // The previous shape queried permissively and picked one spelling from the
+  // rows that came back. That still merged venues — the table dedups on
+  // (timestamp, symbol, exchange, interval), so two venues storing BTCUSDT are
+  // different books that the symbol alone cannot separate — and it had a
+  // subtler fault: filtering AFTER `LIMIT 5000` means the limit is spent on
+  // rows that are then discarded, so the chosen book comes back short and the
+  // series can change between windows. External review (Sol, 2026-09-04, R6).
+  //
+  // Resolving first costs one cheap cached query and makes the predicate
+  // exact, so the limit applies to the series actually being drawn.
+  const symCond = resolved.exchange === null
+    ? `symbol = '${resolved.symbol}'`
+    : `symbol = '${resolved.symbol}' AND exchange = '${resolved.exchange}'`;
   const sql =
-    `SELECT cast(timestamp as long) t, open, high, low, close, volume, symbol FROM ${table} ` +
+    `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM ${table} ` +
     `WHERE ${symCond} ` +
     `AND interval = '${iv}' AND ${timeCond} ` +
     `ORDER BY timestamp DESC LIMIT ${lim}`;
@@ -566,9 +631,7 @@ async function queryCandles(
     });
     if (!r.ok) return null;
     const j: any = await r.json();
-    // Pass the base only on the permissive (crypto) path; the futures path
-    // already queried one exact symbol and must not be re-filtered.
-    return mapCandleRows(j?.dataset, exact ? undefined : sym);
+    return mapCandleRows(j?.dataset);
   } catch {
     return null;
   }
@@ -601,7 +664,13 @@ async function fetchCandles(
       ? new Date(beforeMs).toISOString()
       : undefined;
 
-  const primary = await queryCandles(sym, iv, days, lim, beforeIso, table, exact);
+  // Resolve the book ONCE, then query it exactly. A failed lookup is degraded;
+  // "no such instrument" is a genuine empty, not an outage.
+  const resolved = await resolveInstrument(sym, table, exact);
+  if (resolved === "failed") return { rows: [], degraded: true };
+  if (resolved === null) return { rows: [], degraded: false };
+
+  const primary = await queryCandles(resolved, iv, days, lim, beforeIso, table);
   let degraded = primary === null;
   let rows: CandleRow[] = primary ?? [];
 
@@ -611,13 +680,12 @@ async function fetchCandles(
   const sec = intervalToSeconds(iv);
   if (rows.length === 0 && iv !== "1m" && sec !== null && sec % 60 === 0) {
     const oneMin = await queryCandles(
-      sym,
+      resolved,
       "1m",
       days,
       Math.min(5000, Math.ceil((sec / 60) * lim)),
       beforeIso,
       table,
-      exact,
     );
     if (oneMin === null) {
       degraded = true;
