@@ -11,6 +11,7 @@ import {
   reshapePerformance,
   reshapeRiskConfig,
   resampleCandles,
+  candleSymbolCondition,
   resolveCandleTable,
   riskConfigRecognized,
   sanitizeInterval,
@@ -542,10 +543,8 @@ async function queryCandles(
     ? `timestamp < '${beforeIso}' AND timestamp >= dateadd('d', -${days}, cast('${beforeIso}' as timestamp))`
     : `timestamp >= dateadd('d', -${days}, now())`;
   // Futures symbols are stored fully venue-tagged, so match exactly; crypto
-  // symbols tolerate the `/`- and `-`-quoted variants.
-  const symCond = exact
-    ? `symbol = '${sym}'`
-    : `(symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%')`;
+  // symbols tolerate the separator-bearing AND concatenated pair forms.
+  const symCond = candleSymbolCondition(sym, exact);
   const sql =
     `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM ${table} ` +
     `WHERE ${symCond} ` +

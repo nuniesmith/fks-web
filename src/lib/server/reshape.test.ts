@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  candleSymbolCondition,
   type CandleRow,
   humanizeSince,
   intervalToSeconds,
@@ -399,5 +400,37 @@ describe("resolveCandleTable", () => {
   });
   it("falls back to crypto when the tag is malformed", () => {
     expect(resolveCandleTable(":MES").table).toBe("candles_crypto");
+  });
+});
+
+describe("candleSymbolCondition", () => {
+  /** The regression: storage holds the exchange's concatenated pair, and the
+   *  charts page sends the bare base ticker. Matching only the
+   *  separator-bearing forms matched none of the 25,422 stored BTC 5m rows, so
+   *  every crypto chart showed only ticks accumulated since page load. */
+  it("matches the concatenated pair form the exchanges actually write", () => {
+    const c = candleSymbolCondition("BTC", false);
+    expect(c).toContain("'BTCUSDT'");
+    expect(c).toContain("'BTCUSD'");
+  });
+
+  it("still matches the separator-bearing and bare forms", () => {
+    const c = candleSymbolCondition("BTC", false);
+    expect(c).toContain("symbol = 'BTC'");
+    expect(c).toContain("symbol LIKE 'BTC/%'");
+    expect(c).toContain("symbol LIKE 'BTC-%'");
+  });
+
+  /** Deliberately NOT `LIKE 'BTC%'`. A prefix wildcard would also match a
+   *  different asset starting with the same letters, and charting the wrong
+   *  instrument is worse than charting nothing. */
+  it("does not use a bare prefix wildcard", () => {
+    expect(candleSymbolCondition("BTC", false)).not.toContain("LIKE 'BTC%'");
+  });
+
+  it("matches futures symbols exactly, with no pair expansion", () => {
+    const c = candleSymbolCondition("rithmic:GC", true);
+    expect(c).toBe("symbol = 'rithmic:GC'");
+    expect(c).not.toContain("USDT");
   });
 });
