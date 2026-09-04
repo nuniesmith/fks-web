@@ -63,6 +63,28 @@ function toIso(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+/** The key under which the platform stored its ONE Rithmic login before
+ *  migration 016 introduced per-account credentials. Still the live key. */
+export const SHARED_RITHMIC_KEY = "rithmic";
+
+/**
+ * Does `accountId` have a credential, given the keys present in the secret store?
+ *
+ * Two forms count. `rithmic:<id>` is the per-account key from migration 016.
+ * Plain `rithmic` is the single shared login the connector actually runs on —
+ * one credential serving every declared account, which is the state the
+ * platform has been in since before the split existed.
+ *
+ * Counting only the per-account form reported "no credential" for an account
+ * that was live and streaming at that moment. That is the worst direction for
+ * this particular flag to be wrong in: it appears on the screen the operator
+ * uses to decide whether to go and enter credentials, so a false negative
+ * invites re-entering a credential that is already working.
+ */
+export function hasCredential(accountId: string, keys: Set<string>): boolean {
+  return keys.has(`${SHARED_RITHMIC_KEY}:${accountId}`) || keys.has(SHARED_RITHMIC_KEY);
+}
+
 export class PgRithmicAccountStore implements RithmicAccountStore {
   private sql: Sql;
   /** Positive probe cached forever (tables do not un-exist); negative retried,
@@ -87,18 +109,45 @@ export class PgRithmicAccountStore implements RithmicAccountStore {
   }
 
   async list(): Promise<RithmicAccount[]> {
-    // LEFT JOIN on exchange_secrets to report WHETHER a credential is stored.
-    // `EXISTS`, never the columns — the secret must not enter this query's
-    // result set even transiently. If the webui role cannot see that table the
-    // join yields false, which reads as "no credential", the safe direction.
+    // Report WHETHER a credential is stored — `EXISTS`, never the columns, so
+    // the ciphertext cannot enter this result set even transiently. The webui
+    // role is granted SELECT on `exchange_secrets(exchange)` ALONE (fks
+    // migration 019), so reading a secret column here would fail outright
+    // rather than merely being unintended.
+    //
+    // Two keys are checked, not one. `rithmic:<id>` is the per-account key that
+    // migration 016 introduced; plain `rithmic` is the single shared credential
+    // the platform actually ran on before that split, and still runs on today.
+    // Matching only the per-account form reported "no credential" for the one
+    // account that was live and streaming — a false negative on the exact
+    // screen the operator uses to decide whether to go add credentials.
+    //
+    // The secret-store query is separated from the account query on purpose.
+    // Folding it in as a subquery makes a missing grant fatal to BOTH: a
+    // privilege failure in Postgres ABORTS the statement, it does not evaluate
+    // to false, so the "degrades to no-credential" behaviour this code used to
+    // claim was never actually reachable — the panel 502'd instead. Split, the
+    // account list survives a secret-store the webui cannot read.
     const rows = await this.sql<Record<string, unknown>[]>`
-      SELECT a.*,
-             EXISTS (
-               SELECT 1 FROM exchange_secrets s
-               WHERE s.exchange = 'rithmic:' || a.id
-             ) AS has_credentials
+      SELECT a.*
       FROM rithmic_accounts a
       ORDER BY a.kind, a.enabled DESC, a.label`;
+
+    let credentialed: Set<string>;
+    try {
+      const keys = await this.sql<{ exchange: string }[]>`
+        SELECT exchange FROM exchange_secrets
+        WHERE exchange = 'rithmic' OR exchange LIKE 'rithmic:%'`;
+      credentialed = new Set(keys.map((k) => k.exchange));
+    } catch {
+      // No access to the secret store: report "no credential" rather than
+      // failing the whole panel. Under-reporting prompts the operator to go and
+      // look; a 502 tells them nothing about their accounts at all.
+      credentialed = new Set<string>();
+    }
+    for (const r of rows) {
+      r.has_credentials = hasCredential(String(r.id), credentialed);
+    }
     return rows.map((r) => ({
       id: String(r.id),
       label: String(r.label),
