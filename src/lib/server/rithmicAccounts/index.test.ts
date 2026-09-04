@@ -4,6 +4,7 @@ import {
   rithmicAccountsGet,
   rithmicAccountsPost,
 } from "./index";
+import { hasCredential } from "./store";
 import type { RithmicAccountStore, RithmicAccountUpsert } from "./store";
 import type { RithmicAccount } from "$lib/types/rithmic";
 
@@ -275,5 +276,34 @@ describe("focused() — the account the shell strip names", () => {
     await s.upsert(row());
     s.present = false;
     expect(await s.focused()).toBeNull();
+  });
+});
+
+describe("credential presence", () => {
+  /** The bug this fixes: an account that was live and streaming rendered as
+   *  having no credential, because only the per-account key form was matched. */
+  it("counts the shared `rithmic` key, not just the per-account key", () => {
+    const shared = new Set(["rithmic"]);
+    expect(hasCredential("TPT4432620", shared)).toBe(true);
+    // Any declared account is covered by the shared login — that is what
+    // "shared" means, and it is the platform's actual running state.
+    expect(hasCredential("SOME-OTHER-ACCT", shared)).toBe(true);
+  });
+
+  it("counts a per-account key for that account only", () => {
+    const perAccount = new Set(["rithmic:TPT4432620"]);
+    expect(hasCredential("TPT4432620", perAccount)).toBe(true);
+    expect(hasCredential("OTHER", perAccount)).toBe(false);
+  });
+
+  it("reports absence when the store holds nothing for Rithmic", () => {
+    expect(hasCredential("TPT4432620", new Set())).toBe(false);
+    expect(hasCredential("TPT4432620", new Set(["kraken", "kucoin"]))).toBe(false);
+  });
+
+  /** A near-miss key must not be read as a match — `rithmicX` is not `rithmic`. */
+  it("does not match a key that merely starts with the same letters", () => {
+    expect(hasCredential("A", new Set(["rithmicX"]))).toBe(false);
+    expect(hasCredential("A", new Set(["rithmic:AB"]))).toBe(false);
   });
 });
