@@ -192,9 +192,25 @@ export interface CandleRow {
 // QuestDB `candles_crypto` dataset rows are [t_µs, open, high, low, close,
 // volume], newest-first. Map → ascending OHLCV with the timestamp in ms (what
 // lightweight-charts' setData expects). Non-arrays → []; missing volume → 0.
-export function mapCandleRows(dataset: unknown): CandleRow[] {
+export function mapCandleRows(dataset: unknown, base?: string): CandleRow[] {
   const rows: unknown[] = Array.isArray(dataset) ? dataset : [];
+
+  // When `base` is given, the query used the PERMISSIVE symbol matcher and
+  // `symbol` rides along as column 6. Several spellings of the same base can
+  // come back (`BTCUSDT` and `BTCUSD`), and those are different order books —
+  // rendering both would interleave two price series into one chart that looks
+  // completely normal. Pick one spelling and drop the rest.
+  //
+  // Callers that already query an exact symbol pass no `base` and are
+  // unaffected, so this cannot change the futures path.
+  let keep: string | null = null;
+  if (base !== undefined) {
+    const seen = [...new Set(rows.map((r) => String((r as unknown[])[6] ?? "")))].filter(Boolean);
+    keep = pickStoredSymbol(base, seen);
+  }
+
   return rows
+    .filter((r) => keep === null || String((r as unknown[])[6] ?? "") === keep)
     .map((r) => {
       const row = r as unknown[];
       return {
@@ -295,6 +311,39 @@ export function candleSymbolCondition(sym: string, exact: boolean): string {
     `(symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%'` +
     ` OR symbol IN (${concatenated}))`
   );
+}
+
+/**
+ * Choose exactly ONE stored symbol to chart from the candidates that matched.
+ *
+ * WHY THIS EXISTS. `candleSymbolCondition` is a MATCHER — it deliberately
+ * accepts every spelling a base ticker might be stored under. Feeding that
+ * straight into the candle query is only safe while exactly one of those
+ * spellings exists. The moment the table holds both `BTCUSDT` and `BTCUSD`,
+ * the OR-set merges two genuinely different books into a single series: bars
+ * from two order books, at two prices, interleaved by timestamp, rendered as
+ * one instrument. Nothing about that chart would look wrong.
+ *
+ * So the matcher finds candidates and this picks the winner, deterministically
+ * and by a stated preference rather than by whatever the storage engine happens
+ * to return first. Preference order:
+ *
+ *   1. the bare base, if stored that way
+ *   2. the concatenated quotes, in QUOTE_SUFFIXES order (USDT first — it is
+ *      what every venue this platform reads actually writes)
+ *   3. separator-bearing forms, alphabetically, as a stable last resort
+ *
+ * Returns `null` for no candidates, so the caller reports "no data" rather than
+ * inventing a symbol.
+ */
+export function pickStoredSymbol(base: string, candidates: string[]): string | null {
+  if (candidates.length === 0) return null;
+  const have = new Set(candidates);
+  if (have.has(base)) return base;
+  for (const q of QUOTE_SUFFIXES) {
+    if (have.has(`${base}${q}`)) return `${base}${q}`;
+  }
+  return [...candidates].sort()[0] ?? null;
 }
 
 /**
