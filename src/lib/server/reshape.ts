@@ -336,6 +336,30 @@ export function candleSymbolCondition(sym: string, exact: boolean): string {
  * Returns `null` for no candidates, so the caller reports "no data" rather than
  * inventing a symbol.
  */
+/**
+ * Choose ONE (symbol, exchange) book from the candidates that matched.
+ *
+ * Symbol alone is not an instrument. `candles_crypto` deduplicates on
+ * (timestamp, symbol, exchange, interval), so two venues storing `BTCUSDT` are
+ * two different order books that share a name — and a chart drawn from both is
+ * two price series interleaved by timestamp, which looks entirely normal.
+ *
+ * Symbol preference is decided first (see `pickStoredSymbol`), then the venue
+ * alphabetically as a stable tie-break. Alphabetical is arbitrary but STATED
+ * and deterministic, which is the property that matters: the same chart must
+ * not silently change which book it draws between one window and the next.
+ */
+export function pickStoredInstrument(
+  base: string,
+  rows: Array<[string, string]>,
+): { symbol: string; exchange: string | null } | null {
+  if (rows.length === 0) return null;
+  const symbol = pickStoredSymbol(base, [...new Set(rows.map(([s]) => s))]);
+  if (symbol === null) return null;
+  const venues = rows.filter(([s]) => s === symbol).map(([, e]) => e).filter(Boolean).sort();
+  return { symbol, exchange: venues[0] ?? null };
+}
+
 export function pickStoredSymbol(base: string, candidates: string[]): string | null {
   if (candidates.length === 0) return null;
   const have = new Set(candidates);
