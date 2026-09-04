@@ -261,6 +261,43 @@ export function resampleCandles(rows: CandleRow[], bucketSec: number): CandleRow
 }
 
 /**
+ * Quote currencies a base ticker may be CONCATENATED with in storage.
+ *
+ * Ingestion writes the exchange's own pair form, which for every venue the
+ * platform reads is separator-free: `BTCUSDT`, not `BTC/USDT` or `BTC-USDT`.
+ */
+const QUOTE_SUFFIXES = ["USDT", "USD", "USDC", "BUSD", "PERP"] as const;
+
+/**
+ * The SQL predicate matching a chart symbol against stored candle symbols.
+ *
+ * WHY THIS EXISTS. The charts page strips the quote currency before calling the
+ * API (`BTC/USD` → `BTC`), and storage holds the exchange's concatenated pair
+ * (`BTCUSDT`). The old predicate tried `= 'BTC'`, `LIKE 'BTC/%'` and
+ * `LIKE 'BTC-%'` — the separator-bearing forms only — so it matched ZERO of the
+ * 25,422 stored BTC 5m rows. Every crypto chart fell back to whatever live
+ * ticks had accumulated since page load, which looks like a chart that "isn't
+ * loading enough data" rather than one that loaded none.
+ *
+ * It also silently defeated the 1m-resample fallback, because that path
+ * re-queries through this same predicate: with no 1m rows to resample, 15m and
+ * every coarser timeframe rendered "No data" even though the 1m history to
+ * build them from was sitting in the table.
+ *
+ * An explicit suffix list rather than `LIKE 'BTC%'`: a prefix wildcard would
+ * also match a different asset that merely starts with the same letters, and
+ * quietly charting the wrong instrument is far worse than charting nothing.
+ */
+export function candleSymbolCondition(sym: string, exact: boolean): string {
+  if (exact) return `symbol = '${sym}'`;
+  const concatenated = QUOTE_SUFFIXES.map((q) => `'${sym}${q}'`).join(", ");
+  return (
+    `(symbol = '${sym}' OR symbol LIKE '${sym}/%' OR symbol LIKE '${sym}-%'` +
+    ` OR symbol IN (${concatenated}))`
+  );
+}
+
+/**
  * Route a chart symbol to its QuestDB table. A venue-tagged symbol like
  * `rithmic:MESU6` → `candles_futures` (Rithmic connector output, same shape as
  * candles_crypto), matched EXACTLY; a bare `BTCUSDT` → `candles_crypto`. The

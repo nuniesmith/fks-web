@@ -319,6 +319,25 @@
   let backfillWindowDays = 30;
   let loadSeq = 0;
 
+  // Days of history to request for a given timeframe.
+  //
+  // A fixed 30-day window is generous at 1m and nearly empty at 1D/1W — it
+  // yields ~30 daily bars and ~4 weekly ones, which draws a chart too short to
+  // read and too short for any indicator with a 20+ period to warm up. Scale
+  // the window with the bar size so every timeframe asks for a comparable
+  // NUMBER of bars instead of a comparable span of calendar time. The server
+  // caps at 365 days and 5000 rows, so these are requests, not guarantees.
+  function historyWindowDays(iv: string): number {
+    const m = /^(\d+)\s*([mhdw])$/i.exec(iv.trim());
+    if (!m) return 30;
+    const n = parseInt(m[1], 10);
+    const unit = m[2].toLowerCase();
+    const minutes = n * (unit === 'm' ? 1 : unit === 'h' ? 60 : unit === 'd' ? 1440 : 10080);
+    // Aim at the server's own 5000-row cap so no timeframe asks for less than
+    // it did under the old flat 30 days, then bound by its 365-day cap.
+    return Math.max(2, Math.min(365, Math.ceil((minutes * 5000) / 1440)));
+  }
+
   // Auto-focus symbol from strip SSE
   let ignoreNextFocusChange = false;
   $effect(() => {
@@ -1257,7 +1276,8 @@
     // Fetch historical bars
     try {
       const res = await fetch(
-        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}&days_back=30&limit=5000`,
+        `/bars/${encodeURIComponent(apiSymbol)}/candles?interval=${interval}` +
+          `&days_back=${historyWindowDays(interval)}&limit=5000`,
         { headers: { Accept: 'application/json' } }
       );
       const data = await res.json();
