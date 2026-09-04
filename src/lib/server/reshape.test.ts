@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   candleSymbolCondition,
+  pickStoredSymbol,
   type CandleRow,
   humanizeSince,
   intervalToSeconds,
@@ -432,5 +433,65 @@ describe("candleSymbolCondition", () => {
     const c = candleSymbolCondition("rithmic:GC", true);
     expect(c).toBe("symbol = 'rithmic:GC'");
     expect(c).not.toContain("USDT");
+  });
+});
+
+describe("pickStoredSymbol", () => {
+  /** The defect this closes: the matcher accepts every spelling, so querying on
+   *  it directly would merge two different books into one series. */
+  it("picks ONE symbol when several spellings exist", () => {
+    const picked = pickStoredSymbol("BTC", ["BTCUSD", "BTCUSDT"]);
+    expect(picked).toBe("BTCUSDT");
+    // Deterministic: order of candidates must not change the answer.
+    expect(pickStoredSymbol("BTC", ["BTCUSDT", "BTCUSD"])).toBe("BTCUSDT");
+  });
+
+  it("prefers the bare base when it is stored that way", () => {
+    expect(pickStoredSymbol("BTC", ["BTC", "BTCUSDT"])).toBe("BTC");
+  });
+
+  it("follows the stated quote preference", () => {
+    expect(pickStoredSymbol("ETH", ["ETHUSDC", "ETHUSD"])).toBe("ETHUSD");
+    expect(pickStoredSymbol("ETH", ["ETHPERP", "ETHUSDC"])).toBe("ETHUSDC");
+  });
+
+  it("reports nothing rather than inventing a symbol", () => {
+    expect(pickStoredSymbol("BTC", [])).toBeNull();
+  });
+
+  it("falls back stably for an unrecognised spelling", () => {
+    // No preferred form present: alphabetical, so the answer is at least stable
+    // across calls rather than dependent on storage order.
+    expect(pickStoredSymbol("BTC", ["BTC-PERP", "BTC/USD"])).toBe("BTC-PERP");
+  });
+});
+
+describe("mapCandleRows symbol disambiguation", () => {
+  /** Two spellings of the same base are two different ORDER BOOKS. Rendering
+   *  both interleaves two price series into one chart that looks normal. */
+  it("keeps one spelling and drops the other", () => {
+    const rows = [
+      [3_000_000, 3, 3, 3, 3, 30, "BTCUSD"],
+      [2_000_000, 2, 2, 2, 2, 20, "BTCUSDT"],
+      [1_000_000, 1, 1, 1, 1, 10, "BTCUSDT"],
+    ];
+    const out = mapCandleRows(rows, "BTC");
+    expect(out).toHaveLength(2);
+    expect(out.map((c) => c.close)).toEqual([1, 2]); // ascending, USDT only
+  });
+
+  /** No `base` = the caller already queried an exact symbol (the futures path).
+   *  It must be passed through untouched. */
+  it("does not filter when no base is supplied", () => {
+    const rows = [
+      [2_000_000, 2, 2, 2, 2, 20, "rithmic:GC"],
+      [1_000_000, 1, 1, 1, 1, 10, "rithmic:GC"],
+    ];
+    expect(mapCandleRows(rows)).toHaveLength(2);
+  });
+
+  /** Rows with no symbol column (older shape) must still map. */
+  it("tolerates rows without a symbol column", () => {
+    expect(mapCandleRows([[1_000_000, 1, 2, 0.5, 1.5, 7]])).toHaveLength(1);
   });
 });

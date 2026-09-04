@@ -12,6 +12,7 @@ import {
   reshapeRiskConfig,
   resampleCandles,
   candleSymbolCondition,
+  pickStoredSymbol,
   resolveCandleTable,
   riskConfigRecognized,
   sanitizeInterval,
@@ -544,9 +545,15 @@ async function queryCandles(
     : `timestamp >= dateadd('d', -${days}, now())`;
   // Futures symbols are stored fully venue-tagged, so match exactly; crypto
   // symbols tolerate the separator-bearing AND concatenated pair forms.
+  //
+  // The matcher is permissive ON PURPOSE, so `symbol` is SELECTed alongside the
+  // bars and a single spelling is chosen from what actually came back (see
+  // mapCandleRows). Querying the permissive set and rendering everything it
+  // returns would merge two different books — BTCUSDT and BTCUSD — into one
+  // series, at two prices, interleaved by timestamp, looking entirely normal.
   const symCond = candleSymbolCondition(sym, exact);
   const sql =
-    `SELECT cast(timestamp as long) t, open, high, low, close, volume FROM ${table} ` +
+    `SELECT cast(timestamp as long) t, open, high, low, close, volume, symbol FROM ${table} ` +
     `WHERE ${symCond} ` +
     `AND interval = '${iv}' AND ${timeCond} ` +
     `ORDER BY timestamp DESC LIMIT ${lim}`;
@@ -559,7 +566,9 @@ async function queryCandles(
     });
     if (!r.ok) return null;
     const j: any = await r.json();
-    return mapCandleRows(j?.dataset);
+    // Pass the base only on the permissive (crypto) path; the futures path
+    // already queried one exact symbol and must not be re-filtered.
+    return mapCandleRows(j?.dataset, exact ? undefined : sym);
   } catch {
     return null;
   }
