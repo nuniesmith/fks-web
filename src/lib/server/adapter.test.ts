@@ -12,6 +12,8 @@ import {
   roleRank,
   routeRequest,
   ADMIN_ONLY_MUTATION_RULES,
+  spawnSpecNeedsAdmin,
+  spawnerWriteNeedsAdmin,
   upstreamHeaders,
 } from "./adapter";
 
@@ -386,6 +388,118 @@ describe("roleDenies — R1-R4 backend rules", () => {
     expect(roleDenies("/api/spawner/spawn", "POST", "wat")).toBe(true); // viewer denied
     expect(roleDenies("/api/spawner/status", "GET", "wat")).toBe(false); // read ok
     expect(roleDenies("/api/users", "GET", "wat")).toBe(true);
+  });
+  it("R2: the spawner's key and webhook stores are admin-only through the passthrough too", () => {
+    // the same stores the admin-only /settings routes front (EDGE_FACTORY_PLAN finding 2)
+    expect(roleDenies("/api/spawner/secrets", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/spawner/secrets/kraken", "DELETE", "operator")).toBe(true);
+    expect(roleDenies("/api/spawner/notifications", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/spawner/notifications/discord/test", "POST", "operator")).toBe(true);
+    expect(roleDenies("/api/spawner/secrets", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/spawner/notifications", "POST", "admin")).toBe(false);
+    // which keys exist, never the keys themselves: still a read for everyone
+    expect(roleDenies("/api/spawner/secrets/status", "GET", "viewer")).toBe(false);
+  });
+});
+
+describe("auth disabled: the spawner's key and webhook stores are blocked like /settings", () => {
+  it("blocks the passthrough writes and their sub-paths", () => {
+    expect(matchesBlockedMutation("/api/spawner/secrets")).toBe(true);
+    expect(matchesBlockedMutation("/api/spawner/secrets/kraken")).toBe(true);
+    expect(matchesBlockedMutation("/api/spawner/notifications")).toBe(true);
+    expect(matchesBlockedMutation("/api/spawner/notifications/discord/test")).toBe(true);
+    expect(matchesBlockedMutation("/api/spawner/spawn")).toBe(false);
+  });
+});
+
+describe("R2b — spawnSpecNeedsAdmin", () => {
+  it.each([
+    [{ mode: "paper" }, false],
+    [{ mode: "paper", secrets: [] }, false],
+    [{ mode: "paper", secrets: null }, false],
+    [{ image: "x" }, false], // no mode: the spawner's default, not live
+    [{ mode: "live" }, true],
+    [{ mode: " LIVE " }, true],
+    [{ mode: "paper", secrets: ["kraken"] }, true], // keys let an image trade, whatever its mode says
+    [{ mode: "dry-run", secrets: ["kraken"] }, true],
+    [{ mode: "paper", secrets: "kraken" }, true], // not a list: fail closed
+    [null, true],
+    [[], true],
+    ["live", true],
+    [42, true],
+  ])("%j → %s", (spec, want) => {
+    expect(spawnSpecNeedsAdmin(spec)).toBe(want);
+  });
+});
+
+describe("R2b — spawnerWriteNeedsAdmin", () => {
+  const body = (spec: unknown) => () => Promise.resolve(JSON.stringify(spec));
+  const noBody = () => Promise.reject(new Error("the body must not be read"));
+  const noLookup = () => Promise.reject(new Error("no config lookup expected"));
+
+  it("leaves reads and other writes alone, without reading anything", async () => {
+    expect(await spawnerWriteNeedsAdmin("/api/spawner/spawn", "GET", noBody, noLookup)).toBe(false);
+    expect(await spawnerWriteNeedsAdmin("/api/spawner/configs", "GET", noBody, noLookup)).toBe(false);
+    expect(
+      await spawnerWriteNeedsAdmin("/api/spawner/container/abc/stop", "POST", noBody, noLookup),
+    ).toBe(false);
+    expect(
+      await spawnerWriteNeedsAdmin("/api/spawner/container/abc/restart", "POST", noBody, noLookup),
+    ).toBe(false);
+  });
+
+  it("decides a spawn or a saved config from its body", async () => {
+    const paper = body({ image: "ghcr.io/x", mode: "paper", secrets: [] });
+    const live = body({ image: "ghcr.io/x", mode: "live" });
+    const keyed = body({ image: "ghcr.io/x", mode: "paper", secrets: ["kraken"] });
+    for (const path of ["/api/spawner/spawn", "/api/spawner/configs"]) {
+      expect(await spawnerWriteNeedsAdmin(path, "POST", paper, noLookup)).toBe(false);
+      expect(await spawnerWriteNeedsAdmin(path, "POST", live, noLookup)).toBe(true);
+      expect(await spawnerWriteNeedsAdmin(path, "POST", keyed, noLookup)).toBe(true);
+      expect(await spawnerWriteNeedsAdmin(path, "post", live, noLookup)).toBe(true);
+      // not JSON: fail closed
+      expect(
+        await spawnerWriteNeedsAdmin(path, "POST", () => Promise.resolve("{nope"), noLookup),
+      ).toBe(true);
+    }
+  });
+
+  it("catches other spellings of a guarded path", async () => {
+    const live = body({ mode: "live" });
+    for (const path of [
+      "/api/spawner//spawn",
+      "/api/spawner/spawn/",
+      "/api/spawner/%73pawn",
+      "/api/spawner/Spawn",
+      "/api/spawner/configs/",
+    ]) {
+      expect(await spawnerWriteNeedsAdmin(path, "POST", live, noLookup)).toBe(true);
+    }
+  });
+
+  it("decides a respawn from the stored config it would run", async () => {
+    const stored = (cfg: unknown) => (name: string) =>
+      Promise.resolve(name === "crypto regime" ? cfg : null);
+    const path = "/api/spawner/configs/crypto%20regime/respawn";
+    expect(
+      await spawnerWriteNeedsAdmin(path, "POST", noBody, stored({ mode: "paper", secrets: [] })),
+    ).toBe(false);
+    expect(await spawnerWriteNeedsAdmin(path, "POST", noBody, stored({ mode: "live" }))).toBe(
+      true,
+    );
+    expect(
+      await spawnerWriteNeedsAdmin(
+        path,
+        "POST",
+        noBody,
+        stored({ mode: "paper", secrets: ["kraken"] }),
+      ),
+    ).toBe(true);
+    // no such config, or the spawner can't show it: fail closed
+    expect(await spawnerWriteNeedsAdmin(path, "POST", noBody, stored(null))).toBe(true);
+    expect(
+      await spawnerWriteNeedsAdmin(path, "POST", noBody, () => Promise.reject(new Error("down"))),
+    ).toBe(true);
   });
 });
 

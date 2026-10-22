@@ -30,6 +30,8 @@ import {
   routeRequest,
   upstreamHeaders,
   isGetLike,
+  roleRank,
+  spawnerWriteNeedsAdmin,
 } from "$lib/server/adapter";
 import {
   AuthStoreUnavailable,
@@ -126,6 +128,30 @@ const INTERNAL_TOKEN = env.INTERNAL_TOKEN ?? env.NGINX_INTERNAL_TOKEN ?? "";
 // the `rithmic` compose profile, so it is frequently ABSENT — every route below
 // degrades to a clear "unreachable" rather than erroring the page.
 const RITHMIC_URL = env.RITHMIC_INTERNAL_URL ?? "http://fks_rithmic_connector:9091";
+
+/**
+ * The stored spawn config a respawn would run, for the R2b admin check; null
+ * when the spawner can't show it, which the check treats as needing an admin.
+ */
+async function storedSpawnerConfig(name: string): Promise<unknown> {
+  try {
+    const res = await fetch(`${SPAWNER_URL}/configs`, {
+      headers: withInternalToken(SPAWNER_URL, new Headers()),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { configs?: unknown };
+    if (!Array.isArray(body.configs)) return null;
+    return (
+      body.configs.find(
+        (c): c is { name: string } =>
+          typeof c === "object" && c !== null && (c as { name?: unknown }).name === name,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
 
 function withInternalToken(base: string, headers: Headers): Headers {
   // Internal upstreams that authenticate with the service-identity token. The
@@ -1600,6 +1626,28 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // ── Spawner — a real, working backend (the /bots page) ──────────────────────
   // /api/spawner/<rest> → spawner /<rest>  (mirrors the old vite/nginx rewrite)
   if (pathname === "/api/spawner" || pathname.startsWith("/api/spawner/")) {
+    // R2b (adapter.ts `spawnerWriteNeedsAdmin`): a spawn, saved config or
+    // respawn that could trade real money needs an admin, whatever routed it
+    // here. The body is read from a clone, so `forward` still has it.
+    const isAdmin =
+      auth?.mode === "enabled" &&
+      auth.session !== null &&
+      roleRank(auth.session.role) >= roleRank("admin");
+    if (
+      !isAdmin &&
+      (await spawnerWriteNeedsAdmin(
+        pathname,
+        event.request.method,
+        () => event.request.clone().text(),
+        storedSpawnerConfig,
+      ))
+    ) {
+      return jsonError(403, {
+        error: "forbidden",
+        reason: "role_denied",
+        detail: "Starting a bot in live mode or with exchange keys needs an admin.",
+      });
+    }
     const rest = pathname.replace(/^\/api\/spawner/, "") || "/";
     return forward(event, SPAWNER_URL, rest + search);
   }
