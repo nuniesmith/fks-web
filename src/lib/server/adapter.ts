@@ -217,6 +217,11 @@ export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
   "/api/settings/kraken-keys",
   "/api/settings/kucoin-keys",
   "/api/settings/cryptocom-keys",
+  // The same two spawner stores reached through the generic `/api/spawner/*`
+  // passthrough, which the settings routes above front (EDGE_FACTORY_PLAN
+  // finding 2): `secrets` covers the POST write and the per-exchange DELETE.
+  "/api/spawner/secrets",
+  "/api/spawner/notifications",
   "/api/settings/notifications",
 ];
 
@@ -307,6 +312,13 @@ export const ADMIN_ONLY_MUTATION_RULES: readonly string[] = [
   "/api/settings/notifications",
   "/api/settings/risk",
   "/api/janus/config",
+  // The spawner's own credential and webhook stores, which the `/settings`
+  // routes above front. Through the generic `/api/spawner/*` passthrough they
+  // fell to R3, so an operator could store or delete an exchange key or a
+  // webhook that the settings routes refuse them (EDGE_FACTORY_PLAN finding 2).
+  // Reads (`/api/spawner/secrets/status`) stay open under R4: no secrets in it.
+  "/api/spawner/secrets",
+  "/api/spawner/notifications",
 ];
 
 /** R5 — admin-only PAGE prefixes. Non-admins get a redirect to `/` (pages
@@ -341,6 +353,78 @@ export function roleDenies(
   // kill panic button, all spawner writes, memories/bootstrap push, signal
   // approve/reject, trades, journal notes, janus-ai sessions, db queries.
   return rank < roleRank("operator");
+}
+
+/**
+ * R2b — starting something that can trade real money needs an admin, decided
+ * by what would run rather than by the path. The spawner's `/spawn` and
+ * `/configs` take a spawn spec, and `/configs/{name}/respawn` runs a stored
+ * one; through the `/api/spawner/*` passthrough all three are otherwise R3
+ * (EDGE_FACTORY_PLAN finding 2). A spec needs admin when its `mode` is `live`
+ * or it asks for stored exchange keys (`secrets`): the keys are what let an
+ * image trade, and an image can trade live whatever its mode label says (the
+ * disabled `crypto-regime` bot did). Anything that isn't a spec object needs
+ * admin too, so a malformed body or a missing config fails closed.
+ */
+export function spawnSpecNeedsAdmin(spec: unknown): boolean {
+  if (spec === null || typeof spec !== "object" || Array.isArray(spec)) return true;
+  const { mode, secrets } = spec as { mode?: unknown; secrets?: unknown };
+  if (typeof mode === "string" && mode.trim().toLowerCase() === "live") return true;
+  if (secrets === undefined || secrets === null) return false;
+  return !Array.isArray(secrets) || secrets.length > 0;
+}
+
+/** A spawner path as the R2b check reads it: decoded, with doubled and
+ *  trailing slashes gone, so no spelling of a guarded path slips past (the
+ *  spawner would not route most of them anyway). Case is kept for the config
+ *  name; the guarded paths compare case-insensitively. */
+function normalizedSpawnerPath(pathname: string): string {
+  let p = pathname;
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // keep the raw path; a guarded path still matches below if it's spelled plainly
+  }
+  p = p.replace(/\/{2,}/g, "/");
+  return p.length > 1 ? p.replace(/\/+$/, "") : p;
+}
+
+/** The passthrough paths whose POST body is a spawn spec. */
+const SPAWN_SPEC_PATHS: readonly string[] = ["/api/spawner/spawn", "/api/spawner/configs"];
+const RESPAWN_PATH = /^\/api\/spawner\/configs\/([^/]+)\/respawn$/i;
+
+/**
+ * Whether a passthrough write must come from an admin under R2b. The body and
+ * the stored config are read only when the path needs them: `readBody` returns
+ * the request's text, and `lookupConfig` returns the stored config for a
+ * respawn (or null when the spawner can't show it, which fails closed).
+ */
+export async function spawnerWriteNeedsAdmin(
+  pathname: string,
+  method: string,
+  readBody: () => Promise<string>,
+  lookupConfig: (name: string) => Promise<unknown>,
+): Promise<boolean> {
+  if (method.toUpperCase() !== "POST") return false;
+  const path = normalizedSpawnerPath(pathname);
+  if (SPAWN_SPEC_PATHS.includes(path.toLowerCase())) {
+    let spec: unknown = null;
+    try {
+      spec = JSON.parse(await readBody());
+    } catch {
+      spec = null;
+    }
+    return spawnSpecNeedsAdmin(spec);
+  }
+  const respawn = RESPAWN_PATH.exec(path);
+  if (!respawn) return false;
+  let stored: unknown = null;
+  try {
+    stored = await lookupConfig(respawn[1]);
+  } catch {
+    stored = null;
+  }
+  return spawnSpecNeedsAdmin(stored);
 }
 
 /**

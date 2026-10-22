@@ -28,8 +28,9 @@ this statement is only about what Phase 2A did and did not change).
 | # | Rule | Paths (as dispatched in `hooks.server.ts` `proxyBackend`) | Roles |
 |---|---|---|---|
 | R1 | Admin-only backend, **any method** (user management is admin's alone; even GET leaks the user list) | `/api/users`, `/api/users/*`, `/api/invites`, `/api/invites/*` | admin |
-| R2 | Admin-only **mutations** (non-GET) — config/credential/live-arming surfaces | `/api/cockpit/rearm` · `/api/settings/exchange-keys` + `/api/settings/exchange-keys/*` + legacy `/api/settings/{kraken,kucoin,cryptocom}-keys` · `/api/settings/notifications` + subpaths incl. `/test` · `/api/settings/risk` · `/api/janus/config` | admin |
-| R3 | Operator+ **mutations** (non-GET) — trade/operate | everything else non-GET under a backend prefix, notably: `/api/cockpit/kill` (halt is the safe direction — an operator must be able to hit the panic button) · all `/api/spawner/*` writes (spawn, container stop/restart/remove, configs + `/configs/{name}/respawn`, net-worth, transfers, accounts, edges, backtests, ui/layouts) · `/api/janus/memories/bootstrap/push` · `/api/signals/*/approve\|reject`, `/api/trades*`, `/api/journal/notes`, `/api/janus-ai/sessions*`, `/api/db/*/query` | operator, admin |
+| R2 | Admin-only **mutations** (non-GET) — config/credential/live-arming surfaces | `/api/cockpit/rearm` · `/api/settings/exchange-keys` + `/api/settings/exchange-keys/*` + legacy `/api/settings/{kraken,kucoin,cryptocom}-keys` · `/api/settings/notifications` + subpaths incl. `/test` · `/api/settings/risk` · `/api/janus/config` · the spawner's own stores through the passthrough: `/api/spawner/secrets` + `/*`, `/api/spawner/notifications` + `/*` (2026-10-22) | admin |
+| R2b | Admin-only **spawns that can trade real money**, decided by what would run (2026-10-22) | `POST /api/spawner/spawn` and `POST /api/spawner/configs` whose body has `mode:"live"` or any `secrets`, and `POST /api/spawner/configs/{name}/respawn` whose **stored** config does. Fails closed: a body that isn't JSON, or a config the spawner can't show, needs admin. `spawnerWriteNeedsAdmin` in `adapter.ts`, applied in `proxyBackend`'s spawner branch | admin |
+| R3 | Operator+ **mutations** (non-GET) — trade/operate | everything else non-GET under a backend prefix, notably: `/api/cockpit/kill` (halt is the safe direction — an operator must be able to hit the panic button) · all other `/api/spawner/*` writes (paper spawns and configs without keys, container stop/restart/remove, net-worth, transfers, accounts, edges, backtests, ui/layouts) · `/api/janus/memories/bootstrap/push` · `/api/signals/*/approve\|reject`, `/api/trades*`, `/api/journal/notes`, `/api/janus-ai/sessions*`, `/api/db/*/query` | operator, admin |
 | R4 | Reads — GET/HEAD backend (incl. SSE) + all non-admin pages | everything | viewer, operator, admin |
 | R5 | Admin-only **pages** | `/users` → non-admin gets `{kind:"redirect", location:"/"}` (pages redirect, they don't 403 — matches existing page semantics) | admin |
 
@@ -39,11 +40,11 @@ Viewer = R4 only: any non-GET backend request → `{kind:"forbidden", reason:"ro
 
 - **Live-spawn is body-dependent.** `POST /api/spawner/spawn` with `mode:"live"`
   (the `/bots` form option) is indistinguishable from a paper spawn at the path
-  level. The pure rule table cannot catch it; if live-spawn is to be admin-only,
-  that check must live in the spawner-forward branch of `proxyBackend`, reading
-  the body. **Decision D3: deferred** to the M2 live-friction work (design §4.3)
-  — operators can live-spawn in Phase 2. If unacceptable, add a body-sniffing
-  admin gate in the spawner-forward branch (one Phase-B-sized task).
+  level, so the pure rule table cannot catch it. **Done 2026-10-22 as R2b:** the
+  spawner-forward branch of `proxyBackend` reads the body (from a clone, so the
+  forward still has it) and, for a respawn, asks the spawner for the stored
+  config. A spec with `secrets` counts as live too: an image can trade live
+  whatever its `mode` label says, and the keys are what let it.
 - **Role-change propagation latency.** `resolveSession` caches for 60 s per
   process; a demotion/disable is authoritative on the next DB hit, but a cached
   session keeps its old role ≤60 s. Phase B sweeps the in-process cache by
