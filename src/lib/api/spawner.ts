@@ -34,6 +34,15 @@
  *   POST   /api/spawner/configs/<name>/respawn → /configs/<name>/respawn
  *          (db feature only — stop+recreate from the saved config, current
  *          stored secrets re-injected; the rotate-then-respawn step)
+ *   GET    /api/spawner/templates        → /templates (forms for recorders, bots, jobs)
+ *   POST   /api/spawner/instances/validate → what an instance WOULD be, no side effects
+ *   GET    /api/spawner/instances        → instances made from templates
+ *   POST   /api/spawner/instances        → make one (config + data folder + container)
+ *   POST   /api/spawner/instances/<name>/start | stop, DELETE /instances/<name>
+ *   GET    /api/spawner/instances/<name>/files?days=N → what it has written (coverage)
+ *   GET    /api/spawner/secrets/status   → which exchanges have keys (names only)
+ *   GET    /api/spawner/leases           → which bot holds which exchange account
+ *   GET    /api/spawner/bots/<id>/status → a running bot's own /status
  *
  * The vite dev server proxies `/api/spawner` → `http://fks_bot_spawner:8090/`
  * with the same rewrite as the production nginx config.
@@ -42,6 +51,15 @@ import { api } from "./client";
 import type {
   AccountsResponse,
   ActionResponse,
+  BotStatusResponse,
+  ExchangeKeysStatusResponse,
+  InstanceCreateResponse,
+  InstanceFilesResponse,
+  InstanceRequest,
+  InstanceValidateResponse,
+  InstancesResponse,
+  LeasesResponse,
+  TemplatesResponse,
   ConfigsResponse,
   ContainerInfo,
   ContainersResponse,
@@ -230,6 +248,57 @@ export const spawner = {
   /** UPSERT an edge definition (keyed by `edge_id`). */
   upsertEdge: (req: UpsertEdgeRequest) =>
     api.post<UpsertEdgeResponse>(`${BASE}/edges`, req),
+
+  // ── Templates and instances ───────────────────────────────────────────
+
+  /** Every valid template (its form is `params`), plus files that did not validate. */
+  templates: () => api.get<TemplatesResponse>(`${BASE}/templates`),
+
+  /** What an instance would be: image, env, resources and data folder. No side effects. */
+  validateInstance: (req: InstanceRequest) =>
+    api.post<InstanceValidateResponse>(`${BASE}/instances/validate`, req),
+
+  /** Instances made from templates, with their container's state. */
+  instances: () => api.get<InstancesResponse>(`${BASE}/instances`),
+
+  /** Make an instance: save its config, create its data folder, start it. */
+  createInstance: (req: InstanceRequest) =>
+    api.post<InstanceCreateResponse>(`${BASE}/instances`, req),
+
+  /** (Re)create the instance's container from its template as it is now. */
+  startInstance: (name: string) =>
+    api.post<{ ok: boolean; name?: string; container_id?: string }>(
+      `${BASE}/instances/${encodeURIComponent(name)}/start`,
+      {},
+    ),
+
+  stopInstance: (name: string) =>
+    api.post<{ ok: boolean; name?: string }>(
+      `${BASE}/instances/${encodeURIComponent(name)}/stop`,
+      {},
+    ),
+
+  /** Stop and remove the container, soft-delete the config. Its data is kept. */
+  deleteInstance: (name: string) =>
+    api.delete<{ ok: boolean; name?: string }>(`${BASE}/instances/${encodeURIComponent(name)}`),
+
+  /** Days, per-stream file sizes and gaps a recorder instance has written. */
+  instanceFiles: (name: string, days = 31) =>
+    api.get<InstanceFilesResponse>(
+      `${BASE}/instances/${encodeURIComponent(name)}/files?days=${days}`,
+    ),
+
+  // ── Accounts as configured ────────────────────────────────────────────
+
+  /** Which exchanges have keys stored (names and dates, never a secret). */
+  secretsStatus: () => api.get<ExchangeKeysStatusResponse>(`${BASE}/secrets/status`),
+
+  /** Account leases: which bot holds which exchange account. */
+  leases: () => api.get<LeasesResponse>(`${BASE}/leases`),
+
+  /** A running bot's own `/status` document, through the spawner. */
+  botStatus: <T = unknown>(botId: string) =>
+    api.get<BotStatusResponse<T>>(`${BASE}/bots/${encodeURIComponent(botId)}/status`),
 
   // ── SSE log stream ─────────────────────────────────────────────────────
 

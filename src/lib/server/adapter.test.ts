@@ -12,6 +12,7 @@ import {
   roleRank,
   routeRequest,
   ADMIN_ONLY_MUTATION_RULES,
+  movedPage,
   spawnSpecNeedsAdmin,
   spawnerWriteNeedsAdmin,
   upstreamHeaders,
@@ -57,33 +58,6 @@ describe("isPublic", () => {
     for (const p of ["/", "/charts", "/settings", "/api/health/extra", "/healthzz"]) {
       expect(isPublic(p)).toBe(false);
     }
-  });
-});
-
-describe("rithmic session RBAC", () => {
-  /// The asymmetry is the whole point and mirrors the cockpit's kill/rearm
-  /// split: RELEASING the Rithmic session is safe (operator+), TAKING IT BACK
-  /// can revoke the operator's own phone mid-trade, so it is admin-only.
-  /// Getting these the wrong way round would let a non-admin yank the session
-  /// out from under a live manual trade.
-  it("gates resume admin-only but leaves kill to operator+", () => {
-    expect(ADMIN_ONLY_MUTATION_RULES).toContain("/api/rithmic/resume");
-    expect(ADMIN_ONLY_MUTATION_RULES).not.toContain("/api/rithmic/kill");
-  });
-
-  /// Account management is a CREDENTIAL/CONFIG surface: enabling a login is what
-  /// causes its credential to be used, and flipping `main` changes which funded
-  /// prop account the operator is pointed at. Mutations are admin-only; the READ
-  /// is not, because the payload carries `has_credentials` and never a secret —
-  /// gating the list would hide which accounts exist from an operator who is
-  /// allowed to trade them.
-  it("gates account mutations admin-only but leaves the list readable", () => {
-    expect(ADMIN_ONLY_MUTATION_RULES).toContain("/api/rithmic/accounts");
-    expect(roleDenies("/api/rithmic/accounts", "POST", "operator")).toBe(true);
-    expect(roleDenies("/api/rithmic/accounts/tpt-a", "DELETE", "operator")).toBe(true);
-    expect(roleDenies("/api/rithmic/accounts", "POST", "admin")).toBe(false);
-    expect(roleDenies("/api/rithmic/accounts", "GET", "operator")).toBe(false);
-    expect(roleDenies("/api/rithmic/accounts", "GET", "viewer")).toBe(false);
   });
 });
 
@@ -202,12 +176,10 @@ describe("routeRequest — disabled (explicit opt-in bypass)", () => {
 });
 
 // M1 — the WEBUI_AUTH=disabled bypass must NOT expose the money-path config
-// mutations (raise exposure / delete a live key / register an exfil webhook),
-// exactly like the cockpit kill/re-arm carve-out. These are the backend paths
-// routeRequest sees (traced through hooks.server.ts dispatch).
+// mutations (delete a live key / register an exfil webhook). These are the
+// backend paths routeRequest sees (traced through hooks.server.ts dispatch).
 describe("routeRequest — disabled mode blocks money-path mutations (M1)", () => {
   const blocked = [
-    "/api/settings/risk", // risk-config PUT (raise max_gross_exposure)
     "/api/settings/exchange-keys", // exchange-keys POST (write live creds)
     "/api/settings/exchange-keys/kraken", // per-exchange DELETE (dynamic segment)
     "/api/settings/kraken-keys", // legacy fixed-venue write
@@ -242,10 +214,10 @@ describe("routeRequest — disabled mode blocks money-path mutations (M1)", () =
   });
 
   it("does not over-match a prefix-sharing sibling path", () => {
-    // Segment-boundary match: `/api/settings/riskier` must NOT be blocked just
-    // because it shares the `/api/settings/risk` spelling.
-    expect(matchesBlockedMutation("/api/settings/riskier")).toBe(false);
-    expect(matchesBlockedMutation("/api/settings/risk")).toBe(true);
+    // Segment-boundary match: `/api/settings/notificationsx` must NOT be
+    // blocked just because it shares the `/api/settings/notifications` spelling.
+    expect(matchesBlockedMutation("/api/settings/notificationsx")).toBe(false);
+    expect(matchesBlockedMutation("/api/settings/notifications")).toBe(true);
     expect(matchesBlockedMutation("/api/settings/exchange-keys/kraken")).toBe(true);
   });
 
@@ -260,7 +232,7 @@ describe("routeRequest — disabled mode blocks money-path mutations (M1)", () =
   });
 
   it("in ENABLED mode a viewer is denied these mutations (RBAC R2/R3, unchanged)", () => {
-    expect(routeRequest("/api/settings/risk", "", "POST", enabled(viewer))).toEqual({
+    expect(routeRequest("/api/settings/notifications", "", "POST", enabled(viewer))).toEqual({
       kind: "forbidden",
       reason: "role_denied",
     });
@@ -276,7 +248,6 @@ describe("routeRequest — disabled mode blocks money-path mutations (M1)", () =
 
   it("the money paths are present in AUTH_DISABLED_BLOCKED_MUTATIONS", () => {
     for (const p of [
-      "/api/settings/risk",
       "/api/settings/exchange-keys",
       "/api/settings/kraken-keys",
       "/api/settings/kucoin-keys",
@@ -290,7 +261,7 @@ describe("routeRequest — disabled mode blocks money-path mutations (M1)", () =
 
 describe("routeRequest — bootstrap (no users yet, fail closed on writes)", () => {
   it("lets GET reads through but 401s mutations", () => {
-    expect(routeRequest("/api/signals", "", "GET", bootstrap)).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/containers", "", "GET", bootstrap)).toEqual({ kind: "backend" });
     expect(routeRequest("/api/spawner/x", "", "POST", bootstrap)).toEqual({
       kind: "unauthorized",
       reason: "bootstrap",
@@ -303,8 +274,8 @@ describe("routeRequest — bootstrap (no users yet, fail closed on writes)", () 
 });
 
 describe("routeRequest — enabled, no session (fail closed)", () => {
-  it("401s ALL backend calls incl. GET/SSE (reads leak balances/keys/signals)", () => {
-    expect(routeRequest("/api/signals", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
+  it("401s ALL backend calls incl. GET/SSE (reads leak balances and keys)", () => {
+    expect(routeRequest("/api/spawner/containers", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
     expect(routeRequest("/sse/bars/BTC", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
     expect(routeRequest("/api/spawner/x", "", "POST", noSession)).toEqual({ kind: "unauthorized" });
   });
@@ -320,7 +291,7 @@ describe("routeRequest — enabled, mustChange (confined to /setup)", () => {
   it("403s backend mutations, allows GET reads", () => {
     expect(routeRequest("/api/spawner/x", "", "POST", enabled(mustChange))).toEqual({ kind: "forbidden" });
     expect(routeRequest("/api/spawner/x", "", "PUT", enabled(mustChange))).toEqual({ kind: "forbidden" });
-    expect(routeRequest("/api/signals", "", "GET", enabled(mustChange))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/containers", "", "GET", enabled(mustChange))).toEqual({ kind: "backend" });
   });
   it("redirects app pages to /setup but lets /setup render", () => {
     expect(routeRequest("/charts", "", "GET", enabled(mustChange))).toEqual({ kind: "redirect", location: "/setup" });
@@ -364,22 +335,19 @@ describe("roleDenies — R1-R4 backend rules", () => {
   it("R4: reads (GET/HEAD) are open to every role", () => {
     expect(roleDenies("/api/spawner/status", "GET", "viewer")).toBe(false);
     expect(roleDenies("/sse/bars/BTC", "GET", "viewer")).toBe(false);
-    expect(roleDenies("/api/settings/risk", "GET", "viewer")).toBe(false);
+    expect(roleDenies("/api/settings/exchange-keys/status", "GET", "viewer")).toBe(false);
   });
   it("R2: admin-only mutations deny operator, allow admin", () => {
-    expect(roleDenies("/api/cockpit/rearm", "POST", "operator")).toBe(true);
     expect(roleDenies("/api/settings/exchange-keys", "POST", "operator")).toBe(true);
     expect(roleDenies("/api/settings/kraken-keys", "POST", "operator")).toBe(true);
     expect(roleDenies("/api/settings/notifications/discord/test", "POST", "operator")).toBe(true);
-    expect(roleDenies("/api/settings/risk", "POST", "operator")).toBe(true);
-    expect(roleDenies("/api/janus/config", "POST", "operator")).toBe(true);
     expect(roleDenies("/api/settings/exchange-keys", "POST", "admin")).toBe(false);
-    expect(roleDenies("/api/cockpit/rearm", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/settings/notifications", "POST", "admin")).toBe(false);
   });
-  it("R3: kill + other mutations are operator+ (viewer denied)", () => {
-    expect(roleDenies("/api/cockpit/kill", "POST", "operator")).toBe(false);
-    expect(roleDenies("/api/cockpit/kill", "POST", "admin")).toBe(false);
-    expect(roleDenies("/api/cockpit/kill", "POST", "viewer")).toBe(true);
+  it("R3: other mutations are operator+ (viewer denied)", () => {
+    expect(roleDenies("/api/spawner/container/abc/stop", "POST", "operator")).toBe(false);
+    expect(roleDenies("/api/spawner/container/abc/stop", "POST", "admin")).toBe(false);
+    expect(roleDenies("/api/spawner/container/abc/stop", "POST", "viewer")).toBe(true);
     expect(roleDenies("/api/spawner/spawn", "POST", "operator")).toBe(false);
     expect(roleDenies("/api/spawner/spawn", "POST", "viewer")).toBe(true);
     expect(roleDenies("/api/spawner/configs/x/respawn", "POST", "viewer")).toBe(true);
@@ -464,6 +432,48 @@ describe("R2b — spawnerWriteNeedsAdmin", () => {
     }
   });
 
+  it("decides an instance from its template: live, or a template that may get keys", async () => {
+    const recorder = { modes: ["record"], secrets_allowed: [] };
+    const bot = { modes: ["paper", "live"], secrets_allowed: ["kraken"] };
+    const paperOnly = { modes: ["paper"] };
+    const lookup = (t: unknown) => () => Promise.resolve(t);
+    const create = (req: unknown, t: unknown) =>
+      spawnerWriteNeedsAdmin("/api/spawner/instances", "POST", body(req), noLookup, lookup(t));
+    expect(await create({ template: "recorder.binance-usdm", name: "btc", params: {} }, recorder)).toBe(false);
+    expect(await create({ template: "bot.paper", name: "p", params: {} }, paperOnly)).toBe(false);
+    expect(await create({ template: "bot.trend", name: "t", params: {}, mode: "paper" }, bot)).toBe(true);
+    expect(await create({ template: "bot.trend", name: "t", params: {}, mode: "live" }, paperOnly)).toBe(true);
+    // the template's first mode is the default
+    expect(await create({ template: "x", name: "x", params: {} }, { modes: ["live"] })).toBe(true);
+    // fail closed: unreadable template, missing template id, body not JSON
+    expect(await create({ template: "x", name: "x", params: {} }, null)).toBe(true);
+    expect(await create({ name: "x", params: {} }, recorder)).toBe(true);
+    expect(
+      await spawnerWriteNeedsAdmin(
+        "/api/spawner/instances",
+        "POST",
+        () => Promise.resolve("{nope"),
+        noLookup,
+        lookup(recorder),
+      ),
+    ).toBe(true);
+    // without a template lookup at all, every create needs an admin
+    expect(
+      await spawnerWriteNeedsAdmin("/api/spawner/instances", "POST", body({ template: "r" }), noLookup),
+    ).toBe(true);
+  });
+
+  it("decides an instance start from its stored config, like a respawn", async () => {
+    const stored = (cfg: unknown) => () => Promise.resolve(cfg);
+    const start = (cfg: unknown) =>
+      spawnerWriteNeedsAdmin("/api/spawner/instances/btc/start", "POST", noBody, stored(cfg));
+    expect(await start({ mode: "record", secrets: [] })).toBe(false);
+    expect(await start({ mode: "live", secrets: [] })).toBe(true);
+    expect(await start(null)).toBe(true);
+    // stopping and deleting an instance stay operator actions
+    expect(await spawnerWriteNeedsAdmin("/api/spawner/instances/btc/stop", "POST", noBody, noLookup)).toBe(false);
+  });
+
   it("catches other spellings of a guarded path", async () => {
     const live = body({ mode: "live" });
     for (const path of [
@@ -514,15 +524,15 @@ describe("routeRequest — RBAC matrix (enabled, full session)", () => {
     expect(routeRequest("/users", "", "GET", enabled(garbage))).toEqual({ kind: "redirect", location: "/" });
   });
 
-  it("non-admin page /cockpit passes for every role", () => {
+  it("non-admin page /data passes for every role", () => {
     for (const s of Object.values(roles)) {
-      expect(routeRequest("/cockpit", "", "GET", enabled(s))).toEqual({ kind: "pass" });
+      expect(routeRequest("/data", "", "GET", enabled(s))).toEqual({ kind: "pass" });
     }
   });
 
   it("backend GET (a read) proxies for every role", () => {
     for (const s of Object.values(roles)) {
-      expect(routeRequest("/api/signals", "", "GET", enabled(s))).toEqual({ kind: "backend" });
+      expect(routeRequest("/api/spawner/containers", "", "GET", enabled(s))).toEqual({ kind: "backend" });
     }
   });
 
@@ -547,13 +557,15 @@ describe("routeRequest — RBAC matrix (enabled, full session)", () => {
     });
   });
 
-  it("kill vs rearm: operator halts (kill) but cannot rearm", () => {
-    expect(routeRequest("/api/cockpit/kill", "", "POST", enabled(operator))).toEqual({ kind: "backend" });
-    expect(routeRequest("/api/cockpit/rearm", "", "POST", enabled(operator))).toEqual({
+  it("stop vs key change: operator stops a task but cannot change a key", () => {
+    expect(routeRequest("/api/spawner/container/abc/stop", "", "POST", enabled(operator))).toEqual({
+      kind: "backend",
+    });
+    expect(routeRequest("/api/settings/exchange-keys", "", "POST", enabled(operator))).toEqual({
       kind: "forbidden",
       reason: "role_denied",
     });
-    expect(routeRequest("/api/cockpit/rearm", "", "POST", enabled(good))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/settings/exchange-keys", "", "POST", enabled(good))).toEqual({ kind: "backend" });
   });
 
   it("R2 exchange-keys mutation: operator 403, admin proxies", () => {
@@ -589,7 +601,7 @@ describe("routeRequest — PWA static assets are public pre-login (GET/HEAD)", (
 
   it("does NOT open a random /api path or an unlisted static-looking page", () => {
     // A backend path still fails closed without a session…
-    expect(routeRequest("/api/signals", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
+    expect(routeRequest("/api/spawner/containers", "", "GET", noSession)).toEqual({ kind: "unauthorized" });
     expect(routeRequest("/api/spawner/x", "", "POST", noSession)).toEqual({ kind: "unauthorized" });
     // …and a path merely *resembling* a static asset (not on the allowlist)
     // still redirects to login — proving this is an allowlist, not a wildcard.
@@ -631,7 +643,7 @@ describe("outageRoute — fail closed but keep login renderable on a store outag
     expect(outageRoute("/settings")).toBe("deny-page");
     expect(outageRoute("/")).toBe("deny-page");
     expect(outageRoute("/api/spawner/bots/kill")).toBe("deny-backend");
-    expect(outageRoute("/api/signals")).toBe("deny-backend");
+    expect(outageRoute("/api/spawner/containers")).toBe("deny-backend");
     expect(outageRoute("/sse/bars/BTC")).toBe("deny-backend");
   });
 });
@@ -673,6 +685,21 @@ describe("bootstrap is not an expired session", () => {
 
   it("still lets harmless bootstrap GETs through — the refusal is unchanged", () => {
     const bootstrap: AuthState = { mode: "bootstrap" };
-    expect(routeRequest("/api/signals", "", "GET", bootstrap)).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/spawner/containers", "", "GET", bootstrap)).toEqual({ kind: "backend" });
+  });
+});
+
+describe("movedPage — old URLs after the six-section rework", () => {
+  it("sends each removed or moved page to its new home, sub-paths included", () => {
+    expect(movedPage("/bots")).toBe("/tasks");
+    expect(movedPage("/treasury")).toBe("/money");
+    expect(movedPage("/exchanges/kraken")).toBe("/money");
+    expect(movedPage("/cockpit")).toBe("/");
+    expect(movedPage("/db")).toBe("/data");
+  });
+  it("leaves current pages and prefix-sharing paths alone", () => {
+    for (const p of ["/", "/data", "/database", "/tasks", "/money", "/edges", "/charts", "/botsx", "/settings"]) {
+      expect(movedPage(p)).toBeNull();
+    }
   });
 });

@@ -8,18 +8,13 @@ import {
   intervalToSeconds,
   mapCandleRows,
   reshapeHealth,
-  reshapePerformance,
-  reshapeRiskConfig,
   resampleCandles,
   candleSymbolCondition,
   pickStoredInstrument,
   pickStoredSymbol,
   resolveCandleTable,
-  riskConfigRecognized,
   sanitizeInterval,
   sanitizeSymbol,
-  signalStatus,
-  toRiskConfigPayload,
   wantsArrayResponse,
 } from "$lib/server/reshape";
 import {
@@ -30,6 +25,7 @@ import {
   routeRequest,
   upstreamHeaders,
   isGetLike,
+  movedPage,
   roleRank,
   spawnerWriteNeedsAdmin,
 } from "$lib/server/adapter";
@@ -46,21 +42,8 @@ import {
   coerceNotificationHistory,
   validateNotificationEvents,
 } from "$lib/types/notifications";
-import {
-  cockpitKillPost,
-  cockpitLiveStatusGet,
-  cockpitRearmPost,
-  cockpitStateGet,
-  cockpitTelemetryGet,
-} from "$lib/server/cockpit";
 import { alertAckPost, alertInboxGet } from "$lib/server/alertAck";
 import { getAlertAckStore } from "$lib/server/alertAck/store";
-import {
-  rithmicAccountsDelete,
-  rithmicAccountsGet,
-  rithmicAccountsPost,
-} from "$lib/server/rithmicAccounts";
-import { getRithmicAccountStore } from "$lib/server/rithmicAccounts/store";
 // Shared with the browser half on purpose — one definition of the
 // session-expiry marker, so a rename cannot silently disable the banner. The
 // module imports only `svelte/store` (isomorphic); nothing here touches the
@@ -78,11 +61,13 @@ import { SESSION_HEADER, SESSION_REQUIRED } from "$stores/session";
 // not yet mapped (empty REST / idle SSE) so panels degrade quietly instead of
 // flooding the console with 404s.
 //
-// Mapped today: /api/spawner/* (spawner); the dashboard / signals / health /
-// performance / janus-ai / risk paths + the front-page scores / trades / factory
-// panels (janus); /api/metrics/* (Prometheus); /bars + /charts candles (QuestDB);
-// /sse/bars (janus live tail when JANUS_BARS_SSE_URL is set). Unmapped backend
-// paths → graceful empty. See docs/architecture/WEBUI_JANUS_REPOINT.md.
+// Mapped today: /api/spawner/* (spawner: bots, recorders, templates, keys,
+// accounts, edges); /api/health (janus); /api/settings/* (spawner key and
+// notification stores); /api/metrics/* and the alert inbox (Prometheus);
+// /bars + /charts candles and indicators (QuestDB, janus); /sse/bars (janus live
+// tail when JANUS_BARS_SSE_URL is set). Unmapped backend reads → graceful
+// empty; unmapped writes → 501. The futures co-pilot, Rithmic, signals,
+// janus-ai and paper-trade routes were removed with their pages (2026-10-26).
 //
 // Upstreams use in-container Docker-network addresses (overridable via env).
 // NB: from inside the webui container, janus is fks_janus:8080 (api) /
@@ -124,10 +109,6 @@ const INTERNAL_TOKEN = env.INTERNAL_TOKEN ?? env.NGINX_INTERNAL_TOKEN ?? "";
 // direct `fetch(${SPAWNER_URL}…)` helper (secrets + notifications + capabilities)
 // MUST route its headers through here, or #47's strip-set leaves it token-less
 // against an enforcing spawner (auth-chain H5).
-// rithmic-connector: read-only futures feed + the operator kill switch. Behind
-// the `rithmic` compose profile, so it is frequently ABSENT — every route below
-// degrades to a clear "unreachable" rather than erroring the page.
-const RITHMIC_URL = env.RITHMIC_INTERNAL_URL ?? "http://fks_rithmic_connector:9091";
 
 /**
  * The stored spawn config a respawn would run, for the R2b admin check; null
@@ -153,46 +134,36 @@ async function storedSpawnerConfig(name: string): Promise<unknown> {
   }
 }
 
+/**
+ * The template an instance would be made from, for the R2b admin check; null
+ * when the spawner can't show it, which the check treats as needing an admin.
+ */
+async function spawnerTemplate(id: string): Promise<unknown> {
+  try {
+    const res = await fetch(`${SPAWNER_URL}/templates/${encodeURIComponent(id)}`, {
+      headers: withInternalToken(SPAWNER_URL, new Headers()),
+      signal: AbortSignal.timeout(5_000),
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 function withInternalToken(base: string, headers: Headers): Headers {
-  // Internal upstreams that authenticate with the service-identity token. The
-  // rithmic-connector joined this set when its kill/resume routes shipped —
-  // those MUTATE (they hand the single-session Rithmic credential to or from
-  // the operator's phone), so unlike its read-only /status they are guarded.
-  if (INTERNAL_TOKEN && (base === SPAWNER_URL || base === RITHMIC_URL)) {
+  // The spawner is the only upstream that authenticates with the
+  // service-identity token.
+  if (INTERNAL_TOKEN && base === SPAWNER_URL) {
     headers.set("x-internal-token", INTERNAL_TOKEN);
   }
   return headers;
 }
 const PROMETHEUS_URL = env.PROMETHEUS_INTERNAL_URL ?? "http://fks_prometheus:9090"; // /monitoring
 const QUESTDB_URL = env.QUESTDB_INTERNAL_URL ?? "http://fks_questdb:9000"; // /charts OHLC (HTTP query API)
-// Crypto bot status servers (/exchanges page). Defaults are the Phase-2
-// container DNS names (spawner-managed fks-bot-* on fks_network); during the
-// transitional systemd phase set these to the host bridge instead, e.g.
-// http://host.docker.internal:9091 (spot) / :9095 (funding) — the webui
-// container needs extra_hosts host-gateway for that name on Linux. `||` (not
-// ??) so an empty compose passthrough falls back to the defaults.
-const CRYPTO_SPOT_URL = env.CRYPTO_SPOT_INTERNAL_URL || "http://fks-bot-crypto-spot:9091";
-const CRYPTO_FUNDING_URL = env.CRYPTO_FUNDING_INTERNAL_URL || "http://fks-bot-crypto-funding:9091";
-// Live funding twin status server (M3 Phase A, cockpit LIVE tab unrealized ret%).
-// EMPTY by default = "not configured" — deliberately NOT a container DNS name.
-// A wrong default that resolves to the PAPER twin (`fks-bot-crypto-funding`)
-// would silently render paper PnL as live, the exact bug this feed exists to
-// prevent. Set the fks compose passthrough
-// (CRYPTO_FUNDING_LIVE_INTERNAL_URL=${...:-}) ONLY once the live funding bot is
-// spawned (Gate-A ~Aug 1). `||` so an empty passthrough stays empty.
-const CRYPTO_FUNDING_LIVE_URL = env.CRYPTO_FUNDING_LIVE_INTERNAL_URL || "";
-// Read-only Rithmic connector health/status server (:9091). Runs only under the
-// `rithmic` compose profile (not in the default up), so this is unreachable by
-// default → /api/rithmic/positions degrades to an empty, connected:false view.
-const RITHMIC_CONNECTOR_URL = env.RITHMIC_CONNECTOR_INTERNAL_URL || "http://fks_rithmic_connector:9091";
 // Futures live-bars SSE bridge (D1). Empty by default → /sse/bars/:sym serves the
 // graceful idle stub (unchanged). Set to a janus SSE base (the symbol is appended
 // as "/<sym>", emitting `event: bar` frames) to pipe futures bars to the chart.
 const JANUS_BARS_SSE_URL = env.JANUS_BARS_SSE_URL ?? "";
-// Backward service HTTP API inside the janus container (unified binary
-// serves it from start_module; port = janus http 8080 + 200). Must match
-// janus PR #140's wiring — env-correctable if that ever moves.
-const BACKWARD_URL = env.BACKWARD_INTERNAL_URL ?? "http://fks_janus:8280";
 
 // Forward a request to `base + path`, streaming the response straight back.
 async function forward(
@@ -345,32 +316,6 @@ async function janusJson(event: RequestEvent, base: string, path: string): Promi
   return (await janusJsonStatus(event, base, path)).data;
 }
 
-// janus recent signals — { symbol, signal_type, confidence, timestamp }[].
-// Sourced from the live /api/signals/latest feed (populated by janus's
-// SignalBus→Redis persistence). The old /api/dashboard/signals/summary
-// .recent_signals path returned empty on the running stack, so the /signals
-// page and the overview recent-signals panel (both consumers of this helper)
-// showed nothing despite live signals flowing.
-async function janusRecentSignals(event: RequestEvent): Promise<
-  {
-    symbol?: string;
-    signal_type?: string;
-    confidence?: number;
-    timestamp?: string;
-    metadata?: Record<string, string>;
-  }[]
-> {
-  const j = await janusJson(event, JANUS_URL, "/api/signals/latest");
-  const arr = Array.isArray(j) ? j : Array.isArray(j?.signals) ? j.signals : [];
-  return arr.map((s: Record<string, unknown>) => ({
-    symbol: s.symbol as string | undefined,
-    signal_type: s.signal_type as string | undefined,
-    confidence: s.confidence as number | undefined,
-    timestamp: s.timestamp as string | undefined,
-    metadata: s.metadata as Record<string, string> | undefined,
-  }));
-}
-
 // /api/health → reshape janus /health into the StatusBar's flat {redis,janus,feed}.
 // janus /health: { status, forward_service, components: Record<string,{status}> }.
 // Two consumers share /api/health: the bottom StatusBar wants a flat
@@ -382,108 +327,11 @@ async function janusHealth(event: RequestEvent): Promise<Response> {
   return json(reshapeHealth(j, status));
 }
 
-// /api/janus/state → the /janus-ai "Janus State" panel's JanusStateResponse:
-//   { janus: { status }, redis: { regime, affinity, signals_recent } }.
-// `janus.status` is the trading brain's health (forward /api/v1/brain/health),
-// falling back to the api service /health. `signals_recent` reuses the dashboard
-// signals feed. regime/affinity have no janus feed wired here yet → empty (the
-// panel renders a clean "no data" state rather than stale Ruby shapes).
-async function janusState(event: RequestEvent): Promise<Response> {
-  const [brainRes, healthRes, sigs] = await Promise.all([
-    janusJsonStatus(event, JANUS_FORWARD_URL, "/api/v1/brain/health"),
-    janusJsonStatus(event, JANUS_URL, "/health"),
-    janusRecentSignals(event),
-  ]);
-  const brain = brainRes.data;
-  const health = healthRes.data;
-  const rawStatus =
-    typeof brain?.healthy === "boolean"
-      ? brain.healthy
-        ? "ok"
-        : "down"
-      : (brain?.state ?? brain?.status ?? health?.status);
-  let status: string;
-  if (rawStatus != null) {
-    // The panel greens on 'UP'/'ok'; normalise any healthy-ish word to 'ok'.
-    const s = String(rawStatus);
-    status = /^(ok|up|healthy|running|connected|active)$/i.test(s) ? "ok" : s.toUpperCase();
-  } else {
-    // Neither brain health nor forward /health answered with a real status —
-    // fall back to what the fetch layer actually observed instead of
-    // fabricating "DOWN". Only a CONFIRMED failure on either call (non-2xx /
-    // connection-refused) earns a red DOWN; an ambiguous one (timeout / other
-    // network error) on both renders the page's neutral UNKNOWN state.
-    status = brainRes.status === "down" || healthRes.status === "down" ? "DOWN" : "UNKNOWN";
-  }
-  return json({
-    janus: { status },
-    redis: {
-      regime: {},
-      affinity: {},
-      signals_recent: sigs.map((s) => ({
-        symbol: s.symbol,
-        direction: s.signal_type,
-        confidence: s.confidence,
-        timestamp: s.timestamp,
-      })),
-    },
-  });
-}
-
-// /api/janus/affinity → the /janus-ai "Strategy Affinity" matrix:
-//   { status, weights: Record<strategy, Record<asset, number>> }.
-// Sourced from forward /api/v1/brain/affinity; if janus returns a different
-// shape we degrade to an empty matrix (panel shows "no affinity data").
-async function janusAffinity(event: RequestEvent): Promise<Response> {
-  const a = await janusJson(event, JANUS_FORWARD_URL, "/api/v1/brain/affinity");
-  const weights = a && typeof a.weights === "object" && a.weights ? a.weights : {};
-  return json({ status: String(a?.status ?? "ok"), weights });
-}
-
-// /api/performance → the /performance metrics grid (Performance shape).
-// Merges forward /api/v1/risk/performance (preferred) with /api/dashboard/
-// performance, mapping fields defensively. Empty in the paper demo (no closed
-// trades through janus) → every card shows "—"; populates once trades flow.
-async function janusPerformance(event: RequestEvent): Promise<Response> {
-  const [risk, dash] = await Promise.all([
-    janusJson(event, JANUS_FORWARD_URL, "/api/v1/risk/performance"),
-    janusJson(event, JANUS_URL, "/api/dashboard/performance"),
-  ]);
-  return json(reshapePerformance(risk, dash));
-}
-
 // ── /monitoring: Prometheus proxy ───────────────────────────────────────────
 // The /monitoring page calls /api/metrics/* (these used to be served by Ruby's
 // data service, which queried Prometheus and reshaped). We reprise that role:
 // query/query_range/targets are a straight pass-through (identical shapes), and
 // alerts/layout get a light reshape.
-
-/// GET /api/rithmic/status → the connector snapshot, or an explicit
-/// `reachable: false` when the profile is not running.
-///
-/// Deliberately NOT `forward()`: a 502 from an absent upstream would leave the
-/// UI guessing. The kill switch is what the operator uses to free their trading
-/// session, so "I could not reach the connector" and "the connector says it is
-/// live" must never look alike.
-async function rithmicStatus(event: RequestEvent): Promise<Response> {
-  try {
-    const headers = withInternalToken(RITHMIC_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${RITHMIC_URL}/status`, {
-      headers,
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!r.ok) {
-      return json({ reachable: false, reason: `connector returned ${r.status}` });
-    }
-    const snap: any = await r.json();
-    return json({ reachable: true, ...snap });
-  } catch {
-    return json({
-      reachable: false,
-      reason: "connector unreachable (the `rithmic` compose profile may be down)",
-    });
-  }
-}
 
 // /api/metrics/alerts → reshape Prometheus /api/v1/alerts ({data:{alerts:[…]}})
 // into the page's { data: Alert[] } with an age_str derived from activeAt.
@@ -764,76 +612,6 @@ async function chartIndicators(event: RequestEvent, symbolRaw: string): Promise<
 }
 
 // Run a QuestDB /exec query and return its dataset rows ([] on any failure).
-/**
- * GET /api/pipeline/scores/json → janus scores, with the PRICE filled in.
- *
- * Janus emits `price: 0.0` for every asset on this surface — verified against
- * the live container, where BTC/ETH/SOL all come back zero while QuestDB holds
- * a current close for each. The Overview table was faithfully rendering that,
- * so every row read "0.000000" and looked like a dead feed.
- *
- * Fixed HERE rather than in janus because the data already exists on this side
- * of the seam: `candles_crypto` is the same store janus writes to, so the
- * adapter can complete the payload without a janus change, a rebuild, or a
- * restart of the service that produces the signals.
- *
- * ONLY fills a price janus did not supply (0/absent). If janus ever starts
- * populating the field, its value wins — this must not shadow the upstream
- * number with a slightly staler one.
- *
- * A QuestDB failure degrades to the untouched janus payload. The prices are an
- * enrichment; losing them must not take the scores, signals and confidences
- * down with them.
- */
-async function scoresWithPrices(event: RequestEvent): Promise<Response> {
-  const upstream = await forward(event, JANUS_URL, "/api/pipeline/scores/json");
-  let payload: any;
-  try {
-    payload = await upstream.clone().json();
-  } catch {
-    return upstream; // not JSON — pass it through untouched
-  }
-  const assets: any[] = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.assets)
-      ? payload.assets
-      : [];
-  const needy = assets.filter((a) => !(Number(a?.price) > 0) && typeof a?.symbol === "string");
-  if (needy.length === 0) return upstream;
-
-  // Score symbols carry a slash ("SOL/USDT"); candles_crypto stores them
-  // without ("SOLUSDT"). Map both ways so the join is exact rather than a LIKE.
-  const wanted = new Map<string, string>(); // questdb symbol -> score symbol
-  for (const a of needy) {
-    wanted.set(String(a.symbol).replace(/\//g, "").toUpperCase(), String(a.symbol));
-  }
-  const list = [...wanted.keys()]
-    .map((s) => `'${s.replace(/'/g, "''")}'`)
-    .join(",");
-
-  try {
-    // `latest on` gives the newest row per symbol without a GROUP BY scan.
-    const rows = await questdbRows(
-      `SELECT symbol, close FROM candles_crypto WHERE symbol IN (${list}) LATEST ON timestamp PARTITION BY symbol`,
-    );
-    const px = new Map<string, number>();
-    for (const r of rows) {
-      const n = Number(r?.[1]);
-      if (Number.isFinite(n) && n > 0) px.set(String(r[0]).toUpperCase(), n);
-    }
-    if (px.size === 0) return upstream;
-    for (const a of assets) {
-      if (Number(a?.price) > 0) continue;
-      const key = String(a?.symbol ?? "").replace(/\//g, "").toUpperCase();
-      const p = px.get(key);
-      if (p != null) a.price = p;
-    }
-    return json(payload);
-  } catch {
-    return upstream;
-  }
-}
-
 async function questdbRows(sql: string): Promise<any[]> {
   try {
     const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
@@ -846,6 +624,42 @@ async function questdbRows(sql: string): Promise<any[]> {
     return Array.isArray(j?.dataset) ? j.dataset : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * GET /api/market/coverage → what janus has recorded in `candles_crypto`, per
+ * symbol and interval: bar count, first and last bar. The Data page's market
+ * data table and the Home page's freshness line read it.
+ *
+ * Unlike `questdbRows`, a failure is reported as `ok:false` rather than an
+ * empty list: "QuestDB did not answer" must not read as "nothing recorded".
+ */
+async function marketCoverage(): Promise<Response> {
+  const sql =
+    "SELECT symbol, interval, count() AS bars, min(timestamp) AS first, max(timestamp) AS last " +
+    "FROM candles_crypto GROUP BY symbol, interval ORDER BY symbol, interval";
+  try {
+    const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) {
+      return json({ ok: false, error: `QuestDB answered ${r.status}`, rows: [] });
+    }
+    const j: any = await r.json();
+    const rows = Array.isArray(j?.dataset)
+      ? j.dataset.map((row: unknown[]) => ({
+          symbol: String(row[0] ?? ""),
+          interval: String(row[1] ?? ""),
+          bars: Number(row[2] ?? 0),
+          first: row[3] ?? null,
+          last: row[4] ?? null,
+        }))
+      : [];
+    return json({ ok: true, table: "candles_crypto", rows });
+  } catch {
+    return json({ ok: false, error: "QuestDB is unreachable", rows: [] });
   }
 }
 
@@ -937,84 +751,6 @@ async function assetInfo(event: RequestEvent, shortRaw: string): Promise<Respons
   const ex = rows[0]?.[0] != null ? String(rows[0][0]) : "";
   if (!ex) return json({});
   return json({ type: "crypto", source: ex, source_chain: [ex] });
-}
-
-// /settings risk panel ↔ janus forward /api/v1/risk/config (rustrade
-// PortfolioRiskConfig: max_daily_loss ≤ 0, max_concurrent_positions,
-// max_gross_exposure). The UI works in positive USD for the daily-loss limit; we
-// flip the sign on write. The save is honest now (a real PUT) — no fake "Saved".
-//
-// R1 — this GET deliberately does NOT use `janusJson`. `janusJson` swallows
-// every failure into `{}` (and doesn't even check `r.ok`, so a janus 4xx with a
-// JSON body flows through as data), `reshapeRiskConfig({})` is three
-// `undefined`s, and the panel then renders its own seeded numbers as though
-// they were the live limits — with Save enabled to write those fabrications
-// over the real config. "janus said X" and "janus did not answer" must be
-// distinguishable at this seam, so failure is a 502 the client can see.
-async function riskConfigGet(event: RequestEvent): Promise<Response> {
-  let raw: unknown;
-  try {
-    const r = await fetch(`${JANUS_FORWARD_URL}/api/v1/risk/config`, {
-      headers: withJanusAuth(JANUS_FORWARD_URL, upstreamHeaders(event.request.headers)),
-      // Bound the read so a hung janus can't wedge the panel that awaits it.
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!r.ok) {
-      return json(
-        {
-          error: "risk_config_unreachable",
-          message: `the risk service answered ${r.status}`,
-        },
-        502,
-      );
-    }
-    raw = await r.json();
-  } catch {
-    return json(
-      { error: "risk_config_unreachable", message: "the risk service is unreachable" },
-      502,
-    );
-  }
-  const c = reshapeRiskConfig(raw);
-  // A 200 carrying no recognizable field is a schema change or a stub, not a
-  // config — passing it on reproduces the exact fabrication with janus fully up.
-  if (!riskConfigRecognized(c)) {
-    return json(
-      {
-        error: "risk_config_unrecognized",
-        message: "the risk service returned no recognizable limits",
-      },
-      502,
-    );
-  }
-  return json(c);
-}
-
-async function riskConfigPost(event: RequestEvent): Promise<Response> {
-  let body: any = {};
-  try {
-    body = await event.request.json();
-  } catch {
-    /* empty / non-JSON body */
-  }
-  const payload = toRiskConfigPayload(body);
-  try {
-    const headers = withJanusAuth(
-      JANUS_FORWARD_URL,
-      upstreamHeaders(event.request.headers),
-    );
-    headers.set("content-type", "application/json");
-    const r = await fetch(`${JANUS_FORWARD_URL}/api/v1/risk/config`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!r.ok) return json({ ok: false, message: `risk update rejected (${r.status})` }, 502);
-    return json({ ok: true });
-  } catch {
-    return json({ ok: false, message: "risk service unreachable" }, 502);
-  }
 }
 
 // ── /settings exchange API keys → the spawner's secret store (Postgres fks_db).
@@ -1113,83 +849,6 @@ async function exchangeKeysStatusAll(event: RequestEvent): Promise<Response> {
     });
   } catch {
     return json({ db_enabled: false, exchanges: [] });
-  }
-}
-
-// GET /api/capabilities → which credential-gated platform features are active.
-// The roadmap's capability gate: features light up only when the backing creds
-// exist. Today: `rithmic` (futures feed + positions) is enabled when a
-// "rithmic" broker credential is stored. Derived from the spawner secret store.
-async function capabilities(event: RequestEvent): Promise<Response> {
-  let stored: string[] = [];
-  try {
-    const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
-    const r = await fetch(`${SPAWNER_URL}/secrets/status`, {
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (r.ok) {
-      const j: any = await r.json();
-      stored = (Array.isArray(j?.exchanges) ? j.exchanges : []).map((e: any) =>
-        String(e?.exchange ?? "").toLowerCase(),
-      );
-    }
-  } catch {
-    /* spawner unreachable → everything gated off, honestly */
-  }
-  return json({ rithmic: stored.includes("rithmic") });
-}
-
-// GET /api/futures/symbols → distinct venue-tagged symbols present in
-// candles_futures, for the /futures chart picker. Empty until the Rithmic
-// connector runs and fills the table (or the table doesn't exist yet).
-async function futuresSymbols(): Promise<Response> {
-  const sql = "SELECT DISTINCT symbol FROM candles_futures ORDER BY symbol LIMIT 200";
-  try {
-    const r = await fetch(`${QUESTDB_URL}/exec?query=${encodeURIComponent(sql)}`, {
-      headers: { accept: "application/json" },
-      // Bound the request so a HUNG QuestDB can't wedge the SvelteKit handler
-      // (adapter-node has no default per-request timeout). Matches proxyBackend.
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j: any = await r.json();
-    const symbols = Array.isArray(j?.dataset) ? j.dataset.map((row: any[]) => row[0]) : [];
-    return json({ symbols });
-  } catch {
-    return json({ symbols: [] });
-  }
-}
-
-// GET /api/rithmic/positions → the read-only positions book from the Rithmic
-// connector's /positions surface (fks #183). The connector is `rithmic`
-// profile-gated (not in the default up) and only fills positions when the
-// account triple is configured, so any failure degrades to an honest empty,
-// disconnected view rather than an error the panel has to special-case.
-async function rithmicPositions(): Promise<Response> {
-  const empty = {
-    connected: false,
-    account: "",
-    count: 0,
-    positions: [] as unknown[],
-    account_summary: null as unknown,
-  };
-  try {
-    const r = await fetch(`${RITHMIC_CONNECTOR_URL}/positions`, {
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(2500),
-    });
-    if (!r.ok) return json(empty);
-    const j: any = await r.json();
-    return json({
-      connected: true,
-      account: typeof j?.account === "string" ? j.account : "",
-      count: Array.isArray(j?.positions) ? j.positions.length : 0,
-      positions: Array.isArray(j?.positions) ? j.positions : [],
-      account_summary: j?.account_summary ?? null,
-    });
-  } catch {
-    // Connector not running / not on the network → gated-off empty view.
-    return json(empty);
   }
 }
 
@@ -1503,38 +1162,9 @@ function requestCtx(event: RequestEvent): RequestCtx {
 export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promise<Response> {
   const { pathname, search } = event.url;
 
-  // ── Armed-futures cockpit (M2) ──────────────────────────────────────────────
-  // Reads: funding bot Postgres state (sentinel / open trades / gate rows /
-  // ledger) + the #18 armed-path Prometheus telemetry. ONE mutation: the kill
-  // sentinel (typed-confirmed, instance-explicit). Like every backend route
-  // these are behind the #47 session seam — routeRequest denies them (reads
-  // AND mutations) without a valid session, and the CSRF origin check already
-  // ran. `operator` stamps the audit reason on the sentinel record.
-  if (pathname === "/api/cockpit/state") {
-    return cockpitStateGet();
-  }
-  if (pathname === "/api/cockpit/telemetry") {
-    return cockpitTelemetryGet(PROMETHEUS_URL);
-  }
-  if (pathname === "/api/cockpit/kill" && event.request.method === "POST") {
-    return cockpitKillPost(event.request, operatorName(auth));
-  }
-  if (pathname === "/api/cockpit/rearm" && event.request.method === "POST") {
-    return cockpitRearmPost(event.request, operatorName(auth));
-  }
-  // Live-twin /status feed (M3 Phase A). Three-state, honest by construction:
-  // env unset → {configured:false}; set-but-down → {configured:true,
-  // reachable:false, reason}; a real BotStatus → {…, reachable:true, status,
-  // mode_mismatch}. CRYPTO_FUNDING_LIVE_URL is EMPTY until the live twin exists.
-  if (pathname === "/api/cockpit/live-status") {
-    return cockpitLiveStatusGet(CRYPTO_FUNDING_LIVE_URL);
-  }
-
   // ══════════════════════════════════════════════════════════════════════════
   // ── Alert-ack inbox (M3 Phase B) ────────────────────────────────────────────
-  // Self-contained block (deliberately separate from the cockpit dispatch
-  // above so it never interleaves with the M3 Phase A live-status line). Paths
-  // are unique, so the position within proxyBackend is immaterial.
+  // Paths are unique, so the position within proxyBackend is immaterial.
   //   GET  /api/alerts/inbox → live Prometheus alerts LEFT-JOINed to acks.
   //   POST /api/alerts/ack   → record an ack (irrevocable audit row).
   // Both are behind the #47 session seam. The ack is additionally in
@@ -1554,42 +1184,6 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
       return sessionRequired();
     }
     return alertAckPost(event.request, getAlertAckStore(), auth.session.username);
-  }
-  // ══════════════════════════════════════════════════════════════════════════
-
-  // ── Rithmic account management (fks 016) ───────────────────────────────────
-  //   GET    /api/rithmic/accounts      → list (metadata only, NEVER a secret)
-  //   POST   /api/rithmic/accounts      → create/update one
-  //   DELETE /api/rithmic/accounts/:id  → remove the metadata row
-  //
-  // Mutations are ADMIN-only via ADMIN_ONLY_MUTATION_RULES (adapter.ts): this is
-  // a credential/config surface — flipping `main` changes which funded prop
-  // account the operator is pointed at. The GET is not, because the payload
-  // carries `has_credentials` and no credential.
-  //
-  // Matched BEFORE the connector proxy below, which claims `/api/rithmic/*` and
-  // would otherwise forward these straight to the read-only connector, where
-  // they are unmapped.
-  if (pathname === "/api/rithmic/accounts") {
-    if (event.request.method === "GET") {
-      return rithmicAccountsGet(getRithmicAccountStore());
-    }
-    if (event.request.method === "POST") {
-      let body: unknown;
-      try {
-        body = await event.request.json();
-      } catch {
-        return json({ error: "bad_request", message: "body must be JSON" }, 400);
-      }
-      return rithmicAccountsPost(getRithmicAccountStore(), body);
-    }
-  }
-  if (
-    pathname.startsWith("/api/rithmic/accounts/") &&
-    event.request.method === "DELETE"
-  ) {
-    const id = decodeURIComponent(pathname.slice("/api/rithmic/accounts/".length));
-    return rithmicAccountsDelete(getRithmicAccountStore(), id);
   }
   // ══════════════════════════════════════════════════════════════════════════
 
@@ -1640,6 +1234,7 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
         event.request.method,
         () => event.request.clone().text(),
         storedSpawnerConfig,
+        spawnerTemplate,
       ))
     ) {
       return jsonError(403, {
@@ -1656,114 +1251,6 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
   // Status-bar health: reshape janus /health → {redis,janus,feed}.
   if (pathname === "/api/health") {
     return janusHealth(event);
-  }
-
-  // Overview "recent signals" panel → janus signals reshaped to RecentSignal[]
-  // ({ symbol, direction, confidence, timestamp }).
-  if (pathname === "/api/db/redis/get/fks:memories:new") {
-    const sigs = await janusRecentSignals(event);
-    return json(
-      sigs.map((s) => ({
-        symbol: s.symbol,
-        direction: s.signal_type,
-        confidence: s.confidence,
-        timestamp: s.timestamp,
-      })),
-    );
-  }
-
-  // Signals page list → janus signals reshaped to { signals: Signal[] }.
-  // Per-signal status is derived from the execution-gate / risk verdicts in
-  // the signal's metadata (signalStatus: approved / rejected / staging), and
-  // the page's ?status= filter (staging / approved / "" = all) is honored
-  // against that derived status. (The approve/reject actions stay no-ops —
-  // janus has no staging workflow to write back to.)
-  if (pathname === "/api/signals") {
-    const sigs = await janusRecentSignals(event);
-    const wanted = event.url.searchParams.get("status") ?? "";
-    const signals = sigs.map((s, i) => ({
-      id: `${s.symbol ?? "sig"}-${s.timestamp ?? i}`,
-      symbol: s.symbol ?? "—",
-      type: "entry",
-      side: s.signal_type,
-      status: signalStatus(s.metadata),
-      timestamp: s.timestamp,
-      message: s.signal_type,
-    }));
-    return json({ signals: wanted ? signals.filter((s) => s.status === wanted) : signals });
-  }
-
-  // /exchanges page → the crypto bots' /status documents (spot portfolio +
-  // futures funding paper). Each side degrades to null independently so the
-  // page renders whatever is reachable (e.g. only the spot bot running).
-  if (pathname === "/api/capabilities") {
-    return capabilities(event);
-  }
-  if (pathname === "/api/futures/symbols") {
-    return futuresSymbols();
-  }
-  if (pathname === "/api/rithmic/positions") {
-    return rithmicPositions();
-  }
-  if (pathname === "/api/exchanges/status") {
-    const [spot, funding] = await Promise.all([
-      janusJson(event, CRYPTO_SPOT_URL, "/status"),
-      janusJson(event, CRYPTO_FUNDING_URL, "/status"),
-    ]);
-    return json({
-      spot: spot && typeof spot === "object" && "bot" in spot ? spot : null,
-      funding: funding && typeof funding === "object" && "bot" in funding ? funding : null,
-    });
-  }
-
-  // Experience Map (UMAP view): recent decision vectors + payload from the
-  // backward service. Graceful empty when the endpoint isn't up yet.
-  if (pathname === "/api/janus/experiences/sample") {
-    try {
-      const r = await fetch(`${BACKWARD_URL}/api/v1/experiences/sample${search}`, {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (r.ok) {
-        return new Response(r.body, {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-    } catch {
-      /* fall through to empty */
-    }
-    return json({ points: [], total: 0 });
-  }
-
-  // janus-ai "Janus State" panel → brain health + recent signals.
-  if (pathname === "/api/janus/state") {
-    return janusState(event);
-  }
-
-  // janus-ai "Strategy Affinity" matrix → forward brain affinity.
-  if (pathname === "/api/janus/affinity") {
-    return janusAffinity(event);
-  }
-
-  // /settings "Janus Optimizer" panel ↔ janus-api /api/config. GET returns the
-  // effective config (env defaults ⊕ Redis overrides) in exactly the page's
-  // JanusConfigResponse shape (plus requires_restart); PUT validates + stores
-  // the overrides. Shapes match 1:1 (both sides were defined together), so
-  // forward straight through — janus self-degrades (GET → env_defaults with
-  // redis_available:false; PUT → honest 503) when Redis is down.
-  if (pathname === "/api/janus/config") {
-    return forward(event, JANUS_URL, "/api/config");
-  }
-
-  // /performance metrics grid → forward risk/performance (+ dashboard).
-  if (pathname === "/api/performance") {
-    return janusPerformance(event);
-  }
-
-  // /settings risk panel — load (GET) / save (POST→PUT) janus risk config.
-  if (pathname === "/api/settings/risk") {
-    return event.request.method === "POST" ? riskConfigPost(event) : riskConfigGet(event);
   }
 
   // /settings exchange API keys → spawner secret store (browser submits only;
@@ -1814,71 +1301,8 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     const [, exch, kind] = exchangeKeysMatch;
     return kind === "keys" ? exchangeKeysPost(event, exch) : exchangeKeysStatus(event, exch);
   }
-  // /performance trade history — janus has no closed-trade ledger here; the
-  // demo bot keeps fills on its MockExchange. Honest empty until that's exposed.
-  if (pathname === "/api/trades") {
-    // GET = trade history: honest empty (janus exposes no closed-trade ledger
-    // here yet). POST = the /trading order ticket, which previously landed on
-    // this same read stub, got a 200, and made the UI report the order as
-    // submitted. Fall through so the mutation guard below answers 501.
-    if (isGetLike(event.request.method)) {
-      return json({ trades: [] });
-    }
-  }
-
-  // ── PHASE 2: front-page panels janus now serves natively ────────────────────
-  // janus PRs #107/#111 added these in the exact shapes the overview parses
-  // (`{assets}` / `{trades}` / factory status). Forward straight through —
-  // janus self-degrades to empty-but-valid, so a backend hiccup never errors the
-  // page. Replaces the previous gracefulEmpty fall-through for these paths.
-  if (pathname === "/api/pipeline/scores/json") {
-    return scoresWithPrices(event);
-  }
-  // ── /janus-ai sessions + memories ─────────────────────────────────────────
-  // These were UNMAPPED, so they fell through to `gracefulEmpty` → a 200 `{}`,
-  // and the page rendered two permanently empty panes that looked broken. The
-  // degrade is right in general (an unmapped READ should not error a page) but
-  // wrong here: janus answers 404 on every candidate path — measured on the
-  // live container across /api/janus-ai/sessions, /api/sessions, /api/memories
-  // and /api/v1/memories — so the panes are not empty, the feature does not
-  // exist, and an empty 200 states the first while the truth is the second.
-  //
-  // Mapped so janus's own answer reaches the client. If these are implemented
-  // later this starts working with no change here; until then the UI gets a
-  // 404 it can name honestly instead of silence it cannot distinguish from
-  // "no data yet".
-  if (pathname === "/api/janus-ai/sessions") {
-    return forward(event, JANUS_URL, "/api/janus-ai/sessions");
-  }
-  if (pathname === "/api/janus/memories") {
-    return forward(event, JANUS_URL, `/api/janus/memories${event.url.search}`);
-  }
-  if (pathname === "/api/trades/open") {
-    return forward(event, JANUS_URL, "/api/trades/open");
-  }
-  if (pathname === "/factory/status") {
-    return forward(event, JANUS_URL, "/factory/status");
-  }
-
   // ── /monitoring → Prometheus (fks_prometheus:9090) ──────────────────────────
   // Instant/range queries + targets are identical in shape → straight proxy.
-  // ── /api/rithmic/* → the read-only connector + its operator kill switch ────
-  // Rithmic allows ONE session per credential, so the platform and the
-  // operator's R|Trader Pro app cannot both be connected. These let the
-  // operator hand the session over deliberately instead of the two fighting.
-  //
-  // The connector lives behind the `rithmic` compose profile and is often DOWN.
-  // A down connector must read as "unreachable", never as "not killed" — the
-  // operator uses this to free their trading session, so an ambiguous answer is
-  // the one failure that matters.
-  if (pathname === "/api/rithmic/status") {
-    return rithmicStatus(event);
-  }
-  if (pathname === "/api/rithmic/kill" || pathname === "/api/rithmic/resume") {
-    const action = pathname.endsWith("/kill") ? "kill" : "resume";
-    return forward(event, RITHMIC_URL, `/${action}`);
-  }
-
   if (pathname === "/api/metrics/query") {
     return forward(event, PROMETHEUS_URL, "/api/v1/query" + search);
   }
@@ -1945,6 +1369,11 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     return chartIndicators(event, sym);
   }
 
+  // ── Market-data coverage → QuestDB candles_crypto (Data page, Home) ─────────
+  if (pathname === "/api/market/coverage") {
+    return marketCoverage();
+  }
+
   // ── /charts symbol catalog → QuestDB candles_crypto ─────────────────────────
   if (pathname === "/api/assets/search") {
     return symbolSearch(event);
@@ -1959,9 +1388,6 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     }
     return assetInfo(event, sym);
   }
-
-  // More janus panels (overview aggregate / performance) land here next —
-  // see docs/architecture/WEBUI_JANUS_REPOINT.md for the per-panel mapping.
 
   // ── /sse/bars/:sym → futures live bars (D1) ─────────────────────────────────
   // Crypto charts get live ticks client-side (Kraken/Binance WS, reconnect +
@@ -2040,6 +1466,14 @@ export const handle: Handle = async ({ event, resolve }) => {
   const { pathname, search } = event.url;
   const method = event.request.method;
   const backend = isBackend(pathname);
+
+  // Old page URLs (bookmarks, the PWA's history) land on their new home.
+  // Before auth on purpose: it reveals nothing, and the target page then goes
+  // through the normal gate. 302, not 308, so browsers do not cache it.
+  if (!backend && isGetLike(method)) {
+    const to = movedPage(pathname);
+    if (to) return new Response(null, { status: 302, headers: { location: to } });
+  }
 
   // Default identity — no leak. Overwritten once auth resolves; stays null on
   // the outage open-page branch (login/logout render with no user). See A3.

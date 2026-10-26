@@ -8,7 +8,6 @@
   import EmptyState from '$components/ui/EmptyState.svelte';
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import { createPoll } from '$lib/stores/poll';
-  import RithmicAccountsPanel from '$lib/components/settings/RithmicAccountsPanel.svelte';
   import { fmtRelative, fmtDateTime } from '$lib/utils/format';
   import {
     NOTIFY_EVENT_KINDS,
@@ -22,7 +21,7 @@
   } from '$lib/types/notifications';
 
   // ─── Role-aware affordances (A5) ────────────────────────────────────
-  // The credential / notification / risk / janus-config saves are all R2
+  // The credential and notification saves are both R2
   // (admin-only mutations) at the seam. Disable those Save controls for a
   // known non-admin so the UI is honest; null role (auth disabled / no
   // session) leaves them on — the server is the real gate either way.
@@ -37,42 +36,6 @@
     components?: Record<string, { status: string; latency?: string }>;
   }
 
-  interface RiskSettings {
-    daily_loss_limit: number;
-    max_contracts: number;
-    hard_stop: number;
-  }
-
-  interface JanusConfig {
-    optimize_assets: string;
-    optimize_interval: string;
-    optimize_trials: number;
-    optimize_historical_days: number;
-    data_kline_intervals: string;
-    janus_auto_start: boolean;
-    janus_bootstrap_days: number;
-  }
-
-  interface JanusConfigResponse {
-    config: JanusConfig;
-    assets_list: string[];
-    source: 'redis' | 'env_defaults';
-    valid_intervals: string[];
-    redis_available: boolean;
-    /** Fields janus reads once at boot — a saved override only takes effect
-     *  after the janus/optimizer process restarts (currently all of them). */
-    requires_restart?: string[];
-  }
-
-  interface BootstrapPushResponse {
-    ok: boolean;
-    pushed: number;
-    failed: number;
-    total: number;
-    source: string;
-    message: string;
-  }
-
   // ─── Exchange Credentials State (dynamic list) ──────────────────────
   // The spawner secret store keys credentials by a free-form exchange id, so
   // the UI stays a dynamic list: starts blank, any venue can be added. The
@@ -81,12 +44,8 @@
   // Provider registry: the spawner schema has exactly THREE encrypted slots
   // per credential — api_key / api_secret / api_passphrase (optional). Every
   // provider maps its fields onto those slots, so storage is unchanged; only
-  // the form labels differ. Rithmic (a futures broker, not an exchange)
-  // re-labels the slots:  User → api_key, Password → api_secret,
-  // System → api_passphrase.
-  // Exchange creds are for read-only pulls (balances, trade history) + book
-  // data — not autonomous trading. Rithmic is the futures-trading focus: its
-  // workflows only activate when a rithmic credential is present.
+  // the form labels differ. A key is used by the bot that trades its account
+  // (spawn-time injection by the spawner); this page never reads one back.
   interface ProviderSpec {
     id: string; // slug stored in the spawner secret store
     label: string;
@@ -105,55 +64,15 @@
       hint?: string;
       /** Render a <select> instead of free text. First entry is the default. */
       options?: readonly string[];
-      /** Masked unless explicitly false. A Rithmic system name is not a secret
-       *  and masking it only makes a typo impossible to spot. */
+      /** Masked unless explicitly false (for a field that is not a secret). */
       secret?: boolean;
     };
-    /** Has a public reachability ping in hooks.server.ts (rithmic has none). */
+    /** Has a public reachability ping in hooks.server.ts. */
     testable: boolean;
   }
 
-  /** The system names `rprotocol.rithmic.com` actually accepts.
-   *
-   *  Enumerated from the gateway itself on 2026-09-03 via
-   *  `scripts/rithmic-list-systems.py` in the fks repo, which sends an
-   *  UNAUTHENTICATED RequestRithmicSystemInfo — it cannot contribute to a
-   *  failed-login lockout, so it is safe to re-run when this list looks stale.
-   *
-   *  Typing this by hand is how you get `permission denied` from a gateway that
-   *  is working perfectly: the login is rejected for an unknown system before
-   *  the credentials are ever considered. */
-  const RITHMIC_SYSTEMS = [
-    'Rithmic Paper Trading',
-    'Rithmic 01',
-    'Rithmic 04 Colo',
-    'Apex',
-    '4PropTrader',
-    'Bulenox',
-    'DayTraders.com',
-    'Earn2Trade',
-    'FundedFuturesNetwork',
-    'GoatFundedFutures',
-    'HalcyonTrader',
-    'LegendsTrading',
-    'LucidTrading',
-    'MES Capital',
-    'PropShopTrader',
-    'TheTradingPit',
-    'ThriveTrading',
-    'TopstepTrader',
-    'TRADEFUNDED',
-    'TradeFundrr',
-    'Tradeify',
-    'Tradeify-Test',
-    'tradesea',
-    'tradesea-c',
-    'tradesea-d',
-    'tradesea-test',
-  ] as const;
-
   const EXCHANGE_PURPOSE =
-    'Read-only: balances, trade history, book-level data — not autonomous trading.';
+    'Used by the bot that trades this account. Stored encrypted; never shown again.';
   const KUCOIN_THIRD = {
     label: 'API Passphrase',
     placeholder: 'Passphrase chosen when the key was created…',
@@ -191,26 +110,6 @@
       secretLabel: 'API Secret', secretPlaceholder: 'Enter API secret…',
       testable: true,
     },
-    {
-      id: 'rithmic', label: 'Rithmic', kind: 'broker',
-      purpose:
-        'Futures trading focus — enables the Rithmic workflows when present. ' +
-        'We trade manually; creds unlock read-only account pulls + book data.',
-      keyLabel: 'User', keyPlaceholder: 'Rithmic login user…',
-      secretLabel: 'Password', secretPlaceholder: 'Rithmic password…',
-      third: {
-        label: 'System', placeholder: 'Rithmic Paper Trading', required: true,
-        options: RITHMIC_SYSTEMS,
-        secret: false,
-        hint:
-          'The gateway rejects an unknown system BEFORE checking credentials, ' +
-          'so a typo here reads as \u0022permission denied\u0022. List enumerated from ' +
-          'rprotocol.rithmic.com. Stored in the standard 3-slot record: ' +
-          'User \u2192 api_key, Password \u2192 api_secret, System \u2192 api_passphrase.',
-      },
-      // No public ping endpoint — R|API is a proprietary gateway protocol.
-      testable: false,
-    },
   ];
   const PROVIDER_BY_ID = new Map(PROVIDERS.map((p) => [p.id, p]));
   // "Other…" escape hatch: free-form slug keeps the store's generality.
@@ -241,36 +140,11 @@
   let credFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
   // Venues with a server-side reachability test (GET /api/exchanges/:venue/ping).
   // Reachability only — stored credentials are never read back, so key
-  // validation would have to run in the spawner (follow-up). Rithmic is not
-  // testable: it has no public ping.
+  // validation would have to run in the spawner (follow-up).
   const TESTABLE_VENUES = new Set(PROVIDERS.filter((p) => p.testable).map((p) => p.id));
   let venueTesting = $state<string | null>(null);
   let venueTestFeedback = $state('');
   let venueTestVariant = $state<'green' | 'red' | 'default'>('default');
-
-  // ─── Risk Controls State (rustrade PortfolioRiskConfig) ─────────────
-  // MONEY SAFETY (R1): these start as `null`, NOT as plausible-looking numbers.
-  // The panel used to seed 5000 / 10 / 5_000_000 and keep them whenever the
-  // load failed, so an unreachable risk service rendered $5,000 daily loss /
-  // 10 positions / $5,000,000 gross exposure as if they were the LIVE limits —
-  // with Save enabled to write those fabrications over the real config. A
-  // blank field plus a stated reason is the only honest "we don't know".
-  let riskDailyLoss = $state<number | null>(null);      // max daily loss (USD; shown positive, stored ≤0)
-  let riskMaxPositions = $state<number | null>(null);   // max concurrent positions
-  let riskGrossExposure = $state<number | null>(null);  // max gross exposure (USD)
-  let riskSaving = $state(false);
-  // Starts true: `loadRisk()` runs on mount, so "Loading…" is the truthful
-  // first paint. Starting false rendered a disabled Save with no explanation.
-  let riskLoading = $state(true);
-  let riskFeedback = $state('');
-  // Why the live limits can't be shown (null = they are shown). Rendered
-  // verbatim — "blank" alone would read as "no limits set".
-  let riskLoadError = $state<string | null>(null);
-  // Set true ONLY by a load that came back with all three real limits. It is
-  // deliberately not derived from the field values: typing into the boxes must
-  // never unlock Save while the config on the other side is unknown, because
-  // writing over an unknown config is the harm this guard exists to stop.
-  let riskLoadedOk = $state(false);
 
   // ─── System Health State ───────────────────────────────────────────
   let healthData = $state<HealthResponse | null>(null);
@@ -284,29 +158,6 @@
     { label: 'Alertmanager',  icon: '🔔', url: 'http://localhost:9093',  color: 'var(--red)' },
     { label: 'Jaeger',        icon: '🔍', url: 'http://localhost:16686', color: 'var(--purple)' },
   ];
-
-  // ─── Janus Config State ────────────────────────────────────────────
-  let janusConfig = $state<JanusConfig>({
-    optimize_assets: 'BTC,ETH,SOL',
-    optimize_interval: '6h',
-    optimize_trials: 100,
-    optimize_historical_days: 30,
-    data_kline_intervals: '1m,5m',
-    janus_auto_start: false,
-    janus_bootstrap_days: 30,
-  });
-  let janusConfigSource = $state<'redis' | 'env_defaults'>('env_defaults');
-  let janusRedisAvailable = $state(false);
-  let janusValidIntervals = $state<string[]>(['1h', '4h', '6h', '12h', '1D']);
-  // Boot-time fields as reported by janus — saved values apply on restart.
-  let janusRequiresRestart = $state<string[]>([]);
-  let janusLoading = $state(true);
-  let janusSaving = $state(false);
-  let janusFeedback = $state('');
-  let janusFeedbackVariant = $state<'green' | 'red' | 'default'>('default');
-  let janusPushing = $state(false);
-  let janusPushFeedback = $state('');
-  let janusPushVariant = $state<'green' | 'red' | 'default'>('default');
 
   // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -642,153 +493,6 @@
     }
   }
 
-  // ─── API: Risk Controls ────────────────────────────────────────────
-
-  /** Accept only a finite number off the wire; anything else is "unknown". */
-  const riskNumOrNull = (v: unknown): number | null =>
-    typeof v === 'number' && Number.isFinite(v) ? v : null;
-
-  async function loadRisk() {
-    riskLoading = true;
-    riskFeedback = '';
-    try {
-      const c = await api.get<{ max_daily_loss_usd?: number; max_positions?: number; max_gross_exposure_usd?: number }>(
-        '/api/settings/risk'
-      );
-      riskDailyLoss = riskNumOrNull(c?.max_daily_loss_usd);
-      riskMaxPositions = riskNumOrNull(c?.max_positions);
-      riskGrossExposure = riskNumOrNull(c?.max_gross_exposure_usd);
-      const missing = [
-        riskDailyLoss === null ? 'max daily loss' : null,
-        riskMaxPositions === null ? 'max positions' : null,
-        riskGrossExposure === null ? 'max gross exposure' : null,
-      ].filter((m): m is string => m !== null);
-      riskLoadedOk = missing.length === 0;
-      // Partial config is still real config — show what janus reported, name
-      // what it didn't, and keep Save off so the gaps aren't written as guesses.
-      riskLoadError = riskLoadedOk
-        ? null
-        : `the risk service did not report ${missing.join(', ')}`;
-    } catch (err: any) {
-      // NEVER fall back to placeholder limits here. The old code kept the
-      // seeded 5000/10/5000000 with a bare `catch {}` and the panel presented
-      // them as the live config (R1).
-      riskDailyLoss = null;
-      riskMaxPositions = null;
-      riskGrossExposure = null;
-      riskLoadedOk = false;
-      riskLoadError = riskLoadReason(err);
-    } finally {
-      riskLoading = false;
-    }
-  }
-
-  /** The adapter's 502 envelope carries a human reason; fall back to the raw error. */
-  function riskLoadReason(err: any): string {
-    const raw = typeof err?.body === 'string' ? err.body : '';
-    if (raw) {
-      try {
-        const j = JSON.parse(raw);
-        if (typeof j?.message === 'string' && j.message) return j.message;
-      } catch {
-        /* not a JSON envelope */
-      }
-    }
-    return err?.message ?? 'the risk service is unreachable';
-  }
-
-  async function saveRisk() {
-    // Belt-and-braces behind the disabled button: never PUT limits over a
-    // config we could not read (R1). The values in the boxes would be the
-    // operator's guess, not an edit of the live config.
-    if (!riskLoadedOk) {
-      riskFeedback = 'Error: the live risk limits are unknown — reload them before saving';
-      clearFeedbackAfter(v => riskFeedback = v, 5000);
-      return;
-    }
-    riskSaving = true;
-    riskFeedback = '';
-    try {
-      await api.post('/api/settings/risk', {
-        max_daily_loss_usd: riskDailyLoss,
-        max_positions: riskMaxPositions,
-        max_gross_exposure_usd: riskGrossExposure,
-      });
-      riskFeedback = 'Saved ✓';
-      clearFeedbackAfter(v => riskFeedback = v);
-    } catch (err: any) {
-      riskFeedback = `Error: ${err.message ?? 'Failed to save'}`;
-      clearFeedbackAfter(v => riskFeedback = v, 5000);
-    } finally {
-      riskSaving = false;
-    }
-  }
-
-  // ─── API: Janus Config ────────────────────────────────────────────
-
-  async function loadJanusConfig() {
-    janusLoading = true;
-    try {
-      const res = await api.get<JanusConfigResponse>('/api/janus/config');
-      janusConfig = res.config;
-      janusConfigSource = res.source;
-      janusRedisAvailable = res.redis_available;
-      if (res.valid_intervals?.length) janusValidIntervals = res.valid_intervals;
-      janusRequiresRestart = res.requires_restart ?? [];
-    } catch {
-      // Keep defaults
-    } finally {
-      janusLoading = false;
-    }
-  }
-
-  async function saveJanusConfig() {
-    janusSaving = true;
-    janusFeedback = '';
-    try {
-      await api.put('/api/janus/config', {
-        optimize_assets: janusConfig.optimize_assets,
-        optimize_interval: janusConfig.optimize_interval,
-        optimize_trials: janusConfig.optimize_trials,
-        optimize_historical_days: janusConfig.optimize_historical_days,
-        data_kline_intervals: janusConfig.data_kline_intervals,
-        janus_auto_start: janusConfig.janus_auto_start,
-        janus_bootstrap_days: janusConfig.janus_bootstrap_days,
-      });
-      janusFeedback = 'Saved ✓';
-      janusFeedbackVariant = 'green';
-      janusConfigSource = 'redis';
-      clearFeedbackAfter(v => janusFeedback = v);
-    } catch (err: any) {
-      janusFeedback = `Error: ${err.message ?? 'Failed to save'}`;
-      janusFeedbackVariant = 'red';
-      clearFeedbackAfter(v => janusFeedback = v, 5000);
-    } finally {
-      janusSaving = false;
-    }
-  }
-
-  async function pushBootstrapToJanus() {
-    janusPushing = true;
-    janusPushFeedback = '';
-    janusPushVariant = 'default';
-    try {
-      const res = await api.post<BootstrapPushResponse>(
-        `/api/janus/memories/bootstrap/push?days=${janusConfig.janus_bootstrap_days}&limit=500`,
-        {}
-      );
-      janusPushFeedback = res.message ?? `Pushed ${res.pushed} memories ✓`;
-      janusPushVariant = res.ok ? 'green' : 'red';
-      clearFeedbackAfter(v => janusPushFeedback = v, 8000);
-    } catch (err: any) {
-      janusPushFeedback = `Error: ${err.message ?? 'Push failed'}`;
-      janusPushVariant = 'red';
-      clearFeedbackAfter(v => janusPushFeedback = v, 5000);
-    } finally {
-      janusPushing = false;
-    }
-  }
-
   // ─── API: System Health ────────────────────────────────────────────
 
   async function fetchHealth() {
@@ -805,8 +509,6 @@
 
   onMount(() => {
     fetchHealth();
-    loadJanusConfig();
-    loadRisk();
     loadCredentials();
     loadNotifications();
     healthTimer = setInterval(fetchHealth, 15_000);
@@ -821,14 +523,6 @@
   <title>Settings — FKS Terminal</title>
 </svelte:head>
 
-<!-- Janus reports which config fields are boot-time only (requires_restart);
-     mark those inputs so a save isn't mistaken for a live reconfigure. -->
-{#snippet restartHint(field: string)}
-  {#if janusRequiresRestart.includes(field)}
-    <span class="restart-hint" title="Janus reads this at boot — the saved value takes effect after a janus restart">↻ after restart</span>
-  {/if}
-{/snippet}
-
 <div class="page">
   <!-- ════════════════════════════════════════════════════════════════════
        LEFT PANE
@@ -837,8 +531,8 @@
 
     {#if !canAdmin}
       <div class="role-banner" role="status">
-        Read-only ({role}) — saving keys, notifications, risk limits and janus
-        config is admin-only. You can view current status but not change it.
+        Read-only ({role}) — saving keys and notifications is admin-only. You
+        can view current status but not change it.
       </div>
     {/if}
 
@@ -965,8 +659,8 @@
           />
         </div>
         <!-- Third encrypted slot (api_passphrase): shown only for providers
-             that use it (kucoin, kucoin-futures) or re-label it (rithmic
-             System), and always in Other… mode to keep the generality. -->
+             that use it (kucoin, kucoin-futures), and always in Other… mode to
+             keep the generality. -->
         {#if credProvider?.third || !credProvider}
           <div class="form-group">
             <label class="form-label" for="cred-api-passphrase">
@@ -1033,14 +727,6 @@
          row has a Test button that POSTs to the spawner's test route (fks #181),
          which decrypts the stored webhook, sends a synthetic event, and reports
          only the outcome — the URL never returns to the browser. -->
-    <!-- Rithmic logins. Placed directly after API Connections because it is
-         the same job — which credentials this platform holds and what each is
-         for — and one Rithmic login is useless without the other panel's
-         credential entry. -->
-    <Panel title="Rithmic Accounts">
-      <RithmicAccountsPanel />
-    </Panel>
-
     <Panel title="Notifications">
       {#if channelList !== null && !channelDbEnabled}
         <div class="status-display key-status">
@@ -1257,89 +943,6 @@
       </div>
     </Panel>
 
-    <!-- ── Panel 3: Risk Controls ─────────────────────────────────── -->
-    <Panel title="Risk Controls">
-      <!-- R1: when the live limits can't be read, the fields stay BLANK and
-           say why. Never render a placeholder number here — it is
-           indistinguishable from the active limit. -->
-      {#if riskLoadError}
-        <div class="risk-unknown" role="alert" id="risk-load-error">
-          <strong>Live risk limits unavailable</strong> — {riskLoadError}. A blank field below
-          means <em>unknown</em>, not <em>unset</em>. Saving is disabled so an unknown config
-          can't be overwritten.
-          <button
-            class="btn-ghost risk-retry"
-            id="risk-retry"
-            onclick={loadRisk}
-            disabled={riskLoading}
-          >
-            {riskLoading ? 'Retrying…' : 'Retry'}
-          </button>
-        </div>
-      {/if}
-      <div class="form-row">
-        <div class="form-group form-grow">
-          <label class="form-label" for="risk-daily-loss">Max Daily Loss ($)</label>
-          <input
-            id="risk-daily-loss"
-            class="form-input"
-            type="number"
-            min="0"
-            step="100"
-            placeholder={riskLoadedOk ? '' : 'unknown'}
-            disabled={!riskLoadedOk}
-            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
-            bind:value={riskDailyLoss}
-          />
-        </div>
-        <div class="form-group form-grow">
-          <label class="form-label" for="risk-max-positions">Max Positions</label>
-          <input
-            id="risk-max-positions"
-            class="form-input"
-            type="number"
-            min="1"
-            step="1"
-            placeholder={riskLoadedOk ? '' : 'unknown'}
-            disabled={!riskLoadedOk}
-            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
-            bind:value={riskMaxPositions}
-          />
-        </div>
-        <div class="form-group form-grow">
-          <label class="form-label" for="risk-gross-exposure">Max Gross Exposure ($)</label>
-          <input
-            id="risk-gross-exposure"
-            class="form-input"
-            type="number"
-            min="0"
-            step="1000"
-            placeholder={riskLoadedOk ? '' : 'unknown'}
-            disabled={!riskLoadedOk}
-            aria-describedby={riskLoadError ? 'risk-load-error' : undefined}
-            bind:value={riskGrossExposure}
-          />
-        </div>
-      </div>
-      <div class="form-actions">
-        <button
-          class="btn-primary"
-          id="risk-save"
-          onclick={saveRisk}
-          disabled={riskSaving || riskLoading || !canAdmin || !riskLoadedOk}
-          title={!riskLoadedOk && !riskLoading
-            ? 'the live risk limits are unknown — nothing to edit'
-            : undefined}
-        >
-          {riskSaving ? 'Saving…' : riskLoading ? 'Loading…' : 'Save'}
-        </button>
-        {#if riskFeedback}
-          <span class="feedback" class:feedback-ok={riskFeedback.startsWith('Saved')} class:feedback-err={riskFeedback.startsWith('Error')}>
-            {riskFeedback}
-          </span>
-        {/if}
-      </div>
-    </Panel>
   </div>
 
   <!-- ════════════════════════════════════════════════════════════════════
@@ -1407,161 +1010,6 @@
       </div>
     </Panel>
 
-    <!-- ── Panel 4: Janus Optimizer Config ──────────────────────────── -->
-    <Panel title="Janus Optimizer">
-      {#snippet header()}
-        {#if !janusLoading}
-          <span class="header-badge" title="Config source">{janusConfigSource === 'redis' ? '⬤ Redis' : '○ Env'}</span>
-          {#if !janusRedisAvailable}
-            <span class="header-badge" style="color: var(--red)">Redis unavailable</span>
-          {/if}
-        {/if}
-      {/snippet}
-      {#if janusLoading}
-        <Skeleton lines={5} height="14px" />
-      {:else}
-        <!-- Optimize Assets -->
-        <div class="form-group">
-          <label class="form-label" for="janus-assets">Optimize Assets{@render restartHint('optimize_assets')}</label>
-          <input
-            id="janus-assets"
-            class="form-input"
-            type="text"
-            placeholder="BTC,ETH,SOL"
-            bind:value={janusConfig.optimize_assets}
-            spellcheck="false"
-          />
-          <span class="form-hint">Comma-separated symbols for the optimizer to watch</span>
-        </div>
-
-        <div class="form-row">
-          <!-- Interval -->
-          <div class="form-group form-grow">
-            <label class="form-label" for="janus-interval">Optimize Interval{@render restartHint('optimize_interval')}</label>
-            <select id="janus-interval" class="form-select" bind:value={janusConfig.optimize_interval}>
-              {#each janusValidIntervals as iv}
-                <option value={iv}>{iv}</option>
-              {/each}
-            </select>
-          </div>
-
-          <!-- Trials -->
-          <div class="form-group form-grow">
-            <label class="form-label" for="janus-trials">Trials{@render restartHint('optimize_trials')}</label>
-            <input
-              id="janus-trials"
-              class="form-input"
-              type="number"
-              min="1"
-              max="1000"
-              step="10"
-              bind:value={janusConfig.optimize_trials}
-            />
-          </div>
-
-          <!-- Historical Days -->
-          <div class="form-group form-grow">
-            <label class="form-label" for="janus-hist-days">Historical Days{@render restartHint('optimize_historical_days')}</label>
-            <input
-              id="janus-hist-days"
-              class="form-input"
-              type="number"
-              min="1"
-              max="365"
-              step="1"
-              bind:value={janusConfig.optimize_historical_days}
-            />
-          </div>
-        </div>
-
-        <!-- Kline Intervals -->
-        <div class="form-group">
-          <label class="form-label" for="janus-kline">Kline Intervals{@render restartHint('data_kline_intervals')}</label>
-          <input
-            id="janus-kline"
-            class="form-input"
-            type="text"
-            placeholder="1m,5m,15m"
-            bind:value={janusConfig.data_kline_intervals}
-            spellcheck="false"
-          />
-        </div>
-
-        <div class="form-row">
-          <!-- Bootstrap Days -->
-          <div class="form-group form-grow">
-            <label class="form-label" for="janus-boot-days">Bootstrap History (days){@render restartHint('janus_bootstrap_days')}</label>
-            <input
-              id="janus-boot-days"
-              class="form-input"
-              type="number"
-              min="1"
-              max="365"
-              step="1"
-              bind:value={janusConfig.janus_bootstrap_days}
-            />
-          </div>
-
-          <!-- Auto-start -->
-          <div class="form-group form-grow">
-            <span class="form-label">Auto-start on Boot{@render restartHint('janus_auto_start')}</span>
-            <label class="toggle-label">
-              <input
-                type="checkbox"
-                class="toggle-input"
-                bind:checked={janusConfig.janus_auto_start}
-              />
-              <span class="toggle-track">
-                <span class="toggle-thumb"></span>
-              </span>
-              <span class="toggle-text">{janusConfig.janus_auto_start ? 'Enabled' : 'Disabled'}</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="form-actions">
-          <button
-            class="btn-primary"
-            onclick={saveJanusConfig}
-            disabled={janusSaving || !janusRedisAvailable || !canAdmin}
-            title={janusRedisAvailable ? 'Save config to Redis' : 'Redis unavailable'}
-          >
-            {janusSaving ? 'Saving…' : 'Save Config'}
-          </button>
-          {#if janusFeedback}
-            <span class="feedback" class:feedback-ok={janusFeedbackVariant === 'green'} class:feedback-err={janusFeedbackVariant === 'red'}>
-              {janusFeedback}
-            </span>
-          {/if}
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Memory Bootstrap -->
-        <div class="janus-bootstrap">
-          <div class="bootstrap-desc">
-            Push the last <strong>{janusConfig.janus_bootstrap_days} days</strong> of
-            <code>janus_memories</code> to the Janus affinity tracker.
-            Use this after a fresh deployment to warm-start the brain without retraining.
-          </div>
-          <div class="form-actions">
-            <button
-              class="btn-ghost"
-              onclick={pushBootstrapToJanus}
-              disabled={janusPushing}
-            >
-              {janusPushing ? '⏳ Pushing…' : '🧠 Push Memories to Janus'}
-            </button>
-            {#if janusPushFeedback}
-              <span class="feedback" class:feedback-ok={janusPushVariant === 'green'} class:feedback-err={janusPushVariant === 'red'}>
-                {janusPushFeedback}
-              </span>
-            {/if}
-          </div>
-        </div>
-      {/if}
-    </Panel>
   </div>
 </div>
 
@@ -1619,17 +1067,6 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════
-     Header Badges (inside Panel header snippet)
-     ═══════════════════════════════════════════════════════════════════ */
-  .header-badge {
-    font-size: 8px;
-    color: var(--t3);
-    background: var(--bg3);
-    padding: 1px 5px;
-    border-radius: var(--r);
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════
      Status Indicators
      ═══════════════════════════════════════════════════════════════════ */
   .status-dot {
@@ -1663,11 +1100,6 @@
      ═══════════════════════════════════════════════════════════════════ */
   .form-group {
     margin-bottom: 8px;
-  }
-
-  .form-grow {
-    flex: 1;
-    min-width: 0;
   }
 
   .form-label {
@@ -1709,27 +1141,6 @@
     cursor: not-allowed;
   }
 
-  /* R1 — "we cannot read the live limits". Amber (caution), not red (failure):
-     nothing is broken in the money path, the UI simply refuses to guess. */
-  .risk-unknown {
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--amber, #e0a000);
-    border: 1px solid var(--amber, #e0a000);
-    border-radius: var(--r);
-    padding: 6px 8px;
-    margin-bottom: 8px;
-  }
-
-  .risk-unknown strong {
-    font-weight: 600;
-  }
-
-  .risk-retry {
-    margin-left: 8px;
-    vertical-align: middle;
-  }
-
   .form-select {
     cursor: pointer;
     appearance: none;
@@ -1742,11 +1153,6 @@
   .form-select option {
     background: var(--bg2);
     color: var(--t1);
-  }
-
-  .form-row {
-    display: flex;
-    gap: 8px;
   }
 
   .form-actions {
@@ -1823,12 +1229,6 @@
     margin-bottom: 6px;
     padding-bottom: 4px;
     border-bottom: 1px solid var(--b1);
-  }
-
-  .divider {
-    height: 1px;
-    background: var(--b1);
-    margin: 8px 0;
   }
 
   /* Dynamic credential list */
@@ -2025,87 +1425,6 @@
     display: block;
   }
 
-  /* Boot-time config marker (janus requires_restart fields). */
-  .restart-hint {
-    margin-left: 6px;
-    font-size: 9px;
-    color: var(--amber);
-    text-transform: none;
-    letter-spacing: 0;
-    cursor: help;
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════
-     Toggle Switch
-     ═══════════════════════════════════════════════════════════════════ */
-  .toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    margin-top: 2px;
-  }
-  .toggle-input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .toggle-track {
-    width: 32px;
-    height: 18px;
-    background: var(--bg3);
-    border: 1px solid var(--b2);
-    border-radius: 9px;
-    position: relative;
-    transition: background .2s, border-color .2s;
-    flex-shrink: 0;
-  }
-  .toggle-input:checked ~ .toggle-track {
-    background: var(--accent, #6366f1);
-    border-color: var(--accent, #6366f1);
-  }
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 12px;
-    height: 12px;
-    background: var(--t3);
-    border-radius: 50%;
-    transition: left .2s, background .2s;
-  }
-  .toggle-input:checked ~ .toggle-track .toggle-thumb {
-    left: 16px;
-    background: #fff;
-  }
-  .toggle-text {
-    font-size: 11px;
-    color: var(--t2);
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════
-     Janus Bootstrap Block
-     ═══════════════════════════════════════════════════════════════════ */
-  .janus-bootstrap {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .bootstrap-desc {
-    font-size: 11px;
-    color: var(--t2);
-    line-height: 1.5;
-  }
-  .bootstrap-desc code {
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    color: var(--cyan, #00e5ff);
-    font-size: 10px;
-  }
-  .bootstrap-desc strong {
-    color: var(--t1);
-  }
-
   /* ═══════════════════════════════════════════════════════════════════
      System Info
      ═══════════════════════════════════════════════════════════════════ */
@@ -2240,15 +1559,4 @@
     font-family: var(--font-mono, monospace);
   }
 
-  /* ── Number input spinner removal ───────────────────────── */
-  .form-input[type="number"]::-webkit-inner-spin-button,
-  .form-input[type="number"]::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-
-  .form-input[type="number"] {
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
 </style>

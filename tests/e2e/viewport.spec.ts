@@ -1,121 +1,52 @@
 import { test, expect, type Page } from "@playwright/test";
-import {
-  cockpitState,
-  exchangesStatus,
-  openPosition,
-  telemetryScraped,
-  type GateRowView,
-} from "./fixtures/cockpit";
+import { installHome } from "./fixtures/home";
 
 // Regression guard for the "short viewing windows + weird sub-window
-// scrolling" complaint (UI Phase 1). On a laptop viewport the cockpit —
-// the armed-futures kill-switch page — must let the operator reach its
-// below-fold risk-gate / telemetry / order-error panels, and no panel may
-// be a nested double-scroller inside the page's single scroll region.
+// scrolling" complaint (UI Phase 1). A document page must let the operator
+// reach everything below the fold, and no panel may be a nested
+// double-scroller inside the page's single scroll region. Home is the page a
+// phone opens on, so it carries the guard (the cockpit did before 2026-10-26).
 const LAPTOP = { width: 1366, height: 768 };
 const PHONE = { width: 390, height: 844 };
 
-/**
- * Populate the cockpit with enough persisted rows that its position / gate
- * panels are genuinely TALL, then route-mock the three cockpit polls so the
- * spec is hermetic (no DB / Prometheus).
- *
- * WHY tall content matters for the nested-scroller guard: the honest-empty
- * (configured:false) page a fresh clone shows has almost nothing below the
- * fold, so `.panel-body` never overflows regardless of layout — the
- * "no nested double-scroller" check then passes even if a regression
- * reintroduced an inner scroller (it can't overflow with empty panels). With
- * many rows a `.panel-body` that regressed to `overflow:auto` under a capped
- * height WILL overflow and trip the guard, while the correct overflow:visible
- * layout keeps scrollHeight===clientHeight and lets the PAGE own the scroll.
- *
- * Rows are kept short (compact symbols, all-clear badges) so the extra content
- * grows the page vertically without forcing horizontal overflow — the phone
- * x-overflow assertions below must still reflect the real layout, not test data.
- *
- * `wideClosingRow` (A-4) is OPT-IN for exactly that reason: it prepends ONE row
- * carrying the realistic close-status value `CLOSING (funding_flip, attempt 3)`,
- * which genuinely widens the positions table past the panel body. Every other
- * caller must keep the narrow default so their layout assertions keep measuring
- * the app rather than the fixture.
- */
-async function installTallCockpit(
-  page: Page,
-  opts: { wideClosingRow?: boolean } = {},
-): Promise<void> {
-  const symbols = Array.from({ length: 18 }, (_, i) => `S${i}USDTM`);
-  const positions = symbols.map((symbol) => openPosition({ symbol }));
-  if (opts.wideClosingRow) {
-    positions.unshift(
-      openPosition({
-        symbol: "XBTUSDTM",
-        closing: {
-          reason: "funding_flip",
-          decidedTMs: Date.now() - 90_000,
-          attempts: 3,
-        },
-      }),
-    );
-  }
-  const gates: GateRowView[] = symbols.map((symbol) => ({
-    symbol,
-    haltedPersisted: false,
-    haltedNow: false,
-    breakerTrippedAtUnix: null,
-    breakerActiveNow: false,
-  }));
-
-  await page.route("**/api/cockpit/state", (route) =>
-    route.fulfill({ json: cockpitState({ paper: { positions, gates } }) }),
-  );
-  await page.route("**/api/cockpit/telemetry", (route) =>
-    route.fulfill({ json: telemetryScraped() }),
-  );
-  await page.route("**/api/exchanges/status", (route) =>
-    route.fulfill({ json: exchangesStatus(null) }),
-  );
-}
-
-test.describe("Cockpit viewport reachability (1366x768)", () => {
+test.describe("Home viewport reachability (1366x768)", () => {
   test.use({ viewport: LAPTOP });
 
   test("last panel is reachable and the page owns the only scroll region", async ({
     page,
   }) => {
-    await installTallCockpit(page);
-    await page.goto("/cockpit");
-    // Don't wait for networkidle: the cockpit polls (10s badges) so the
-    // network never goes idle. The title is the deterministic ready signal.
-    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
+    await installHome(page, { tall: true });
+    await page.goto("/");
+    // Don't wait for networkidle: Home polls, so the network never goes idle.
+    // A mocked account card is the deterministic ready signal.
+    await expect(page.getByTestId("account-card")).toBeVisible();
 
     // 1) The page root must OWN a scroll region — overflow-y must be scrollable
     //    so below-fold content is reachable regardless of how much mock data is
     //    present. Before the fix it had `overflow: hidden` (no region) → clipped.
-    //    (Asserting scrollHeight > clientHeight would be data-dependent and
-    //    flaky when sparse cockpit data doesn't fill 768px.)
-    const pageRoot = page.locator(".cockpit-page");
+    const pageRoot = page.locator(".page");
     await expect(pageRoot).toBeVisible();
     const overflowY = await pageRoot.evaluate(
       (el) => getComputedStyle(el).overflowY,
     );
     expect(["auto", "scroll", "overlay"]).toContain(overflowY);
 
-    // 2) The very last node on the page (the Armed-path alerts panel since M3
-    //    Phase B replaced the deferred-note) must be reachable. Structural
+    // Guard the guard: with the tall fixture the page really does overflow.
+    const tall = await pageRoot.evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(tall, "the tall fixture must overflow 768px or this spec proves nothing").toBeGreaterThan(100);
+
+    // 2) The very last node on the page must be reachable. Structural
     //    :last-child keeps this anchored to "whatever is last" rather than a
     //    specific panel, so future additions don't silently retire the guard.
-    const lastNode = page.locator(".cockpit-page > :last-child");
+    const lastNode = page.locator(".page > :last-child");
     await lastNode.scrollIntoViewIfNeeded();
     await expect(lastNode).toBeInViewport();
 
-    // 3) No panel body inside the cockpit may itself scroll — that is the
-    //    "weird sub-window scrolling". The single scroll region is the page.
-    //    (Locate under .cockpit-page — the cockpit has no .workspace container,
-    //    so the old `.workspace .panel-body` locator matched ZERO nodes and the
-    //    guard was vacuous. With tall mock data a regressed inner scroller now
-    //    actually overflows and is counted.)
+    // 3) No panel body may itself scroll — that is the "weird sub-window
+    //    scrolling". The single scroll region is the page. With tall mock data
+    //    a regressed inner scroller actually overflows and is counted.
     const doubleScrollers = await page
-      .locator(".cockpit-page .panel-body")
+      .locator(".page .panel-body")
       .evaluateAll((nodes) =>
         nodes.filter((el) => el.scrollHeight > el.clientHeight + 4).length,
       );
@@ -123,8 +54,8 @@ test.describe("Cockpit viewport reachability (1366x768)", () => {
   });
 });
 
-// ── Treasury phone pass (D6) ────────────────────────────────────────────────
-// The /treasury page is the operator's money home and its stated key flow is
+// ── Money phone pass (D6) ───────────────────────────────────────────────────
+// The /money page (the treasury, moved 2026-10-26) is the operator's money home and its stated key flow is
 // "record a transfer in <15s on the phone". At 390px the record-a-transfer form
 // must be reachable and usable, the transfers ledger must not force the PAGE to
 // scroll horizontally (its own overflow-x wrapper absorbs a wide table INSIDE
@@ -217,15 +148,16 @@ async function installTreasury(page: Page): Promise<void> {
   });
 }
 
-test.describe("Treasury viewport reachability (390x844 phone)", () => {
+test.describe("Money viewport reachability (390x844 phone)", () => {
   test.use({ viewport: PHONE });
 
   test("phone: record-transfer flow reachable, ledger doesn't x-overflow the page, total card renders", async ({
     page,
   }) => {
     await installTreasury(page);
-    await page.goto("/treasury");
-    await expect(page).toHaveTitle("Treasury — FKS Terminal");
+    await installHome(page);
+    await page.goto("/money");
+    await expect(page).toHaveTitle("Money — FKS Terminal");
 
     // 1) The page root owns the single scroll region.
     const pageRoot = page.locator(".page");
@@ -257,51 +189,41 @@ test.describe("Treasury viewport reachability (390x844 phone)", () => {
   });
 });
 
-test.describe("Cockpit viewport reachability (390x844 phone)", () => {
+test.describe("Home viewport reachability (390x844 phone)", () => {
   test.use({ viewport: PHONE });
 
-  test("phone: page owns the only scroll, last node reachable, no nested scrollers, kill controls reachable without x-overflow", async ({
+  test("phone: page owns the only scroll, last node reachable, no nested scrollers, account card readable without x-overflow", async ({
     page,
   }) => {
-    await installTallCockpit(page);
-    await page.goto("/cockpit");
-    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
+    await installHome(page, { tall: true });
+    await page.goto("/");
+    const card = page.getByTestId("account-card");
+    await expect(card).toBeVisible();
 
     // 1) The page root owns the single scroll region (same as laptop).
-    const pageRoot = page.locator(".cockpit-page");
-    await expect(pageRoot).toBeVisible();
-    const overflowY = await pageRoot.evaluate(
-      (el) => getComputedStyle(el).overflowY,
-    );
+    const pageRoot = page.locator(".page");
+    const overflowY = await pageRoot.evaluate((el) => getComputedStyle(el).overflowY);
     expect(["auto", "scroll", "overlay"]).toContain(overflowY);
 
-    // 2) The last node (Armed-path alerts panel — structural :last-child, see
-    //    the laptop spec) is reachable by scrolling the page.
-    const lastNode = page.locator(".cockpit-page > :last-child");
+    // 2) The last node is reachable by scrolling the page.
+    const lastNode = page.locator(".page > :last-child");
     await lastNode.scrollIntoViewIfNeeded();
     await expect(lastNode).toBeInViewport();
 
-    // 3) No cockpit panel body is a nested double-scroller (tall mock data makes
-    //    this bite — see installTallCockpit).
+    // 3) No panel body is a nested double-scroller.
     const doubleScrollers = await page
-      .locator(".cockpit-page .panel-body")
-      .evaluateAll((nodes) =>
-        nodes.filter((el) => el.scrollHeight > el.clientHeight + 4).length,
-      );
+      .locator(".page .panel-body")
+      .evaluateAll((nodes) => nodes.filter((el) => el.scrollHeight > el.clientHeight + 4).length);
     expect(doubleScrollers).toBe(0);
 
-    // 4) The KILL button and both instance tabs are reachable at phone width.
-    await expect(page.locator(".kill-actions button.btn-kill")).toBeVisible();
-    await expect(page.getByRole("tab", { name: "PAPER" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "LIVE" })).toBeVisible();
+    // 4) The account's figures are on screen at phone width.
+    await card.scrollIntoViewIfNeeded();
+    await expect(card.getByText("$321.20")).toBeVisible();
+    await expect(card.getByText("LIVE")).toBeVisible();
 
-    // 5) The page must not scroll horizontally — .mode-row / .kill-row are
-    //    flex-wrap, so nothing forces the 390px viewport wider than itself.
-    const xOverflow = await pageRoot.evaluate(
-      (el) => el.scrollWidth - el.clientWidth,
-    );
+    // 5) Neither the page nor the document scrolls horizontally.
+    const xOverflow = await pageRoot.evaluate((el) => el.scrollWidth - el.clientWidth);
     expect(xOverflow).toBeLessThanOrEqual(1);
-    // And the document itself does not overflow the viewport width.
     const docOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
@@ -413,74 +335,15 @@ test.describe("Phone frame: health freshness stays visible", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A-2 — the PAPER/LIVE instance tabs are a KILL-TARGET selector, not a filter.
+// A-3 — the installed PWA once opened with the ACTIVE TAB OFF-SCREEN.
 //
-// Whichever tab is active decides which instance the cockpit's kill switch
-// halts. Measured at 390x844 under a coarse pointer the tabs were 26px tall,
-// well under the 44px floor — and they sat FLUSH against each other inside a
-// seamless segmented control, so a thumb aiming at PAPER could land on LIVE.
-//
-// Both halves are asserted here on purpose. A height-only fix would make the
-// mis-selection WORSE: a bigger target flush against its neighbour is a bigger
-// overlap. So the gap is a first-class guard, not a nicety — a future "tidy-up"
-// that restores the seamless segmented look must fail this spec.
-// ─────────────────────────────────────────────────────────────────────────────
-test.describe("Phone frame: the kill-target selector is a real touch target", () => {
-  test.use({ viewport: PHONE, hasTouch: true, isMobile: true });
-
-  test("PAPER/LIVE are >=44px tall AND separated under a coarse pointer", async ({
-    page,
-  }) => {
-    await installTallCockpit(page);
-    await page.goto("/cockpit");
-    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
-
-    // Guard the guard: without coarse-pointer emulation the assertions below
-    // would be measuring the desktop rule and pass for the wrong reason.
-    const coarse = await page.evaluate(
-      () => window.matchMedia("(pointer: coarse)").matches,
-    );
-    expect(coarse, "this spec is meaningless without coarse-pointer emulation").toBe(
-      true,
-    );
-
-    const tabs = page.locator(".inst-tab");
-    await expect(tabs).toHaveCount(2);
-
-    const boxes = await tabs.evaluateAll((nodes) =>
-      nodes.map((el) => {
-        const r = el.getBoundingClientRect();
-        return { left: r.left, right: r.right, height: r.height };
-      }),
-    );
-
-    // Measured 26px before the fix.
-    for (const b of boxes) {
-      expect(b.height).toBeGreaterThanOrEqual(44);
-    }
-
-    // Measured 0px before the fix — the two segments shared an edge.
-    const sorted = [...boxes].sort((a, b) => a.left - b.left);
-    const moat = sorted[1].left - sorted[0].right;
-    expect(
-      moat,
-      "PAPER and LIVE must not be flush: enlarging a kill-target selector without separating it raises mis-selection odds",
-    ).toBeGreaterThanOrEqual(8);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// A-3 — the installed PWA opens on /cockpit with the ACTIVE TAB OFF-SCREEN.
-//
-// Measured at 390x844: tabbar scrollWidth 1288 vs clientWidth 390, scrollLeft 0,
-// and the Cockpit tab at left=738 — entirely past the right edge. Because the
-// scrollbar is hidden (scrollbar-width:none + ::-webkit-scrollbar{display:none})
-// there was no active-tab indicator visible ANYWHERE and no hint the strip
-// continued: the app looked like it had opened on a page the nav doesn't list.
-//
-// Both halves are asserted. Scrolling the tab into view without an edge
-// affordance still leaves the operator with no clue that Overview…Perf exist to
-// the left, and the fade is what makes the (now non-zero) scroll offset legible.
+// Measured at 390x844 (on the old 17-tab strip): scrollWidth 1288 vs
+// clientWidth 390, scrollLeft 0, and the active tab entirely past the right
+// edge. The scrollbar is hidden (scrollbar-width:none +
+// ::-webkit-scrollbar{display:none}), so there was no active-tab indicator and
+// no hint the strip continued. The six-section strip is shorter but still
+// overflows a phone, so both halves stay asserted: the active tab is scrolled
+// into view, and an edge fade shows which side hides more tabs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Signed slack of `el` inside the scrolling strip; >= 0 ⇒ fully visible. */
@@ -496,48 +359,36 @@ async function tabSlack(page: Page, selector: string): Promise<number> {
 test.describe("Phone nav: the active tab is on screen and the strip shows it scrolls", () => {
   test.use({ viewport: PHONE });
 
-  test("phone: /cockpit opens with the Cockpit tab visible, edge fades mark the hidden tabs, and a keyboard nav re-centres", async ({
+  test("phone: /monitoring opens with its tab visible, edge fades mark the hidden tabs, and a keyboard nav re-centres", async ({
     page,
   }) => {
-    await installTallCockpit(page);
-    await page.goto("/cockpit");
-    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
-    // Hydration signal — the scroll-into-view runs in a client $effect, and the
-    // title now resolves against the SSR document (see cockpit.spec.ts's
-    // gotoCockpit note), so the title alone would race the effect.
-    await expect(page.locator(".freshness").first()).toContainText(
-      /state \d+s ago/,
-    );
+    await page.goto("/monitoring");
+    const bar = page.locator("nav.tabbar");
+    // Hydration signal: the scroll-into-view runs in a client $effect, so wait
+    // for it rather than measuring the SSR markup. Measured 0 before the fix —
+    // nothing scrolled the strip, ever.
+    await expect.poll(() => bar.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
 
     // Guard the guard: this spec measures NOTHING unless the strip genuinely
-    // overflows at 390px. If a future nav trim makes 17 tabs fit, delete the
+    // overflows at 390px. If a future nav trim makes every tab fit, delete the
     // spec rather than letting it pass vacuously.
-    const geom = await page.locator("nav.tabbar").evaluate((el) => ({
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      scrollLeft: el.scrollLeft,
-    }));
+    const geom = await bar.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
     expect(
       geom.scrollWidth,
       "the tab strip must overflow 390px for this spec to mean anything",
-    ).toBeGreaterThan(geom.clientWidth + 100);
-    // Measured 0 before the fix — nothing scrolled the strip, ever.
-    expect(geom.scrollLeft).toBeGreaterThan(0);
+    ).toBeGreaterThan(geom.clientWidth + 60);
 
     const active = page.locator('nav.tabbar a.tab[aria-current="page"]');
-    await expect(active).toHaveText(/Cockpit/);
-    // The WHOLE active tab is inside the strip's visible box (left=738 in a
-    // 390px-wide strip before the fix ⇒ slack was hundreds of px negative).
+    await expect(active).toHaveText(/Monitoring/);
     expect(
       await tabSlack(page, 'nav.tabbar a.tab[aria-current="page"]'),
       "the active tab must be fully inside the scrolling strip",
     ).toBeGreaterThanOrEqual(0);
 
-    // The affordance: tabs are hidden off BOTH edges here, so both fades paint,
-    // and neither may be able to swallow a tap meant for a tab underneath.
+    // The affordance: tabs are hidden off the LEFT edge here (Home…Money), so the
+    // leading fade paints, and no fade may swallow a tap meant for a tab.
     const wrap = page.locator(".tabbar-wrap");
     await expect(wrap).toHaveClass(/fade-start/);
-    await expect(wrap).toHaveClass(/fade-end/);
     const fadeEvents = await wrap.evaluate((el) => [
       getComputedStyle(el, "::before").pointerEvents,
       getComputedStyle(el, "::after").pointerEvents,
@@ -547,18 +398,17 @@ test.describe("Phone nav: the active tab is on screen and the strip shows it scr
       "an overlay over the nav that eats taps would send the operator to the wrong page",
     ).toEqual(["none", "none"]);
 
-    // …and it re-centres on NAVIGATION, not just on mount: shortcut 9 → /bots,
-    // the last tab in the strip (Bots at left=1224 before the fix).
-    await page.keyboard.press("9");
-    await expect(page).toHaveURL(/\/bots$/);
-    await expect(active).toHaveText(/Bots/);
+    // …and it re-centres on NAVIGATION, not just on mount: shortcut 1 → Home,
+    // the first tab. Scrolled back to the start, nothing is hidden to the left,
+    // so the leading fade goes and the trailing one shows what is to the right.
+    await page.keyboard.press("1");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(active).toHaveText(/Home/);
     await expect
       .poll(() => tabSlack(page, 'nav.tabbar a.tab[aria-current="page"]'))
       .toBeGreaterThanOrEqual(0);
-    // Scrolled to the far end ⇒ nothing is hidden to the right any more, so the
-    // trailing fade must go away (a permanent fade is decoration, not a signal).
-    await expect(wrap).not.toHaveClass(/fade-end/);
-    await expect(wrap).toHaveClass(/fade-start/);
+    await expect(wrap).not.toHaveClass(/fade-start/);
+    await expect(wrap).toHaveClass(/fade-end/);
   });
 });
 
@@ -576,7 +426,7 @@ test.describe("Desktop nav: the fade is a signal, not decoration", () => {
     // before the listener exists is simply dropped (observed once at 8 workers).
     await expect(async () => {
       await page.keyboard.press("5");
-      await expect(page).toHaveURL(/\/performance$/, { timeout: 1_000 });
+      await expect(page).toHaveURL(/\/money$/, { timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
 
     const obs = await page.locator(".tabbar-wrap").evaluate((el) => {
@@ -592,8 +442,8 @@ test.describe("Desktop nav: the fade is a signal, not decoration", () => {
     });
     expect(obs.fadeStart).toBe(obs.hiddenLeft);
     expect(obs.fadeEnd).toBe(obs.hiddenRight);
-    // Measured: the 17-tab strip is 1288px, so it FITS a 1366px laptop and the
-    // two assertions above are currently asserting "no fade anywhere". If a
+    // The six-section strip FITS a 1366px laptop, so the two assertions above
+    // are currently asserting "no fade anywhere". If a
     // future nav addition makes the desktop strip overflow, this line fails on
     // purpose — read it as "the desktop now needs the phone affordance too",
     // and flip it rather than deleting the invariant above.
@@ -601,101 +451,5 @@ test.describe("Desktop nav: the fade is a signal, not decoration", () => {
       obs.overflows,
       "the desktop strip used to fit at 1366px; if it no longer does, the two assertions above have quietly changed meaning",
     ).toBe(false);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// A-4 — the cockpit positions table was CUT AT THE PANEL BORDER with no
-// scrollbar, and the existing docOverflow assertions are structurally blind to
-// it: `Panel` is overflow:hidden, so the clipped column never reaches the
-// document and `documentElement.scrollWidth` stays exactly 390.
-//
-// Measured at 390px: `.ck-table` 436.6px inside a 368px panel body, with the
-// "Close status" th running 344.7 → 455.6 — ~35px of a 111px column visible.
-// The operator consequence is specific: with a real value like
-// "CLOSING (funding_flip, attempt 3)" the row LOOKS complete, so a close
-// attempt that keeps failing on the armed instance is silently invisible.
-// ─────────────────────────────────────────────────────────────────────────────
-test.describe("Cockpit positions table reachability (390x844 phone)", () => {
-  test.use({ viewport: PHONE });
-
-  test("phone: the Close status column is reachable by scrolling INSIDE the panel", async ({
-    page,
-  }) => {
-    await installTallCockpit(page, { wideClosingRow: true });
-    await page.goto("/cockpit");
-    await expect(page).toHaveTitle("Cockpit — FKS Terminal");
-    // Ready signal, not decoration: the title resolves against the SSR document
-    // (cockpit.spec.ts's gotoCockpit explains why), so without this the geometry
-    // below can be measured while the panel is still the honest-empty state and
-    // the mocked position rows do not exist yet. `Freshness` only prints an age
-    // after the state poll has RESOLVED.
-    await expect(page.locator(".freshness").first()).toContainText(
-      /state \d+s ago/,
-    );
-
-    const positions = page.locator(".panel", {
-      has: page.locator(".panel-title", { hasText: /Open positions/ }),
-    });
-    // The realistic value that motivates the whole item.
-    await expect(
-      positions.getByText("CLOSING (funding_flip, attempt 3)"),
-    ).toBeVisible();
-
-    const scroller = positions.locator(".table-scroll");
-    await expect(scroller).toHaveCount(1);
-    const th = positions.locator("th", { hasText: "Close status" });
-
-    // 1) Guard the guard: the fixture row must ACTUALLY overflow the panel body.
-    //    Without this, everything below would pass on a table that fits.
-    const overflow = await scroller.evaluate(
-      (el) => el.scrollWidth - el.clientWidth,
-    );
-    expect(
-      overflow,
-      "the wide-row fixture must overflow the 368px panel body or this spec proves nothing",
-    ).toBeGreaterThan(20);
-
-    // 2) At rest the last column really is cut off at the panel edge — this is
-    //    the state the operator sees, and why an affordance must exist.
-    const cutAtRest = await th.evaluate((el) => {
-      const box = (
-        el.closest(".table-scroll") as HTMLElement
-      ).getBoundingClientRect();
-      return el.getBoundingClientRect().right - box.right;
-    });
-    expect(cutAtRest).toBeGreaterThan(0);
-
-    // 3) The fix: the column becomes fully readable by scrolling WITHIN the
-    //    panel. Before the wrapper there was no scrollable ancestor at all —
-    //    scrollLeft could not move and the header stayed clipped forever.
-    await scroller.evaluate((el) => {
-      el.scrollLeft = el.scrollWidth;
-    });
-    const reached = await th.evaluate((el) => {
-      const box = (
-        el.closest(".table-scroll") as HTMLElement
-      ).getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      return {
-        insideRight: box.right - r.right,
-        insideLeft: r.left - box.left,
-        rightEdge: r.right,
-      };
-    });
-    expect(reached.insideRight).toBeGreaterThanOrEqual(-1);
-    expect(reached.insideLeft).toBeGreaterThanOrEqual(-1);
-    expect(reached.rightEdge).toBeLessThanOrEqual(PHONE.width);
-
-    // 4) The wrapper must ABSORB the width, not hand it to the page: neither the
-    //    cockpit page nor the document may scroll horizontally.
-    const pageX = await page
-      .locator(".cockpit-page")
-      .evaluate((el) => el.scrollWidth - el.clientWidth);
-    expect(pageX).toBeLessThanOrEqual(1);
-    const docOverflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - window.innerWidth,
-    );
-    expect(docOverflow).toBeLessThanOrEqual(1);
   });
 });

@@ -1,9 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import { api } from '$api/client';
   import { alertInbox, describeChip, promDownStreak } from '$lib/stores/alertInbox';
   import Freshness from '$lib/components/ui/Freshness.svelte';
   import { formatAge, freshnessState, toEpochMs } from '$lib/utils/freshness';
+
+  // ─── Identity ─────────────────────────────────────────────────────────────
+  // Moved here from the removed top Strip (2026-10-26). Null on the auth gates
+  // and with WEBUI_AUTH=disabled, which badges "auth off" instead.
+  let user = $derived($page.data.user as { username: string; role: string } | null);
+  let authDisabled = $derived($page.data.authDisabled === true);
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -300,8 +307,12 @@
     </a>
   {/if}
 
-  <span class="status-right">
-    FKS Terminal · SvelteKit
+  <span class="status-right identity" aria-label="Signed-in user">
+    {#if user}
+      {user.username} <span class="role" data-role={user.role}>{user.role}</span>
+    {:else if authDisabled}
+      auth off
+    {/if}
   </span>
 
   <form method="POST" action="/logout" class="logout-form">
@@ -445,6 +456,19 @@
   .status-right {
     margin-left: auto;
     color: var(--t3);
+  }
+  .identity .role {
+    margin-left: 4px;
+    padding: 0 5px;
+    border: 1px solid var(--b2);
+    border-radius: var(--r);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .identity .role[data-role='admin'] {
+    color: var(--amber);
+    border-color: var(--amber-brd);
   }
 
   .logout-form {
