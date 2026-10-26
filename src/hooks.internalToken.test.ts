@@ -1,7 +1,7 @@
 // Regression test for auth-chain H5: #47's `upstreamHeaders` strip-set removed
-// the nginx-injected `x-internal-token` at the seam, but the nine DIRECT
-// `fetch(${SPAWNER_URL}…)` helpers (exchange-key secrets, notification channels,
-// capabilities) re-minted it nowhere — so post-#47 they hit an enforcing spawner
+// the nginx-injected `x-internal-token` at the seam, but the DIRECT
+// `fetch(${SPAWNER_URL}…)` helpers (exchange-key secrets, notification channels)
+// re-minted it nowhere — so post-#47 they hit an enforcing spawner
 // token-less (401), breaking /settings key rotation + notifications. The fix
 // routes each helper's headers through `withInternalToken(SPAWNER_URL, …)`.
 //
@@ -73,10 +73,9 @@ function makeEvent(path: string, method: string, body?: unknown): unknown {
   return { url, request };
 }
 
-// The nine direct spawner helpers, addressed by the route that dispatches to each.
+// The direct spawner helpers, addressed by the route that dispatches to each.
 const CASES: { name: string; path: string; method: string; body?: unknown }[] = [
   { name: "exchangeKeysStatusAll", path: "/api/settings/exchange-keys/status", method: "GET" },
-  { name: "capabilities", path: "/api/capabilities", method: "GET" },
   { name: "exchangeKeysStatus (legacy)", path: "/api/settings/kraken-status", method: "GET" },
   {
     name: "exchangeKeysPost",

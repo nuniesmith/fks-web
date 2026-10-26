@@ -1,36 +1,24 @@
 <!--
-  Root layout — wraps every route in the terminal chrome.
-
-  - Reads the workspace config loaded by +layout.ts and pushes it into
-    Svelte context under the key 'workspace' so any descendant page can
-    `getContext<WorkspaceConfig>('workspace')` without prop-drilling.
-  - Renders the persistent shell: Strip (top), TabBar (nav), workspace
-    (main slot), StatusBar (bottom).
+  Root layout — wraps every route in the terminal chrome: TabBar (top, which
+  also owns the iOS top safe-area inset unless a banner is showing), the page
+  (main), StatusBar (bottom, with the signed-in identity and logout).
 
   History note: this file briefly had two <script> blocks (and two
   {@render children()} calls) after a bad merge — kept the markup from
-  the first version and the data/context wiring from the second.
+  the first version and the data/context wiring from the second. The Strip
+  (focus symbol, Rithmic account, clock) and the workspace context were
+  removed on 2026-10-26 with the futures pages.
 -->
 <script lang="ts">
     import "../app.css";
-    import { setContext, untrack } from "svelte";
     import { page } from "$app/stores";
-    import Strip from "$components/shell/Strip.svelte";
     import TabBar from "$components/shell/TabBar.svelte";
     import StatusBar from "$components/shell/StatusBar.svelte";
     import { sessionExpired } from "$stores/session";
     import { alertInbox, describeChip, promDownStreak } from "$stores/alertInbox";
     import { api, ApiError } from "$api/client";
-    import type { WorkspaceConfig } from "$lib/workspaces";
 
-    // Data is loaded by +layout.ts — workspace is already resolved there.
-    let { data, children } = $props();
-
-    // Push the resolved config into context so every sub-page can read it
-    // without prop-drilling. SvelteKit re-runs the layout when the active
-    // route changes, so capturing the value at mount is the intended
-    // behavior — `untrack` makes that explicit and silences svelte-check.
-    setContext<WorkspaceConfig>("workspace", untrack(() => data.workspace));
+    let { children } = $props();
 
     // ── Session-expiry banner (R2) ───────────────────────────────────────────
     // Sessions are 7d idle / 30d absolute, so the absolute cap fires on an
@@ -174,13 +162,9 @@
              In flow (not a fixed overlay) so it can only ever push content
              down, never hide a control.
              At the top because Modal.svelte centres its card in the viewport:
-             measured at 1280x720 with the kill dialog open, a banner placed
-             below the Strip spans y 48-83 while the card header spans 57-102 —
-             it covered the dialog TITLE ("KILL PAPER — trip the durable kill
-             sentinel", i.e. WHICH bot is about to be halted) and 14 of the 20px
-             of the × button. Above the Strip the banner ends at y~35 and the
-             card starts at 56, so it clears every dialog control. Pinned by
-             tests/e2e/session.spec.ts.
+             measured at 1280x720 with a dialog open, a banner placed lower
+             covered the dialog title and most of its × button; at the very top
+             it clears every dialog control.
              `no-top-inset` when the alert banner is ALSO showing: only the
              topmost row may claim the iOS safe-area inset, or a notched phone
              reserves it twice and opens a dead band under the pair. -->
@@ -189,7 +173,6 @@
             <a class="sb-link" href={signInHref}>Sign in</a>
         </div>
     {/if}
-    <Strip />
     <TabBar />
     <main class="workspace">
         {@render children()}
@@ -219,12 +202,11 @@
         position: relative;
     }
 
-    /* Only ONE row may claim the iOS top inset. While the banner is up it is
-       the topmost row and owns it; Strip's own reservation is zeroed here so
+    /* Only ONE row may claim the iOS top inset. While a banner is up it is
+       the topmost row and owns it; the TabBar's reservation is zeroed here so
        the two do not stack into a double gap on a notched phone. Global
-       because .strip is Svelte-scoped to its own component. */
-    .terminal.has-banner :global(.strip) {
-        height: var(--strip-h);
+       because .tabbar-wrap is Svelte-scoped to its own component. */
+    .terminal.has-banner :global(.tabbar-wrap) {
         padding-top: 0;
     }
 
@@ -248,7 +230,7 @@
         gap: 12px;
         padding: 5px 10px;
         /* It is now the topmost row, so IT owns the iOS top inset — and the
-           Strip's copy is suppressed below, or a notched phone reserves the
+           TabBar's copy is suppressed above, or a notched phone reserves the
            inset TWICE and opens a dead band under the banner. */
         padding-top: calc(5px + env(safe-area-inset-top, 0px));
         background: var(--amber-dim);

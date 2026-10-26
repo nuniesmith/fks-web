@@ -20,10 +20,10 @@
 
 import type { PageServerLoad } from './$types';
 
-const DEFAULT_SYMBOL = 'MGC';
+const DEFAULT_SYMBOL = 'BTC/USD';
 
 export const load: PageServerLoad = async ({ fetch, url }) => {
-  // Honour a ?symbol= query-param so /charts?symbol=MES etc. works server-side.
+  // Honour a ?symbol= query-param so /charts?symbol=ETH/USD etc. works server-side.
   const symbol = url.searchParams.get('symbol') ?? DEFAULT_SYMBOL;
 
   // Strip the slash for crypto pairs: BTC/USD → BTC (matches client-side apiSymbol logic)

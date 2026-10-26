@@ -1,5 +1,4 @@
 import { test, expect, type Page } from "@playwright/test";
-import { cockpitState, exchangesStatus, telemetryScraped } from "./fixtures/cockpit";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AlertInbox — P1 (annotations reach the operator) + A-2 item 1 (coarse-pointer
@@ -268,10 +267,10 @@ test.describe("A-2 — the ack cluster is thumb-safe at 390x844", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// /cockpit reuses this component for its armed-path panel, so P1 lands there
-// with no change to cockpit/+page.svelte. That is the surface that matters at
-// 3am: the phone opens on /cockpit, and BotAllVenuesStale reaches it through
-// the `channel === 'money'` clause of the armed filter.
+// Home reuses this component for its "Alerts about money" panel, so P1 lands
+// there with no change to the page. That is the surface that matters at 3am:
+// the phone opens on Home, and BotAllVenuesStale reaches it through the
+// `channel === 'money'` clause of Home's filter.
 //
 // NB — the same click is NOT possible on /monitoring at 390px: an overlapping
 // `Panel fill` covers the ack cluster there, which is true of `.ack-btn` on
@@ -279,15 +278,12 @@ test.describe("A-2 — the ack cluster is thumb-safe at 390x844", () => {
 // That is a /monitoring layout defect, not this component's, and R4 already
 // proposes retiring that page's older alert list — reported, not fixed here.
 // ─────────────────────────────────────────────────────────────────────────────
-test.describe("P1 reaches the cockpit armed-path panel", () => {
+test.describe("P1 reaches Home's money-alerts panel", () => {
   test.use({ viewport: PHONE, hasTouch: true, isMobile: true });
 
   test("the summary and its runbook are readable and TAPPABLE on the phone", async ({ page }) => {
-    await page.route("**/api/cockpit/state", (r) => r.fulfill({ json: cockpitState({}) }));
-    await page.route("**/api/cockpit/telemetry", (r) => r.fulfill({ json: telemetryScraped() }));
-    await page.route("**/api/exchanges/status", (r) => r.fulfill({ json: exchangesStatus(null) }));
     await installInbox(page, [ALL_VENUES_STALE]);
-    await page.goto("/cockpit");
+    await page.goto("/");
 
     const row = inbox(page).locator(".alert-row").first();
     await expect(row.locator(".alert-title")).toHaveText(

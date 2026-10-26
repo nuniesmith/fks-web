@@ -2,7 +2,6 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { createSSE } from '$stores/sse';
   import { api } from '$api/client';
-  import { focusSymbol } from '$stores/focusSymbol';
   import Panel from '$components/ui/Panel.svelte';
   import DrawingTools from '$components/ui/DrawingTools.svelte';
   import IndicatorPane from '$components/ui/IndicatorPane.svelte';
@@ -78,10 +77,10 @@
   };
 
   // ─── State ─────────────────────────────────────────────────────────────────
-  let symbol = $state('MGC');
+  let symbol = $state('BTC/USD');
   let interval = $state('5m');
 
-  // API symbol: strips slash — BTC/USD → BTC, MGC → MGC
+  // API symbol: strips slash — BTC/USD → BTC
   let apiSymbol = $derived(symbol.includes('/') ? symbol.split('/')[0] : symbol);
   // Kraken ticker format: BTC/USD or BTC → BTC/USD
   let krakenTicker = $derived(
@@ -338,19 +337,6 @@
     return Math.max(2, Math.min(365, Math.ceil((minutes * 5000) / 1440)));
   }
 
-  // Auto-focus symbol from strip SSE
-  let ignoreNextFocusChange = false;
-  $effect(() => {
-    const unsub = focusSymbol.subscribe((sym) => {
-      if (sym && sym !== symbol && !ignoreNextFocusChange) {
-        symbol = sym;
-        if (chart) loadChart();
-      }
-      ignoreNextFocusChange = false;
-    });
-    return unsub;
-  });
-
   // RSI pane init when it mounts
   $effect(() => {
     if (showRSI && rsiChartEl && !rsiChart) {
@@ -398,7 +384,8 @@
   ];
 
   // ─── Quick picks ───────────────────────────────────────────────────────────
-  const quickPicks = ['MGC', 'MES', 'MNQ', 'MCL', 'BTC/USD', 'ETH/USD', 'SOL/USD'];
+  // The coins janus records (QuestDB candles_crypto, 1m and 5m since 2026-09-22).
+  const quickPicks = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'LINK/USD', 'DOGE/USD'];
 
   // ─── Symbol search ─────────────────────────────────────────────────────────
   /**
@@ -1779,10 +1766,8 @@
   }
 
   function setSymbol(s: string) {
-    ignoreNextFocusChange = true;
     symbol = s;
     persistChartState();
-    focusSymbol.set(s);
     loadChart();
   }
 
@@ -1845,9 +1830,12 @@
           if (typeof parsed?.auto === 'boolean') scaleAuto = parsed.auto;
         }
       } catch { /* corrupted pref — keep defaults */ }
-      const ss = params.get('symbol') || localStorage.getItem('fks_chart_symbol');
+      // A saved symbol from the futures era (MGC, MES, …) has no data any
+      // more, so only a pair like BTC/USD is restored; ?symbol= always wins.
+      const savedSymbol = localStorage.getItem('fks_chart_symbol');
+      const ss = params.get('symbol') || (savedSymbol?.includes('/') ? savedSymbol : null);
       const st = params.get('tf') || params.get('interval') || localStorage.getItem('fks_chart_tf');
-      if (ss) { symbol = ss; focusSymbol.set(ss); localStorage.setItem('fks_chart_symbol', ss); }
+      if (ss) { symbol = ss; localStorage.setItem('fks_chart_symbol', ss); }
       if (st) { interval = st; localStorage.setItem('fks_chart_tf', st); }
     } catch { /* unavailable */ }
     // Load the chart + oscillator catalog, then restore the saved indicator

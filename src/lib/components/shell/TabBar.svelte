@@ -1,7 +1,6 @@
 <script lang="ts">
     import { page } from "$app/stores";
     import { goto } from "$app/navigation";
-    import { workspaceList } from "$lib/workspaces";
 
     type Tab = {
         id: string;
@@ -18,142 +17,29 @@
         tabs: Tab[];
     };
 
-    // ── Static nav groups ─────────────────────────────────────────────────
-
-    // Only janus/Prometheus/QuestDB-backed pages are listed. The Ruby-only tabs
-    // (news, crypto, dom, paper, sims, positions, analysis, chains, data, backup)
-    // were pruned from the nav in the WebUI→janus repoint (Phase 4) and their
-    // route dirs have since been removed. `journal` + `db` are the exception —
-    // kept as URL-routable shells (decision A1) but deliberately off the nav.
-    const staticGroups: Group[] = [
-        {
-            label: "Markets",
-            color: "var(--cyan, #00e5ff)",
-            tabs: [
-                {
-                    id: "overview",
-                    label: "Overview",
-                    dot: "var(--cyan)",
-                    key: "1",
-                    href: "/",
-                },
-                { id: "charts", label: "Charts", key: "2", href: "/charts" },
-                // Dockable panel layouts — snap panels into custom workspaces.
-                {
-                    id: "workspace",
-                    label: "Workspace",
-                    dot: "var(--accent)",
-                    shiftKey: "2",
-                    href: "/workspace",
-                },
-            ],
-        },
-        // SPLIT OUT OF THE OLD SEVEN-ITEM "Trading" GROUP (2026-08-25). That
-        // group held twice as many tabs as any other and mixed two different
-        // questions: "what should I do / what did I do" (Trading, Signals,
-        // Perf, Cockpit) against "where is my money and is it safe" (Treasury,
-        // Exchanges, Futures). It was also named the same as the tab inside it,
-        // so "Trading" meant two things one line apart.
-        //
-        // Keyboard shortcuts are per-TAB, not per-group, so every existing
-        // binding (3 Trading, 4 Signals, 5 Perf …) is unchanged by the regroup.
-        {
-            label: "Trade",
-            color: "var(--green, #16c784)",
-            tabs: [
-                {
-                    id: "trading",
-                    label: "Trading",
-                    dot: "var(--green)",
-                    key: "3",
-                    href: "/trading",
-                },
-                {
-                    id: "signals",
-                    label: "Signals",
-                    dot: "var(--amber)",
-                    key: "4",
-                    href: "/signals",
-                },
-                // Armed-futures co-pilot: kill sentinel + risk-rail state for
-                // the funding bot (M2). Lives with the ACTIONS, not with the
-                // balances — its reason to exist is the one money-critical
-                // mutation on it, and during an incident it must be found next
-                // to the other things you can DO, not filed under reporting.
-                { id: "cockpit", label: "Cockpit", dot: "var(--red)", href: "/cockpit" },
-                { id: "performance", label: "Perf", key: "5", href: "/performance" },
-            ],
-        },
-        {
-            label: "Money",
-            color: "var(--amber, #f0a500)",
-            tabs: [
-                // Money home page — real net worth, profit vs deposits, the
-                // paycheck-DCA transfer ledger + accounts registry (spawner db
-                // feature via /api/spawner/{net-worth,transfers,profit,accounts}).
-                {
-                    id: "treasury",
-                    label: "Treasury",
-                    dot: "var(--amber)",
-                    href: "/treasury",
-                },
-                // Backing accounts (spot venues + hardware wallet) — the backbone.
-                { id: "exchanges", label: "Exchanges", href: "/exchanges" },
-                // Trading types on top of the backing accounts (crypto futures
-                // live, CME/COMEX via the Rithmic session control).
-                { id: "futures", label: "Futures", href: "/futures" },
-            ],
-        },
-        {
-            label: "Analysis",
-            color: "var(--purple, #b388ff)",
-            tabs: [
-                {
-                    id: "janus-ai",
-                    label: "Janus AI",
-                    dot: "var(--green)",
-                    key: "6",
-                    href: "/janus-ai",
-                },
-                // Edge portfolio — registered edges + backtest runs/results
-                // (spawner db feature via /api/spawner/edges).
-                { id: "edges", label: "Edges", href: "/edges" },
-                { id: "docs", label: "Docs", shiftKey: "1", href: "/docs" },
-            ],
-        },
-    ];
-
-    /**
-     * Build the tab list for a registered workspace.
-     *
-     * Seed scaffold only — Dashboard + Signals. The PnL / Trades / CNN / Logs /
-     * Tasks / Assets / Reports sub-tabs were dropped when the Ruby
-     * `/[workspace]/*` routes were removed in the janus migration; re-add each
-     * here as the matching janus-backed `/[workspace]/<view>` route lands.
-     * (Dead today — `WORKSPACES` is empty, so this never runs.)
-     */
-    function workspaceTabs(id: string): Tab[] {
-        return [
-            {
-                id: `${id}-dash`,
-                label: "Dashboard",
-                dot: "var(--amber)",
-                href: `/${id}`,
-            },
-            {
-                id: `${id}-signals`,
-                label: "Signals",
-                dot: "var(--green)",
-                href: `/${id}/signals`,
-            },
-        ];
-    }
-
-    const workspaceGroups: Group[] = workspaceList.map((ws) => ({
-        label: ws.label,
-        color: ws.color,
-        tabs: workspaceTabs(ws.id),
-    }));
+    // ── Nav groups ────────────────────────────────────────────────────────
+    //
+    // 2026-10-26: the nav follows the edge process — capture data, find and
+    // validate edges, run tasks, see the money — then System. The futures
+    // co-pilot (Cockpit, Futures), Trading, Signals, Perf, Janus AI, Journal
+    // and Workspace tabs were removed with their pages: their backends (Ruby,
+    // Rithmic, the old spot/funding bots, janus paper trading) are gone.
+    // Charts and the DB explorer stay reachable from Data and System.
+    const pipelineGroup: Group = {
+        label: "FKS",
+        color: "var(--cyan, #00e5ff)",
+        tabs: [
+            { id: "home", label: "Home", dot: "var(--cyan)", key: "1", href: "/" },
+            // Recorders from a form, coverage and gaps, market data, charts.
+            { id: "data", label: "Data", key: "2", href: "/data" },
+            // The edge ladder: hypothesis → search → holdout → forward → live.
+            { id: "edges", label: "Edges", key: "3", href: "/edges" },
+            // Everything spawned from a template: recorders, jobs and bots.
+            { id: "tasks", label: "Tasks", key: "4", href: "/tasks" },
+            // Net worth, P&L and holdings per account, transfers.
+            { id: "money", label: "Money", dot: "var(--amber)", key: "5", href: "/money" },
+        ],
+    };
 
     // Users is admin-only: the tab is appended to the System group ONLY when
     // the signed-in role is admin ($page.data.user, exposed via
@@ -172,38 +58,25 @@
                 key: "8",
                 href: "/monitoring",
             },
-            {
-                id: "bots",
-                label: "Bots",
-                dot: "var(--cyan)",
-                key: "9",
-                href: "/bots",
-            },
+            { id: "docs", label: "Docs", shiftKey: "1", href: "/docs" },
             ...($page.data.user?.role === "admin"
                 ? [{ id: "users", label: "Users", href: "/users" }]
                 : []),
         ],
     });
 
-    const groups: Group[] = $derived([
-        ...staticGroups,
-        ...workspaceGroups,
-        systemGroup,
-    ]);
+    const groups: Group[] = $derived([pipelineGroup, systemGroup]);
 
     // ── Active-state helpers ──────────────────────────────────────────────
 
     const allTabs = $derived(groups.flatMap((g) => g.tabs));
-    const wsDashHrefs = new Set(workspaceList.map((ws) => `/${ws.id}`));
 
     let currentPath = $derived($page.url.pathname);
 
     function isActive(href: string): boolean {
         if (href === "/") return currentPath === "/";
-        // Workspace dashboard tabs: exact match only so /futures/trades
-        // does not also light up the /futures dashboard tab.
-        if (wsDashHrefs.has(href)) return currentPath === href;
-        return currentPath.startsWith(href);
+        // Segment match, so /data/x lights Data but /database would not.
+        return currentPath === href || currentPath.startsWith(href + "/");
     }
 
     // ── Keyboard shortcuts ────────────────────────────────────────────────
@@ -309,7 +182,7 @@
 >
 <nav
     class="tabbar"
-    aria-label="Workspace navigation"
+    aria-label="Main navigation"
     bind:this={barEl}
     onscroll={syncEdges}
 >
@@ -317,7 +190,7 @@
         {#if gi > 0}
             <div class="group-sep" aria-hidden="true"></div>
         {/if}
-        <div class="group" role="group" aria-label="{group.label} workspaces">
+        <div class="group" role="group" aria-label="{group.label} sections">
             <span
                 class="group-lbl"
                 aria-hidden="true"
@@ -356,6 +229,11 @@
         position: relative;
         flex-shrink: 0;
         min-width: 0;
+        /* The topmost row owns the iOS top safe-area inset (viewport-fit=cover
+           draws under the status bar). The layout zeroes this while a banner
+           is showing, since the banner is then the topmost row. 0 on desktop. */
+        padding-top: env(safe-area-inset-top, 0px);
+        background: var(--bg1);
     }
     /* A-3 affordance: a fade on whichever edge still hides tabs. pointer-events
        is none on purpose — the strip navigates, and an overlay that swallowed a
@@ -367,7 +245,7 @@
     .tabbar-wrap::after {
         content: "";
         position: absolute;
-        top: 0;
+        top: env(safe-area-inset-top, 0px);
         bottom: 0;
         width: 32px;
         pointer-events: none;

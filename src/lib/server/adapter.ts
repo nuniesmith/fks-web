@@ -184,13 +184,12 @@ export type AdapterRoute =
 
 /**
  * Live-money mutations the `disabled` dev bypass must NOT expose. The
- * WEBUI_AUTH=disabled opt-out is app-wide, but these paths write (or arm!) a
- * REAL-MONEY bot or its credential/notification/risk config — a deploy
+ * WEBUI_AUTH=disabled opt-out is app-wide, but these paths write a REAL-MONEY
+ * bot's credential or notification config, or silence its pager — a deploy
  * accidentally left in disabled mode must not turn tailnet reachability into
- * the only wall between any unauthenticated client and a live-money halt, a
- * raised `max_gross_exposure`, a deleted exchange key, or a registered exfil
- * webhook (the CSRF origin check passes for requests with no Origin header, so
- * a bare curl reaches these). Refused with 403 even in disabled mode; every
+ * the only wall between any unauthenticated client and a deleted exchange key,
+ * a registered exfil webhook or an acked page (the CSRF origin check passes
+ * for requests with no Origin header, so a bare curl reaches these). Refused with 403 even in disabled mode; every
  * other route keeps today's disabled-mode behaviour.
  *
  * Matched by `matchesBlockedMutation` at a SEGMENT boundary (like
@@ -199,20 +198,16 @@ export type AdapterRoute =
  * notifications channel DELETE/test — but NOT a merely prefix-sharing path.
  */
 export const AUTH_DISABLED_BLOCKED_MUTATIONS: readonly string[] = [
-  "/api/cockpit/kill",
-  "/api/cockpit/rearm",
   // An ack silences an armed-path page (halt / breaker / stop-divergence). The
   // dev bypass must not turn tailnet reachability into the only wall between an
   // unauthenticated `curl -XPOST .../api/alerts/ack` and the operator's pager
   // going quiet — refused with 403 even in disabled mode (webui plan 04 OD-3).
   "/api/alerts/ack",
-  // Money-path config mutations (M1): raising `max_gross_exposure`, deleting a
-  // live exchange key, or registering an exfil notification webhook are every
-  // bit as dangerous as a kill/re-arm. `exchange-keys` covers the POST write +
-  // the dynamic per-exchange DELETE; the three `*-keys` entries cover the
-  // legacy fixed-venue write routes; `notifications` covers the POST write (and
-  // its channel DELETE/test); `risk` covers the risk-config PUT.
-  "/api/settings/risk",
+  // Money-path config mutations (M1): deleting a live exchange key or
+  // registering an exfil notification webhook. `exchange-keys` covers the POST
+  // write + the dynamic per-exchange DELETE; the three `*-keys` entries cover
+  // the legacy fixed-venue write routes; `notifications` covers the POST write
+  // (and its channel DELETE/test).
   "/api/settings/exchange-keys",
   "/api/settings/kraken-keys",
   "/api/settings/kucoin-keys",
@@ -234,6 +229,35 @@ export function matchesBlockedMutation(pathname: string): boolean {
   return AUTH_DISABLED_BLOCKED_MUTATIONS.some(
     (p) => pathname === p || pathname.startsWith(p + "/"),
   );
+}
+
+/**
+ * Pages that moved or were removed in the 2026-10-26 rework (six sections:
+ * Home, Data, Edges, Tasks, Money, System), and where an old bookmark or an
+ * installed PWA's history lands instead. Pages only: a removed API path keeps
+ * its honest 404/501, since a caller must not mistake a redirect for data.
+ */
+const MOVED_PAGES: ReadonlyArray<readonly [string, string]> = [
+  ["/bots", "/tasks"],
+  ["/treasury", "/money"],
+  ["/exchanges", "/money"],
+  ["/db", "/data"],
+  ["/cockpit", "/"],
+  ["/futures", "/"],
+  ["/trading", "/"],
+  ["/signals", "/"],
+  ["/janus-ai", "/"],
+  ["/journal", "/"],
+  ["/workspace", "/"],
+  ["/performance", "/"],
+];
+
+/** Where a moved page now lives, or null. Segment-boundary match. */
+export function movedPage(pathname: string): string | null {
+  for (const [from, to] of MOVED_PAGES) {
+    if (pathname === from || pathname.startsWith(from + "/")) return to;
+  }
+  return null;
 }
 
 /** GET/HEAD — i.e. a read. Exported so the hook can refuse to degrade a
@@ -282,36 +306,18 @@ export const ADMIN_ONLY_BACKEND_PREFIXES: readonly string[] = [
 ];
 
 /**
- * R2 — admin-only MUTATIONS (non-GET only): config / credential / live-arming
- * surfaces. Matched as prefixes, so subpaths ride along:
- * `/api/settings/exchange-keys/*`, the legacy per-exchange `-keys` routes,
- * `/api/settings/notifications/<name>/test`, etc. Re-arming a halted live-money
- * bot (`/api/cockpit/rearm`) is the DANGEROUS direction and lives here (admin
- * only); the panic button (`/api/cockpit/kill`) is deliberately NOT here — halt
- * is the safe direction and falls to R3 (operator+).
+ * R2 — admin-only MUTATIONS (non-GET only): config / credential surfaces.
+ * Matched as prefixes, so subpaths ride along: `/api/settings/exchange-keys/*`,
+ * the legacy per-exchange `-keys` routes,
+ * `/api/settings/notifications/<name>/test`, etc. Starting anything that can
+ * trade real money is R2b (`spawnerWriteNeedsAdmin`), decided by the body.
  */
 export const ADMIN_ONLY_MUTATION_RULES: readonly string[] = [
-  "/api/cockpit/rearm",
-  // Taking the Rithmic session BACK is the dangerous direction, exactly like
-  // re-arming a halted bot: Rithmic allows one session per credential, so a
-  // resume can revoke the operator's own trading app mid-trade. Releasing it
-  // (`/api/rithmic/kill`) is the safe direction and is deliberately NOT here —
-  // it falls to R3 (operator+), mirroring the cockpit kill/rearm split.
-  "/api/rithmic/resume",
-  // Managing which Rithmic logins exist, which are ENABLED, and which single
-  // account is the hand-traded `main`. This is a credential/config surface in
-  // the same class as the *-keys routes: flipping `main` changes which funded
-  // prop account the operator is pointed at, and enabling a login is what makes
-  // its credential get used at all. Reads are R1-free (the list carries no
-  // secrets, only `has_credentials`), so this covers mutations only.
-  "/api/rithmic/accounts",
   "/api/settings/exchange-keys",
   "/api/settings/kraken-keys",
   "/api/settings/kucoin-keys",
   "/api/settings/cryptocom-keys",
   "/api/settings/notifications",
-  "/api/settings/risk",
-  "/api/janus/config",
   // The spawner's own credential and webhook stores, which the `/settings`
   // routes above front. Through the generic `/api/spawner/*` passthrough they
   // fell to R3, so an operator could store or delete an exchange key or a
@@ -349,9 +355,9 @@ export function roleDenies(
   if (ADMIN_ONLY_MUTATION_RULES.some((p) => pathname.startsWith(p))) {
     return rank < roleRank("admin");
   }
-  // R3: every OTHER backend mutation is operator+ (viewer denied). Includes the
-  // kill panic button, all spawner writes, memories/bootstrap push, signal
-  // approve/reject, trades, journal notes, janus-ai sessions, db queries.
+  // R3: every OTHER backend mutation is operator+ (viewer denied): spawner
+  // writes (stop/restart/delete, instances, edges, transfers), alert acks and
+  // db queries.
   return rank < roleRank("operator");
 }
 
@@ -392,18 +398,45 @@ function normalizedSpawnerPath(pathname: string): string {
 /** The passthrough paths whose POST body is a spawn spec. */
 const SPAWN_SPEC_PATHS: readonly string[] = ["/api/spawner/spawn", "/api/spawner/configs"];
 const RESPAWN_PATH = /^\/api\/spawner\/configs\/([^/]+)\/respawn$/i;
+const INSTANCE_CREATE_PATH = "/api/spawner/instances";
+const INSTANCE_START_PATH = /^\/api\/spawner\/instances\/([^/]+)\/start$/i;
+
+/**
+ * Whether making an instance from a template needs an admin. The request
+ * names the template and maybe a mode; the template says which modes exist
+ * (the first is the default) and which exchange keys it may be given. Live
+ * mode, or any template that may receive keys, needs an admin. A template
+ * that can't be read fails closed.
+ */
+export function instanceNeedsAdmin(request: unknown, template: unknown): boolean {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) return true;
+  if (template === null || typeof template !== "object" || Array.isArray(template)) return true;
+  const { mode } = request as { mode?: unknown };
+  const { modes, secrets_allowed } = template as { modes?: unknown; secrets_allowed?: unknown };
+  const effective =
+    typeof mode === "string" && mode.trim()
+      ? mode
+      : Array.isArray(modes) && typeof modes[0] === "string"
+        ? modes[0]
+        : null;
+  if (effective === null || effective.trim().toLowerCase() === "live") return true;
+  if (secrets_allowed === undefined || secrets_allowed === null) return false;
+  return !Array.isArray(secrets_allowed) || secrets_allowed.length > 0;
+}
 
 /**
  * Whether a passthrough write must come from an admin under R2b. The body and
  * the stored config are read only when the path needs them: `readBody` returns
- * the request's text, and `lookupConfig` returns the stored config for a
- * respawn (or null when the spawner can't show it, which fails closed).
+ * the request's text, `lookupConfig` the stored config for a respawn or an
+ * instance start, and `lookupTemplate` the template an instance is made from
+ * (each null when the spawner can't show it, which fails closed).
  */
 export async function spawnerWriteNeedsAdmin(
   pathname: string,
   method: string,
   readBody: () => Promise<string>,
   lookupConfig: (name: string) => Promise<unknown>,
+  lookupTemplate: (id: string) => Promise<unknown> = () => Promise.resolve(null),
 ): Promise<boolean> {
   if (method.toUpperCase() !== "POST") return false;
   const path = normalizedSpawnerPath(pathname);
@@ -416,11 +449,28 @@ export async function spawnerWriteNeedsAdmin(
     }
     return spawnSpecNeedsAdmin(spec);
   }
-  const respawn = RESPAWN_PATH.exec(path);
-  if (!respawn) return false;
+  if (path.toLowerCase() === INSTANCE_CREATE_PATH) {
+    let request: unknown = null;
+    try {
+      request = JSON.parse(await readBody());
+    } catch {
+      return true;
+    }
+    const id = (request as { template?: unknown } | null)?.template;
+    let template: unknown = null;
+    try {
+      template = typeof id === "string" ? await lookupTemplate(id) : null;
+    } catch {
+      template = null;
+    }
+    return instanceNeedsAdmin(request, template);
+  }
+  // A respawn and an instance start both run a stored config as it is saved.
+  const stored_name = RESPAWN_PATH.exec(path)?.[1] ?? INSTANCE_START_PATH.exec(path)?.[1];
+  if (!stored_name) return false;
   let stored: unknown = null;
   try {
-    stored = await lookupConfig(respawn[1]);
+    stored = await lookupConfig(stored_name);
   } catch {
     stored = null;
   }
@@ -475,8 +525,8 @@ export function routeRequest(
   if (!backend && isPublic(pathname)) return { kind: "pass" };
 
   // 3. Explicit, opt-in dev bypass. Missing config does NOT land here.
-  //    Even here, live-money cockpit mutations stay refused — the dev bypass
-  //    must never arm an unauthenticated kill/re-arm route.
+  //    Even here, the money-path mutations stay refused — the dev bypass must
+  //    never let an unauthenticated request change a key, a webhook or an ack.
   if (auth.mode === "disabled") {
     if (!get && matchesBlockedMutation(pathname)) {
       return { kind: "forbidden", reason: "live_mutation_requires_auth" };

@@ -35,93 +35,59 @@ async function pressShortcut(page: Page, key: string, url: RegExp) {
   }).toPass({ timeout: 10_000, intervals: [200] });
 }
 
-// All workspace routes to smoke-test, with the <title> each should render.
-// (The de-navved Ruby routes — analysis/news/data/chains/crypto/simulations —
-// were removed in Phase A1; the wired janus pages replace them.)
+// Every page in the six-section nav (2026-10-26), with the <title> each should
+// render. The futures co-pilot, trading, signals, janus-ai, journal, workspace,
+// performance, exchanges and DB pages were removed with their backends; their
+// old URLs redirect (see "Moved pages" below).
 const routes = [
-  { path: "/", title: "Overview — FKS Terminal" },
+  { path: "/", title: "Home — FKS Terminal" },
+  { path: "/data", title: "Data — FKS Terminal" },
+  { path: "/edges", title: "Edges — FKS Terminal" },
+  { path: "/tasks", title: "Tasks — FKS Terminal" },
+  { path: "/tasks/new", title: "New task — FKS Terminal" },
+  { path: "/tasks/advanced", title: "Advanced — Tasks — FKS Terminal" },
+  { path: "/money", title: "Money — FKS Terminal" },
   { path: "/charts", title: "Charts — FKS Terminal" },
-  { path: "/trading", title: "Trading — FKS Terminal" },
-  { path: "/signals", title: "Signals — FKS Terminal" },
-  { path: "/performance", title: "Performance — FKS Terminal" },
-  { path: "/janus-ai", title: "Janus AI — FKS Terminal" },
-  { path: "/docs", title: "Docs — FKS Terminal" },
-  { path: "/bots", title: "Bots — FKS Terminal" },
-  { path: "/journal", title: "Journal — FKS Terminal" },
-  { path: "/monitoring", title: "Monitoring — FKS Terminal" },
-  { path: "/db", title: "DB Explorer — FKS Terminal" },
-  { path: "/settings", title: "Settings — FKS Terminal" },
-  // Q2: these three shipped with NO <title> at all, so SvelteKit kept the
-  // previous route's title on client navigation (/cockpit → /exchanges left
-  // the tab reading "Cockpit — FKS Terminal").
-  { path: "/exchanges", title: "Exchanges — FKS Terminal" },
-  // `/workspace` sets `export const ssr = false` (dockview is client-only), so
-  // it is deliberately excluded from the SSR-title suite below — see there.
-  { path: "/workspace", title: "Workspace — FKS Terminal", ssr: false },
   { path: "/charts/grid", title: "Multi-chart — FKS Terminal" },
+  { path: "/docs", title: "Docs — FKS Terminal" },
+  { path: "/monitoring", title: "Monitoring — FKS Terminal" },
+  { path: "/settings", title: "Settings — FKS Terminal" },
 ];
 
+const mainNav = (page: Page) => page.getByRole("navigation", { name: "Main navigation" });
+
 test.describe("Shell", () => {
-  test("renders strip, tabbar, and status bar", async ({ page }) => {
+  test("renders the tab bar and the status bar", async ({ page }) => {
     await page.goto("/");
 
-    // Strip header — <header> has implicit banner role; use getByRole
-    const strip = page.getByRole("banner");
-    await expect(strip).toBeVisible();
-
-    // TabBar nav
-    const tabbar = page.getByRole("navigation", {
-      name: "Workspace navigation",
-    });
+    const tabbar = mainNav(page);
     await expect(tabbar).toBeVisible();
+    // Home, Data, Edges, Tasks, Money + Settings, Monitoring, Docs.
+    expect(await tabbar.locator("a.tab").count()).toBeGreaterThanOrEqual(8);
 
-    // At least one tab link
-    const tabs = tabbar.locator("a.tab");
-    expect(await tabs.count()).toBeGreaterThan(5);
-
-    // Status bar
-    const statusBar = page.locator('footer[role="status"]');
-    await expect(statusBar).toBeVisible();
+    await expect(page.locator('footer[role="status"]')).toBeVisible();
   });
 
-  test("keyboard shortcut 2 navigates to charts", async ({ page }) => {
+  test("keyboard shortcut 2 navigates to data", async ({ page }) => {
     await page.goto("/");
-
-    // The nav must render at all before a nav shortcut means anything.
-    const tabbar = page.getByRole("navigation", {
-      name: "Workspace navigation",
-    });
-    await expect(tabbar).toBeVisible();
-
-    await pressShortcut(page, "2", /\/charts/);
+    await expect(mainNav(page)).toBeVisible();
+    await pressShortcut(page, "2", /\/data$/);
   });
 
-  test("keyboard shortcut 5 navigates to performance", async ({ page }) => {
+  test("keyboard shortcut 5 navigates to money", async ({ page }) => {
     await page.goto("/");
-
-    const tabbar = page.getByRole("navigation", {
-      name: "Workspace navigation",
-    });
-    await expect(tabbar).toBeVisible();
-
-    await pressShortcut(page, "5", /\/performance/);
+    await expect(mainNav(page)).toBeVisible();
+    await pressShortcut(page, "5", /\/money$/);
   });
 
-  test("Shift+1 navigates to docs (Analysis group shortcut)", async ({
-    page,
-  }) => {
+  test("Shift+1 navigates to docs (System group shortcut)", async ({ page }) => {
     await page.goto("/");
-
-    const tabbar = page.getByRole("navigation", {
-      name: "Workspace navigation",
-    });
-    await expect(tabbar).toBeVisible();
-
+    await expect(mainNav(page)).toBeVisible();
     await pressShortcut(page, "Shift+1", /\/docs/);
   });
 });
 
-test.describe("Workspace Smoke Tests", () => {
+test.describe("Page smoke tests", () => {
   for (const route of routes) {
     test(`${route.path} loads with its title + shell, no crash`, async ({
       page,
@@ -134,8 +100,8 @@ test.describe("Workspace Smoke Tests", () => {
 
       // Correct page rendered (a login redirect would change the title).
       await expect(page).toHaveTitle(route.title);
-      // Shell chrome renders on every workspace page.
-      await expect(page.getByRole("banner")).toBeVisible();
+      // Shell chrome renders on every page.
+      await expect(mainNav(page)).toBeVisible();
 
       // No uncaught JS errors (missing-backend network errors + Svelte effect
       // depth warnings are expected without the live stack).
@@ -166,7 +132,7 @@ function ssrTitles(html: string): string[] {
 }
 
 test.describe("SSR document title", () => {
-  for (const route of routes.filter((r) => r.ssr !== false)) {
+  for (const route of routes) {
     test(`${route.path} emits exactly one <title>, and it is the route's`, async ({
       request,
     }) => {
@@ -180,101 +146,77 @@ test.describe("SSR document title", () => {
       expect(titles[0]).toBe(route.title);
     });
   }
+});
 
-  test("/workspace SSRs no title at all — it is an ssr:false route", async ({
-    request,
-  }) => {
-    // Documented, not overlooked. `src/routes/workspace/+page.ts` sets
-    // `ssr = false` (dockview mounts DOM imperatively), so the server renders
-    // an empty shell and there is no head to carry a title; the tab shows the
-    // URL for the pre-hydration instant. That is the price of app.html no
-    // longer shipping a generic fallback title that beat every real one, and it
-    // is confined to this one client-only route.
-    //
-    // If SSR is ever enabled here, this flips and the route must join the loop
-    // above (its <svelte:head> title is already in place).
-    const res = await request.get("/workspace");
-    expect(res.ok()).toBe(true);
-    expect(ssrTitles(await res.text())).toHaveLength(0);
-  });
+test.describe("Moved pages", () => {
+  // Old bookmarks and an installed PWA's history land somewhere real.
+  for (const [from, to] of [
+    ["/bots", "/tasks"],
+    ["/treasury", "/money"],
+    ["/exchanges/kraken", "/money"],
+    ["/cockpit", "/"],
+    ["/db", "/data"],
+  ] as const) {
+    test(`${from} redirects to ${to}`, async ({ request }) => {
+      const res = await request.get(from, { maxRedirects: 0 });
+      expect(res.status()).toBe(302);
+      expect(res.headers()["location"]).toBe(to);
+    });
+  }
 });
 
 test.describe("Navigation", () => {
-  test("tab links navigate between workspaces", async ({ page }) => {
+  test("tab links navigate between sections", async ({ page }) => {
     await page.goto("/");
+    const nav = mainNav(page);
 
-    const nav = page.getByRole("navigation", { name: "Workspace navigation" });
+    await nav.getByRole("link", { name: /^Data$/ }).click();
+    await expect(page).toHaveURL(/\/data$/);
 
-    // Click on Charts tab (Markets group)
-    await nav.getByRole("link", { name: /Charts/ }).click();
-    await expect(page).toHaveURL(/\/charts/);
+    await nav.getByRole("link", { name: /^Tasks$/ }).click();
+    await expect(page).toHaveURL(/\/tasks$/);
 
-    // Click on Trading tab (Trading group)
-    await nav.getByRole("link", { name: /^Trading$/ }).click();
-    await expect(page).toHaveURL(/\/trading/);
-
-    // Click on Janus AI tab (Analysis group)
-    await nav.getByRole("link", { name: /Janus AI/ }).click();
-    await expect(page).toHaveURL(/\/janus-ai/);
+    await nav.getByRole("link", { name: /^Money$/ }).click();
+    await expect(page).toHaveURL(/\/money$/);
   });
 
   test("tab groups are rendered with group labels", async ({ page }) => {
     await page.goto("/");
+    const nav = mainNav(page);
 
-    const nav = page.getByRole("navigation", { name: "Workspace navigation" });
-
-    // All FIVE group labels should be present (aria-hidden decorative spans).
-    //
-    // "Trading" became "Trade" + "Money" on 2026-08-25: the old group carried
-    // seven tabs, twice any other, and mixed "what should I do" with "where is
-    // my money". Note the assertion is `hasText`, i.e. a SUBSTRING match — had
-    // "Trade" been left in the old list it would still have matched "Trading"
-    // and this test would have passed against either structure. Each label is
-    // therefore asserted explicitly rather than trusting one to imply the rest.
-    for (const label of ["Markets", "Trade", "Money", "Analysis", "System"]) {
-      await expect(
-        nav.locator(".group-lbl", { hasText: label }),
-      ).toBeVisible();
+    // Each label asserted explicitly: `hasText` is a substring match, so one
+    // label must never be trusted to imply another.
+    for (const label of ["FKS", "System"]) {
+      await expect(nav.locator(".group-lbl", { hasText: label })).toBeVisible();
     }
-
-    // And the old name must be GONE — otherwise a half-applied regroup (both
-    // "Trade" and a leftover "Trading") satisfies every assertion above.
-    await expect(
-      nav.locator(".group-lbl", { hasText: "Trading" }),
-    ).toHaveCount(0);
+    // The pre-2026-10-26 groups are gone.
+    for (const old of ["Markets", "Trade", "Analysis"]) {
+      await expect(nav.locator(".group-lbl", { hasText: old })).toHaveCount(0);
+    }
+    // And so are the removed pages' tabs.
+    for (const old of ["Cockpit", "Futures", "Trading", "Signals", "Janus AI", "Perf", "Workspace"]) {
+      await expect(nav.getByRole("link", { name: old, exact: true })).toHaveCount(0);
+    }
   });
 
-  test("Docs tab is present in Analysis group", async ({ page }) => {
+  test("Docs tab is present in the System group", async ({ page }) => {
     await page.goto("/");
-
-    const nav = page.getByRole("navigation", { name: "Workspace navigation" });
-    const docsTab = nav.getByRole("link", { name: /Docs/ });
+    const docsTab = mainNav(page).getByRole("link", { name: /Docs/ });
     await expect(docsTab).toBeVisible();
-
     await docsTab.click();
     await expect(page).toHaveURL(/\/docs/);
   });
 
-  test('active tab has aria-current="page"', async ({ page }) => {
-    await page.goto("/trading");
+  test('active tab has aria-current="page", including on a sub-page', async ({ page }) => {
+    await page.goto("/tasks/new");
     const activeTab = page.locator('nav.tabbar a.tab[aria-current="page"]');
-    await expect(activeTab).toHaveText(/Trading/);
+    await expect(activeTab).toHaveText(/Tasks/);
   });
 });
 
 test.describe("Accessibility", () => {
-  test("strip has proper landmark role", async ({ page }) => {
-    await page.goto("/");
-    // <header> has implicit role="banner" — don't look for the explicit attribute.
-    // Use getByRole which matches implicit ARIA roles.
-    const strip = page.getByRole("banner");
-    await expect(strip).toBeVisible();
-    await expect(strip).toHaveAttribute("aria-label", "Trading status strip");
-  });
-
   test("nav has aria-label", async ({ page }) => {
     await page.goto("/");
-    const nav = page.getByRole("navigation", { name: "Workspace navigation" });
-    await expect(nav).toBeVisible();
+    await expect(mainNav(page)).toBeVisible();
   });
 });

@@ -364,6 +364,16 @@ export interface BotConfig {
    * respawn-ready (`POST .../respawn` needs a body override instead).
    */
   bot_id?: string | null;
+  /** The exchange account the bot trades, e.g. `kraken:spot:default` (leases). */
+  account?: string | null;
+  /** Set when the config is an instance made from a template. */
+  template?: { id: string; version: number; params: Record<string, unknown> } | null;
+  template_unreadable?: boolean;
+  /**
+   * Env names whose values the spawner replaced with `<redacted>` in this read
+   * (fks-spawner #64). Saving the config back restores them server-side.
+   */
+  env_redacted?: string[];
 }
 
 /** `GET /configs` wrapper. When `db_enabled=false` the array is empty. */
@@ -553,4 +563,255 @@ export interface UpsertEdgeResponse {
 export interface SpawnerErrorBody {
   error: string;
   detail?: string;
+}
+
+// ─── Templates and instances (fks-spawner #61) ───────────────────────────────
+
+/** What a template makes: a raw-data recorder, a bot, or a one-shot job. */
+export type TemplateKind = "recorder" | "bot" | "job";
+
+/**
+ * One form field: the JSON-Schema subset the spawner validates
+ * (crates/spawner/src/templates.rs), plus the `x-*` presentation hints the
+ * form renders (labels per enum value, backfill badges, MB/day estimates).
+ */
+export interface TemplateField {
+  type?: "string" | "integer" | "number" | "boolean" | "array";
+  title?: string;
+  description?: string;
+  enum?: (string | number)[];
+  items?: { type?: string; enum?: (string | number)[]; "x-format"?: string };
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
+  "x-format"?: string;
+  "x-labels"?: Record<string, string>;
+  "x-backfillable"?: Record<string, string>;
+  "x-est-mb-per-day"?: Record<string, number>;
+  "x-note"?: string;
+  /** Display position in the form (the spawner's JSON loses the file's order). */
+  "x-order"?: number;
+}
+
+export interface TemplateParams {
+  type: "object";
+  required?: string[];
+  properties: Record<string, TemplateField>;
+}
+
+export interface Template {
+  id: string;
+  version: number;
+  kind: TemplateKind;
+  display_name: string;
+  description?: string;
+  image: string;
+  modes: string[];
+  resources?: { cpu?: number; memory_mb?: number };
+  /** Recorders: where their files go, `LAKE_ROOT/raw/<venue>/<market>/<name>`. */
+  data?: { venue: string; market: string } | null;
+  params: TemplateParams;
+}
+
+export interface TemplatesResponse {
+  templates: Template[];
+  /** Template files that did not validate, with why. */
+  errors: { file?: string; error?: string }[];
+}
+
+export interface InstanceRequest {
+  template: string;
+  name: string;
+  params: Record<string, unknown>;
+  mode?: string;
+}
+
+/** What an instance resolves to before anything is created. */
+export interface InstancePlan {
+  name: string;
+  template_id: string;
+  template_version: number;
+  kind: TemplateKind;
+  image: string;
+  mode: string;
+  env: Record<string, string>;
+  params: Record<string, unknown>;
+  cpu_limit: number | null;
+  memory_mb: number | null;
+  data_dir: string | null;
+}
+
+/** `POST /instances/validate` (and the 4xx bodies of `POST /instances`). */
+export interface InstanceValidateResponse {
+  ok: boolean;
+  plan?: InstancePlan;
+  /** One line per problem, form field first. */
+  errors?: string[];
+}
+
+export interface InstanceCreateResponse {
+  ok: boolean;
+  name?: string;
+  container_id?: string;
+  data_dir?: string | null;
+  errors?: string[];
+}
+
+export interface Instance {
+  name: string;
+  /** The template's kind (fks-spawner #64; absent from older spawners). */
+  kind?: TemplateKind | null;
+  template: string | null;
+  template_version: number | null;
+  params: Record<string, unknown> | null;
+  template_unreadable: boolean;
+  mode: string;
+  image: string;
+  bot_id: string;
+  data_dir: string | null;
+  container: { id: string; state: string; status: string; started_at: string | null } | null;
+}
+
+export interface InstancesResponse {
+  db_enabled: boolean;
+  instances: Instance[];
+}
+
+// ─── What a recorder has written (fks-spawner #64) ───────────────────────────
+
+export interface CoverageFileDay {
+  symbol: string;
+  stream: string;
+  day: string;
+  bytes: number;
+  /** Gzipped, and the open file is gone. */
+  closed: boolean;
+}
+
+export interface CoverageGapDay {
+  day: string;
+  group: string;
+  count: number;
+  seconds: number;
+  reasons: Record<string, number>;
+}
+
+export interface Coverage {
+  /** Newest first. */
+  days: string[];
+  files: CoverageFileDay[];
+  gaps: CoverageGapDay[];
+  unreadable_gap_lines: number;
+  first_day: string | null;
+  last_day: string | null;
+  total_days: number;
+  total_bytes: number;
+}
+
+export interface InstanceFilesResponse {
+  ok: boolean;
+  name: string;
+  data_dir: string;
+  coverage: Coverage;
+  disk: { free_bytes: number; total_bytes: number } | null;
+}
+
+// ─── Accounts as configured: leases and bot status (fks-spawner #62, #64) ────
+
+/** One `account_leases` row: which bot holds which exchange account. */
+export interface AccountLease {
+  account: string;
+  bot_id: string;
+  container_id: string | null;
+  acquired_at: string;
+  heartbeat_at: string;
+  expires_at: string;
+  /** Not expired, by Postgres's clock. */
+  live: boolean;
+}
+
+export interface LeasesResponse {
+  leases: AccountLease[];
+  total: number;
+  db_enabled: boolean;
+}
+
+/** A holding in a trading bot's `/status` (crypto-bot-core contract). */
+export interface VenueHolding {
+  asset: string;
+  qty: number;
+  price: number;
+  value: number;
+  weight: number;
+  target_weight?: number;
+}
+
+export interface BotVenueStatus {
+  exchange: string;
+  mode?: string;
+  cash_asset?: string;
+  cash?: number;
+  total_value?: number;
+  max_drift?: number;
+  triggered?: boolean;
+  /** Unix seconds. */
+  last_rebalance?: number;
+  /** Unix seconds: when the bot last refreshed this venue's snapshot. */
+  updated?: number;
+  holdings?: VenueHolding[];
+}
+
+/** A trading bot's `/status` on :9091. */
+export interface TradingBotStatus {
+  bot: string;
+  market?: string;
+  mode: string;
+  uptime_secs?: number;
+  net_worth_usd?: number;
+  pnl_usd?: number;
+  signals_total?: number;
+  trades_total?: number;
+  wins?: number;
+  losses?: number;
+  win_rate?: number;
+  exchanges?: BotVenueStatus[];
+  expected_venues?: number;
+}
+
+/** A recorder's `/status` on :9091 (fks-spawner bots/recorder). */
+export interface RecorderStatus {
+  bot_id: string;
+  venue: string;
+  symbols: string[];
+  started_at_ms: number;
+  updated_at_ms: number;
+  groups: Record<
+    string,
+    {
+      connected: boolean;
+      last_connect_ts_ms: number | null;
+      last_disconnect_ts_ms: number | null;
+      disconnects: number;
+      gap_ms_total: number;
+    }
+  >;
+  streams: Record<
+    string,
+    { symbol: string; stream: string; group: string; count: number; bytes: number; last_recv_ts_ms: number | null }
+  >;
+  rest_snapshots?: Record<
+    string,
+    { count: number; errors: number; last_poll_ts_ms: number | null; last_error: string | null }
+  >;
+}
+
+/** `GET /bots/{bot_id}/status`: the running bot's own document. */
+export interface BotStatusResponse<T = unknown> {
+  ok: boolean;
+  bot_id?: string;
+  status?: T;
+  error?: string;
 }

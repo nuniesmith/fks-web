@@ -19,7 +19,7 @@
     { id: '1D', label: '1D' },
   ];
 
-  const defaultSymbols = ['MGC', 'MES', 'MNQ', 'BTC/USD'];
+  const defaultSymbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD'];
 
   // Editable symbol slots
   let symbols = $state([...defaultSymbols]);

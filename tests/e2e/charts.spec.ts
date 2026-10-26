@@ -10,7 +10,7 @@ import { test, expect, type Page } from "@playwright/test";
  * seam. When QuestDB is absent — every dev box, every CI runner — that seam is
  * NOT an error: `hooks.server.ts queryCandles()` swallows the connection failure
  * and answers `200 {"candles":[]}`. The page then correctly renders its honest
- * empty state ("No data · No stored candles for MGC · 5m"), which is a
+ * empty state ("No data · No stored candles for BTC · 5m"), which is a
  * `.chart-overlay`. So the overlay stays up forever and every spec that waits
  * for it to clear times out:
  *
@@ -306,20 +306,21 @@ test.describe("Charts Page", () => {
     await expect(page.locator(".ind-pane")).toHaveCount(0);
   });
 
-  test("quick picks include futures and crypto symbols", async ({ page }) => {
+  test("quick picks are the coins janus records, and no futures roots", async ({ page }) => {
     await installChartMocks(page);
     await page.goto("/charts");
 
     const qp = page.locator(".quick-picks");
     await expect(qp).toBeVisible();
 
-    // Futures
-    await expect(qp.locator("button", { hasText: "MGC" })).toBeVisible();
-    await expect(qp.locator("button", { hasText: "MES" })).toBeVisible();
-
     // Crypto (displayed without /USD suffix)
-    await expect(qp.locator("button", { hasText: "BTC" })).toBeVisible();
-    await expect(qp.locator("button", { hasText: "ETH" })).toBeVisible();
+    for (const coin of ["BTC", "ETH", "SOL", "XRP"]) {
+      await expect(qp.locator("button", { hasText: coin })).toBeVisible();
+    }
+    // The futures roots went with the futures pages (2026-10-26).
+    for (const root of ["MGC", "MES", "MNQ"]) {
+      await expect(qp.locator("button", { hasText: root })).toHaveCount(0);
+    }
   });
 
   test("data source status badge is visible", async ({ page }) => {
@@ -334,14 +335,14 @@ test.describe("Charts Page", () => {
   test("quick pick selects symbol and updates badge", async ({ page }) => {
     await gotoCharts(page);
 
-    // Click MES quick pick
-    const mesBtn = page.locator(".quick-picks button", { hasText: "MES" });
-    await mesBtn.click();
+    // Click the ETH quick pick
+    const ethBtn = page.locator(".quick-picks button", { hasText: "ETH" });
+    await ethBtn.click();
 
     // Symbol badge should update
-    await expect(page.locator(".sym-badge")).toHaveText("MES");
-    // MES button should be active
-    await expect(mesBtn).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".sym-badge")).toHaveText("ETH/USD");
+    // ETH button should be active
+    await expect(ethBtn).toHaveAttribute("aria-pressed", "true");
   });
 });
 

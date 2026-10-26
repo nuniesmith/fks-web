@@ -1,16 +1,15 @@
 import { test, expect, type Page } from "@playwright/test";
-import { cockpitState, exchangesStatus, telemetryScraped } from "./fixtures/cockpit";
 
 /**
  * Session-expiry E2E (R2).
  *
  * WEBUI_AUTH is unset in the real deploy, so auth is ENABLED and sessions are
  * 7d idle / 30d absolute — the absolute cap fires on an installed PWA roughly
- * monthly. Before this feature every poll simply started failing: /cockpit
+ * monthly. Before this feature every poll simply started failing: pages
  * printed `request failed — 401: {"error":"unauthorized"}` and M4's Freshness
- * went amber. "Stale" is not "you are logged out", and a 3am KILL that fails
- * with a raw status string is the cockpit's one job failing in the one moment
- * it matters.
+ * went amber. "Stale" is not "you are logged out", and a save that fails with
+ * a raw status string, after the operator typed something into a dialog, is
+ * the worst moment for that confusion.
  *
  * THE DISTINCTION UNDER TEST: the adapter is a PROXY. A spawner
  * `X-Internal-Token` mismatch arrives at the browser as a 401 too, and a banner
@@ -76,35 +75,38 @@ async function expectHydratedAndDenied(seen: string[]): Promise<void> {
 }
 
 /**
- * A healthy, fully-loaded cockpit whose KILL route answers 401 with the given
- * headers — the plan's motivating scenario, and the only place a typed
- * confirmation can be destroyed.
+ * The Edges page with its editor open and a save that answers 401 with the
+ * given headers. The editor is a Modal holding a textarea of typed JSON, which
+ * is exactly what a navigation or a backdrop click would destroy.
  */
-async function cockpitWithFailingKill(
+async function edgesWithFailingSave(
   page: Page,
-  killHeaders: Record<string, string>,
+  saveHeaders: Record<string, string>,
 ): Promise<void> {
-  await page.route("**/api/cockpit/state", (r) => r.fulfill({ json: cockpitState() }));
-  await page.route("**/api/cockpit/telemetry", (r) =>
-    r.fulfill({ json: telemetryScraped() }),
+  await page.route(
+    (url) => url.pathname === "/api/spawner/edges",
+    (route) => {
+      if (route.request().method() === "POST") {
+        return route.fulfill({ status: 401, headers: saveHeaders, body: UNAUTH_BODY });
+      }
+      return route.fulfill({ json: { edges: [], total: 0, db_enabled: true } });
+    },
   );
-  await page.route("**/api/exchanges/status", (r) =>
-    r.fulfill({ json: exchangesStatus(null) }),
-  );
-  await page.route("**/api/cockpit/kill", (route) => {
-    if (route.request().method() !== "POST") return route.fallback();
-    return route.fulfill({ status: 401, headers: killHeaders, body: UNAUTH_BODY });
-  });
-  await page.goto("/cockpit");
-  // Client-produced ready signal (same rationale as cockpit.spec.ts): the
-  // Freshness age only counts up once the mocked state poll has resolved, which
-  // proves hydration ran — so the .click() below cannot land on dead markup.
-  await expect(page.locator(".freshness").first()).toContainText(/state \d+s ago/);
+  await page.goto("/edges");
+  // The button is server-rendered, so a click can land before hydration has
+  // attached its handler and do nothing; re-send it until the dialog opens.
+  const open = page.getByRole("button", { name: /New edge/ }).first();
+  await expect(async () => {
+    await open.click();
+    await expect(dialog(page)).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 10_000 });
 }
 
+const TYPED_EDGE = JSON.stringify({ edge_id: "btc-liq-cascade", display_name: "BTC liquidation cascade" });
+
 const dialog = (page: Page) => page.getByRole("dialog");
-const phraseInput = (page: Page) => dialog(page).locator(".confirm-input").first();
-const noteInput = (page: Page) => dialog(page).locator(".confirm-input").nth(1);
+const editorText = (page: Page) => dialog(page).locator("textarea.editor-json");
+const saveButton = (page: Page) => dialog(page).getByRole("button", { name: /Save edge/ });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. The adapter's own denial raises the banner
@@ -127,8 +129,8 @@ test("1. an ADAPTER session denial raises the banner, linking /login?next=<curre
     "/login?next=%2Fmonitoring%3Fpanel%3Dalerts",
   );
 
-  // Non-vacuity: the denials really happened (and on a non-cockpit page, so the
-  // banner is app-wide shell chrome, not a cockpit-local affordance).
+  // Non-vacuity: the denials really happened (and the banner is app-wide shell
+  // chrome, not one page's affordance).
   await expectHydratedAndDenied(seen);
 });
 
@@ -153,46 +155,38 @@ test("2. a PROXIED upstream 401 (spawner token mismatch) does NOT raise the bann
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. The 3am KILL — the money path, and the typed-input safety rule
+// 3. A failed save in a dialog — the typed-input safety rule
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("3. a session denial on KILL raises the banner WITHOUT destroying the typed confirmation", async ({
+test("3. a session denial on a dialog save raises the banner WITHOUT destroying what was typed", async ({
   page,
 }) => {
-  await cockpitWithFailingKill(page, MARKED_401);
-
-  await page.locator(".kill-actions button.btn-kill").click();
-  await expect(dialog(page)).toBeVisible();
-  await phraseInput(page).fill("KILL");
-  await noteInput(page).fill("3am funding blowout");
-  await dialog(page).locator("button.btn-kill").click();
+  await edgesWithFailingSave(page, MARKED_401);
+  await editorText(page).fill(TYPED_EDGE);
+  await saveButton(page).click();
 
   // The banner appears…
   await expect(banner(page)).toBeVisible();
 
-  // …and the half-entered confirmation is still there. An auto-redirect would
-  // have destroyed state the operator cannot cheaply reproduce under stress —
-  // this is why R2 is a banner and not a navigation.
+  // …and the dialog with the typed JSON is still there. An auto-redirect would
+  // have destroyed it — this is why R2 is a banner and not a navigation.
   await expect(dialog(page)).toBeVisible();
-  await expect(phraseInput(page)).toHaveValue("KILL");
-  await expect(noteInput(page)).toHaveValue("3am funding blowout");
-  // The existing honest failure text is untouched (throw behaviour unchanged).
-  await expect(dialog(page)).toContainText("request failed");
-  await expect(dialog(page)).toContainText("outcome unverified");
+  await expect(editorText(page)).toHaveValue(TYPED_EDGE);
+  // The page's own honest failure text is untouched (throw behaviour unchanged).
+  await expect(dialog(page)).toContainText("401");
 });
 
-test("4. the banner is HIT-TESTABLE above the modal backdrop, so a tap on it cannot clear the typed phrase", async ({
+test("4. the banner is HIT-TESTABLE above the modal backdrop, so a tap on it cannot close the dialog", async ({
   page,
 }) => {
   // Modal.svelte's .overlay is `position:fixed; inset:0` at z-index 1000 and its
-  // click handler closes the dialog — and the cockpit's closeDialog() CLEARS
-  // confirmText. If the banner painted UNDER the overlay, a tap on the banner
-  // would fall through to the backdrop and wipe a half-typed KILL. Assert the
-  // stacking directly rather than trusting a CSS number.
-  await cockpitWithFailingKill(page, MARKED_401);
-  await page.locator(".kill-actions button.btn-kill").click();
-  await phraseInput(page).fill("KILL");
-  await dialog(page).locator("button.btn-kill").click();
+  // click handler closes the dialog. If the banner painted UNDER the overlay, a
+  // tap on the banner would fall through to the backdrop and close the editor,
+  // losing what was typed. Assert the stacking directly rather than trusting a
+  // CSS number.
+  await edgesWithFailingSave(page, MARKED_401);
+  await editorText(page).fill(TYPED_EDGE);
+  await saveButton(page).click();
   await expect(banner(page)).toBeVisible();
 
   const box = await banner(page).boundingBox();
@@ -212,35 +206,30 @@ test("4. the banner is HIT-TESTABLE above the modal backdrop, so a tap on it can
     true,
   );
 
-  // And the actual tap is inert: still open, phrase intact.
+  // And the actual tap is inert: still open, text intact.
   await banner(page).click({ position: { x: box!.width / 2, y: box!.height / 2 } });
   await expect(dialog(page)).toBeVisible();
-  await expect(phraseInput(page)).toHaveValue("KILL");
+  await expect(editorText(page)).toHaveValue(TYPED_EDGE);
 });
 
-test("5. the banner COVERS no kill-dialog control at desktop or phone width", async ({
+test("5. the banner COVERS no dialog control at desktop or phone width", async ({
   page,
 }) => {
   // Modal.svelte centres its card in the viewport, so a top banner and the
-  // dialog compete for the same rows. The first draft of this banner sat below
-  // the Strip (y 48-83) and measurably covered the dialog TITLE (57-102) —
-  // which is the only place the dialog says WHICH instance is about to be
-  // halted — plus 14 of the 20px of the × button. Named, per-control rectangle
-  // checks: a single "is the banner visible" assertion cannot see this, and a
+  // dialog compete for the same rows. Named, per-control rectangle checks: a
+  // single "is the banner visible" assertion cannot see an overlap, and a
   // whole-dialog check would be satisfied by the banner overlapping only its
   // padding.
-  await cockpitWithFailingKill(page, MARKED_401);
-  await page.locator(".kill-actions button.btn-kill").click();
-  await phraseInput(page).fill("KILL");
-  await dialog(page).locator("button.btn-kill").click();
+  await edgesWithFailingSave(page, MARKED_401);
+  await editorText(page).fill(TYPED_EDGE);
+  await saveButton(page).click();
   await expect(banner(page)).toBeVisible();
 
-  const CONTROLS: [string, () => ReturnType<typeof phraseInput>][] = [
+  const CONTROLS: [string, () => ReturnType<typeof editorText>][] = [
     ["dialog title", () => dialog(page).locator(".title")],
     ["× close button", () => dialog(page).locator(".close-btn")],
-    ["typed-phrase input", () => phraseInput(page)],
-    ["note input", () => noteInput(page)],
-    ["confirm button", () => dialog(page).locator("button.btn-kill")],
+    ["editor", () => editorText(page)],
+    ["save button", () => saveButton(page)],
   ];
 
   for (const [w, h] of [

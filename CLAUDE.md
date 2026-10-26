@@ -7,12 +7,23 @@
 
 ## What this is
 
-SvelteKit 5 frontend for the FKS platform. Single-page terminal UI with:
-top status strip, multi-group tab bar, route-per-feature workspace pane,
-bottom status bar. All backend calls are same-origin and flow through the
-`hooks.server.ts` adapter — the single backend seam — which maps them to
-janus (`/api/*`, `/sse/*`), the spawner (`/api/spawner/*`, `/api/bots/*`),
-Prometheus (`/api/metrics/*`), and QuestDB (`/bars`, chart candles).
+SvelteKit 5 frontend for the FKS platform. Single-page terminal UI: a tab
+bar (top), one route per section, a status bar (bottom, with the signed-in
+user and logout). All backend calls are same-origin and flow through the
+`hooks.server.ts` adapter — the single backend seam — which maps them to the
+spawner (`/api/spawner/*`), Prometheus (`/api/metrics/*`, the alert inbox),
+QuestDB (`/bars`, chart candles, `/api/market/coverage`) and janus
+(`/api/health`, indicators).
+
+**The layout follows the edge process (2026-10-26):** Home (the accounts you
+have set up, what runs, alerts about money) → **Data** (capture: recorders
+from a form, coverage and gaps, janus candles, charts) → **Edges** (the
+ladder) → **Tasks** (everything spawned from a template; New task is the
+template's form) → **Money** (holdings per account + the treasury) →
+System (Settings, Monitoring, Docs, Users). The futures co-pilot, Rithmic,
+trading, signals, janus-ai, journal, workspace, performance, exchanges and DB
+pages were removed with their backends; their old URLs redirect
+(`movedPage` in `adapter.ts`).
 
 ## Stack
 
@@ -65,15 +76,22 @@ fks-web/
 │   ├── lib/
 │   │   ├── api/              # typed fetch wrappers (client.ts, spawner.ts, …)
 │   │   ├── types/            # shared TS types per domain (spawner.ts, charts, …)
-│   │   ├── stores/           # createPoll, createSSE, focusSymbol, strip
+│   │   ├── stores/           # createPoll, createSSE, alertInbox, session
 │   │   ├── components/
-│   │   │   ├── shell/        # Strip, TabBar, StatusBar (the terminal chrome)
-│   │   │   └── ui/           # Panel, Badge, Skeleton, ProgressBar, FilterChips, …
-│   │   ├── utils/format.ts   # fmtPrice, fmtPct, fmtDollar, fmtTime, scoreColor, …
-│   │   ├── config.ts         # PUBLIC_* env-var-driven runtime config
-│   │   └── workspaces.ts     # registered workspace nav groups
+│   │   │   ├── shell/        # TabBar, StatusBar (the terminal chrome)
+│   │   │   ├── accounts/     # AccountCard (Home, Money)
+│   │   │   ├── data/         # RecorderCard (live status + coverage calendar)
+│   │   │   ├── tasks/        # LogViewer (SSE container logs)
+│   │   │   └── ui/           # Panel, Badge, Skeleton, ConfirmButton, Freshness, …
+│   │   ├── accounts.ts       # keys + configs + leases + containers → accounts
+│   │   ├── tasks.ts          # instances + configs + containers → task rows
+│   │   ├── coverage.ts       # recorder files scan → 30-day calendar verdicts
+│   │   ├── market.ts         # janus candle coverage per coin
+│   │   ├── templateForm.ts   # template JSON-Schema ↔ form state
+│   │   ├── utils/format.ts   # fmtPrice, fmtPct, fmtDollar, fmtTime, fmtRelative, …
+│   │   └── config.ts         # PUBLIC_* env-var-driven runtime config
 │   ├── styles/
-│   └── routes/               # one folder per feature (charts, bots, signals, …)
+│   └── routes/               # /, data, edges, tasks (+new, +advanced), money, charts, settings, monitoring, …
 └── tests/                    # Playwright E2E
 ```
 
@@ -90,7 +108,7 @@ fks-web/
 - **Types live in `$lib/types/`.** Never redeclare a shared type inline in a component.
 - **API calls go through `$lib/api/*`.** The `api` export from `$lib/api/client.ts` is an *object* with `.get / .post / .put / .delete` methods — **not a callable function**. Calling `api(url, opts)` is a common mistake.
 - **Polls live in `$stores/poll.ts`.** Don't reinvent `setInterval` in components.
-- **SSE lives in `$stores/sse.ts`** (or open `EventSource` directly when you need per-row control like the `/bots` log viewer does).
+- **SSE lives in `$stores/sse.ts`** (or open `EventSource` directly when you need per-row control like `LogViewer` does).
 - **Styling:** dark theme via CSS variables (`var(--bg1)`, `var(--t1)`, `var(--cyan)`, `var(--accent)`, `var(--green-dim)`, …) defined in **`src/styles/tokens.css`** — `app.css` only `@import`s it and then adds utility classes + the two page archetypes. Use the existing palette before introducing new colours.
 
 ## Common workflows
@@ -98,16 +116,17 @@ fks-web/
 ### Add a new route
 1. Create `src/routes/<feature>/+page.svelte`.
 2. **Give the page root exactly ONE scroll story.** The shell (`+layout.svelte .workspace`) hands you an exact-height `overflow:hidden` box — the document itself never scrolls, so a page with no scroll region silently clips everything below the fold. Pick one archetype (both defined in `src/app.css`):
-   - **`.page-scroll`** — *document pages* (cockpit, futures, exchanges, treasury, edges, settings-style): the page scrolls; every `Panel` is rigid and grows with its content. This is the default; reach for it unless you have side-by-side exact-height panes.
-   - **`.page-fixed`** — *terminal-split pages* (charts, trading, journal, workspace): exact-height panes; put exactly ONE `fill` `Panel` per pane and let its body own the inner scroll. Never put a page scrollbar under a chart.
+   - **`.page-scroll`** — *document pages* (Home, Data, Tasks, Money, Edges, settings-style): the page scrolls; every `Panel` is rigid and grows with its content. This is the default; reach for it unless you have side-by-side exact-height panes.
+   - **`.page-fixed`** — *terminal-split pages* (charts): exact-height panes; put exactly ONE `fill` `Panel` per pane and let its body own the inner scroll. Never put a page scrollbar under a chart.
 3. **`Panel` is rigid by default; `fill` is the opt-in.** A plain `<Panel>` grows with its content and pushes its pane/page to scroll (its body does *not* scroll internally). Add `fill` only to the ONE panel per pane that should be height-constrained and own an inner scroll region (sticky in-body `thead`s pin to it for free). Do not stack multiple `fill` panels in a single scroll column, and don't wrap a table in its own `overflow:auto` inside a `fill` panel body — that recreates the nested-scroll "weird scrolling". Charts/canvases (`lightweight-charts`) need a real height (a `min-height` floor when flexed) — they render blank at 0 height.
 4. Reach for `Panel`, `Badge`, `Skeleton`, `StatCard` from `$components/ui/`.
 5. If it needs an API client, add `src/lib/api/<feature>.ts` (typed wrapper) + `src/lib/types/<feature>.ts` (mirror of backend types).
-6. Add the tab to `src/lib/components/shell/TabBar.svelte` in the right group (Markets / Trading / Analysis / System / per-workspace).
+6. Add the tab to `src/lib/components/shell/TabBar.svelte` in the right group (FKS / System) — or, better, make it a sub-page of an existing section: the nav is deliberately six sections.
 7. If it talks to a new backend, add the mapping to the `hooks.server.ts` adapter (`src/lib/server/adapter.ts` routing + an `*_INTERNAL_URL` env override) — there is deliberately no vite proxy; the hook is the seam in both dev and prod. nginx config lives in the fks repo.
+8. **Start polls in `onMount`, never at script top level.** A `createPoll(...).start()` at init runs during SSR too and fetches a relative URL on the server (`Cannot call fetch eagerly during server-side rendering`).
 
 ### Add a new SSE-driven feature
-Pattern: `routes/bots/+page.svelte` log viewer. `EventSource` opened lazily, `bind:this` on the container, `$effect` triggers scroll-to-tail when followed, `onscroll` handler flips follow state, optional "Jump to latest" button when paused.
+Pattern: `$components/tasks/LogViewer.svelte` (used by `/tasks`). `EventSource` opened lazily, `bind:this` on the container, `$effect` triggers scroll-to-tail when followed, `onscroll` handler flips follow state, optional "Jump to latest" button when paused.
 
 ### Add a chart
 Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars come from QuestDB via the hook's `/bars/{symbol}` mapping (REST); live updates arrive on `/sse/bars/{symbol}` (janus tail when `JANUS_BARS_SSE_URL` is set — a graceful idle stub otherwise).
@@ -122,9 +141,9 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   - **FAIL CLOSED:** `routeRequest` (pure, unit-tested in `adapter.ts`) is the single decision core — missing config is **bootstrap-then-enforce, never an open door**. The ONLY bypass is an explicit `WEBUI_AUTH=disabled`. Backend/mutating routes require a valid session (401 without; 403 while `mustChange`); pages redirect to `/login`. If the auth store (Postgres via `WEBUI_DATABASE_URL`) is unreachable, requests 503 (health probes excepted) — they never fail open. **DO add browser-side credential handling — that is now the policy** (this bullet supersedes the old "Tailscale + shared token is the policy" line, which predated the roadmap's pre-mobile-mutation tripwire).
   - **Phase 2A — RBAC ENFORCED at the `routeRequest` seam** (roles are live, not just modelled). Rank order `viewer < operator < admin` (`roleRank` in `adapter.ts`, fail-closed: any unknown/garbage role → viewer rank 0). The §1.1 rule table is a set of exported prefix constants evaluated top-down in `roleDenies` (backend, 403 `role_denied`) + `routeRequest` (pages redirect home, never 403):
     - **R1 `ADMIN_ONLY_BACKEND_PREFIXES`** (`/api/users`, `/api/invites`) — admin-only for ANY method incl. GET (the list itself leaks). Both surfaces now EXIST (Phase B/C/D below) and ride this rule.
-    - **R2 `ADMIN_ONLY_MUTATION_RULES`** (non-GET only) — config/credential/live-arming surfaces: `/api/cockpit/rearm`, the `*-keys` routes, `/api/settings/notifications`, `/api/settings/risk`, `/api/janus/config`, and the same spawner stores through the passthrough (`/api/spawner/secrets`, `/api/spawner/notifications`). Re-arming a halted live bot is the DANGEROUS direction → admin-only.
-    - **R2b `spawnerWriteNeedsAdmin`** — a spawn, saved config or respawn that could trade real money (`mode:"live"` or any `secrets`; for a respawn, the STORED config decides) is admin-only. It reads the body, so it runs in `proxyBackend`'s spawner branch, not in `routeRequest`, and it fails closed (bad JSON or an unknown config → admin).
-    - **R3** — every OTHER backend mutation is operator+ (viewer denied). The **kill** button (`/api/cockpit/kill`) is deliberately here, NOT R2: halt is the SAFE direction, so an operator can panic-stop without admin.
+    - **R2 `ADMIN_ONLY_MUTATION_RULES`** (non-GET only) — config/credential surfaces: the `*-keys` routes, `/api/settings/notifications`, and the same spawner stores through the passthrough (`/api/spawner/secrets`, `/api/spawner/notifications`).
+    - **R2b `spawnerWriteNeedsAdmin`** — anything that could START trading real money is admin-only, decided by what would run: a spawn or saved config (`mode:"live"` or any `secrets`), a respawn or an instance start (the STORED config decides), and an instance create (`instanceNeedsAdmin`: live mode, or a template whose `secrets_allowed` is non-empty — the template decides, fetched from the spawner). It reads the body, so it runs in `proxyBackend`'s spawner branch, not in `routeRequest`, and it fails closed (bad JSON, an unknown config or an unreadable template → admin).
+    - **R3** — every OTHER backend mutation is operator+ (viewer denied): stopping, restarting or deleting a task, acking an alert. Stopping is the SAFE direction, so an operator can stop a bot without admin (a live bot's Stop is still a two-step `ConfirmButton`).
     - **R5 `ADMIN_ONLY_PAGE_PREFIXES`** (`/users`) — non-admins get a redirect to `/`.
     - **Solo-admin default is unchanged:** with zero non-admin users every session is admin, so nothing here alters single-operator behaviour. Pinned by `adapter.test.ts` + `roleGating` tests.
   - **Phase B/C/D — user management is LIVE** (plan 01 complete): `/users` (admin console: create/disable/role/reset/revoke with last-admin + self-disable guards, one-time temp passwords never persisted/logged/audited) + `/invite/[token]` (one-time signup URLs: single-use atomic redeem, 48h, operator/viewer only — no admin-by-invite, token sha256 at rest, per-IP rate-limited claim) + the "Recent auth events" audit panel (`GET /api/users/audit`, admin-only, clamped). Multi-user is opt-in; bootstrap unchanged. **The authoritative permission table + role-mistake recovery + deploy runbook is `docs/AUTH_PHASE2.md`.**
@@ -141,8 +160,11 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   (inputs are cleared on save). Default operation stays keyless/public; keys
   only unlock the authenticated `exchange-apiws` order path, which remains
   behind the execution gate. The `/bots` spawn form can inject stored keys
-  into a spawned bot's env via the `secrets` checkboxes (spawner decrypts at
-  spawn time; fks #162).
+  into a spawned bot's env via the `secrets` checkboxes on `/tasks/advanced`
+  (spawner decrypts at spawn time; fks #162). **Config env is redacted on
+  read** (fks-spawner #64): `GET /configs` shows credential-looking values as
+  `<redacted>` and lists them in `env_redacted`; saving a config back restores
+  them server-side, and a raw spawn carrying the placeholder is refused.
 - **Notification channels are submit-only too.** The `/settings`
   "Notifications" section manages Discord webhooks: each channel POSTs
   `{name, kind, url, events}` to `/api/settings/notifications`; the adapter
@@ -212,15 +234,14 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
     minutes still produces attempts every interval, so keying a freshness
     indicator off attempts renders a dead feed as perfectly current.
   - **`$lib/utils/freshness.ts` auto-detects epoch-s vs epoch-ms.** The
-    platform publishes both (`/exchanges` `v.updated` is SECONDS from the
-    bots' `/status`; the cockpit's `generated_at` and `poll.updatedAt` are
+    platform publishes both (a bot's venue `updated` is SECONDS in its
+    `/status`; `poll.updatedAt` and a recorder's `*_ms` stamps are
     MILLISECONDS). Mixing them does not throw — it renders an age wrong by
     1000×. Default `unit="auto"`; pass an explicit unit only when you know.
-  - **Wiring + thresholds:** `Freshness.svelte` sits beside the cockpit
-    sentinel badge (`STATE_STALE_AFTER_MS = 15_000`) and on `/exchanges` +
-    `/exchanges/[exchange]` at two levels — page poll
-    `PAGE_STALE_AFTER_MS = 30_000` and per-venue
-    `VENUE_STALE_AFTER_MS = 540_000`. The underlying **300s venue cadence is
+  - **Wiring + thresholds:** `AccountCard.svelte` (Home, Money) shows two
+    ages — the bot-status poll (`STATUS_STALE_MS = 95_000`, three missed 30 s
+    polls) and the venue's own stamp (`VENUE_STALE_MS = 540_000`). The
+    underlying **300s venue cadence is
     measured, not guessed** (the live spot bot refreshes each venue every
     300s — 12 intervals across three venues, all 299–301s, 2026-07-28). The
     540s threshold (1.8× that period) **tracks the `BotVenueStale` Prometheus
@@ -229,19 +250,16 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
     `> 540` — aligning it with the spawner sampler's own 600s refusal point
     (2× its 300s sample interval) — and PR #103 (2026-08-15) moved this
     constant to match, after a window where the sampler had stopped
-    recording a venue and the pager had fired while `/exchanges` still
-    rendered it green. **This is a coupling, not an independent value: any
-    future change to `BotVenueStale`'s threshold must move
-    `VENUE_STALE_AFTER_MS` with it**, or the screen and the pager drift out
-    of sync again. An earlier 90s estimate would have cried wolf every
+    recording a venue and the pager had fired while the old `/exchanges` page
+    still rendered it green. **This is a coupling, not an independent value:
+    any future change to `BotVenueStale`'s threshold must move
+    `VENUE_STALE_MS` with it**, or the screen and the pager drift out of sync
+    again. An earlier 90s estimate would have cried wolf every
     cycle — pinned by `src/lib/utils/freshness.test.ts`.
-  - **The paper funding bot marks its book on TRADE EVENTS, so a 15+ hour
-    venue stamp is HEALTHY IDLE — never flag it.** It is already gated out in
-    code (`isFuturesVenue` in `src/routes/exchanges/[exchange]/+page.svelte`
-    skips the per-venue `Freshness`; `/futures` renders the same stamp as
-    neutral dim text) and pinned by the "funding bot would be permanently
-    stale under ANY of these" test. Any future Freshness sweep must key off
-    the **page poll's `updatedAt`**, never off `v.updated`, on those surfaces.
+  - **A bot that marks its book on TRADE EVENTS (the old paper funding bot)
+    has a venue stamp that is hours old while healthy and idle — never flag
+    it.** If such a bot comes back as a template, key its freshness off the
+    status poll's `updatedAt`, never off the venue `updated` stamp.
   - **Three honest states, not two.** `Freshness.svelte` renders fresh /
     stale / **unknown**, and unknown is GREY, not amber — "we have no stamp"
     is not the same claim as "this data is old".
@@ -261,105 +279,53 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
 - **Unit tests** cover the pure logic + plumbing: the indicator engine, the
   adapter reshapers + QuestDB input sanitizers, the formatters, and the
   poll / SSE stores + the api client.
-- **Pages wired:** charts (full indicator set + presets/persistence, crosshair
-  readout, log scale), `/bots` (spawn presets + secrets-injection checkboxes,
-  saved configs, per-bot CPU/mem + uptime, SSE log viewer, run history, durable
-  per-bot net-worth history chart from the spawner's `/net-worth`),
-  signals (live janus feed via `/api/signals/latest`), performance, janus-ai,
-  settings (risk controls + Kraken/KuCoin/Crypto.com API-key entry),
-  monitoring, `/exchanges` + `/exchanges/[exchange]` (crypto-bot balances, net
-  worth, holdings vs targets, recent rebalance trades — reads the bots'
-  `/status` servers via `CRYPTO_SPOT/FUNDING_INTERNAL_URL`) — all with
-  consistent `EmptyState` empty/error states.
-- **`/treasury`** (#41/#43/#44): the money home page — real net worth
-  (carry-forward TOTAL + account-class grouping), profit vs deposits, and a
-  phone-friendly record-a-transfer form over the spawner's `/transfers` /
-  `/accounts` / `/profit`; stale carry-forward accounts (newest snapshot older
-  than `ACCOUNT_STALE_SECONDS` = 6h) get an amber "includes … from N stale
-  accounts" annotation on the headline (never silently reduced).
-- **`/edges`** (#42): edge-factory UI — the edge portfolio (registry), backtest
-  runs + results views over the spawner's `/edges` endpoints.
-- **`/workspace`** (#35/#36): dockable/snappable panel layouts (dockview-core)
-  with real panels (no placeholders); named layouts persist locally and
-  server-side (spawner `ui_layouts` via `/api/spawner/ui/layouts`) so they
-  follow the operator across devices.
-- **`/futures`** (#33/#34): trading-types page with a Rithmic capability gate,
-  `candles_futures` charting, and a read-only Rithmic positions panel via
-  `/api/rithmic/positions` (degrades to `connected:false` when the connector
-  profile is down).
-- **`/cockpit`** (M2 + M3) — the armed-futures co-pilot for the live
-  funding-reversion bot: read panels + the ONE money-critical mutation (the
-  durable kill sentinel). Full detail in `docs/COCKPIT.md`. M3 additions now
-  live:
-  - **Live-twin `/status` feed (M3 Phase A):** `GET /api/cockpit/live-status`
-    is a **three-state honest payload** — `{configured:false}` (env unset) /
-    `{configured:true, reachable:false, reason}` (armed-but-down = amber
-    outage, never `n/a`) / `{…, mode_mismatch:true}` (pointed at the PAPER
-    container → red flag, PnL suppressed) / live `BotStatus` (real `ret_pct` +
-    mark px). The **mode-mismatch guard** (`isLiveMode`) exists so a
-    mis-pointed `CRYPTO_FUNDING_LIVE_INTERNAL_URL` can never render paper as
-    live. Live unrealized PnL **is now wired** (was previously paper-only).
-  - **Alert-ack inbox (M3 Phase B):** `/monitoring` is **no longer read-only**
-    — it carries an acknowledgement mutation. Incident identity is
-    `sha256(labels + activeAt)` (`src/lib/server/alertAck/`); the store PROBES
-    `to_regclass` and degrades to `configured:false` (honest, read-only) when
-    the `webui_alert_acks` table / grants are absent. The ack route is
-    operator+ (R3), so a viewer can never silence an armed-path page. An ack
-    silences the **webui** inbox + StatusBar chip only — there is no
-    Alertmanager integration in `src/`, so out-of-band paging is unaffected
-    and a re-fired alert returns under a new `activeAt`
-    (`src/lib/server/alertAck/logic.test.ts` "RE-FIRE = new activeAt").
-  - **The cockpit's armed-path filter is THREE clauses, and every one is
-    load-bearing (#75).** `isArmedAlert` in `src/routes/cockpit/+page.svelte`
-    renders an alert if **ANY** of:
-    1. `labels.mode === 'live'` — the rule explicitly stamps the live twin.
-    2. `labels.channel === 'money'` — **do not remove this clause.** Several
-       money-path rules AGGREGATE the `mode` label away and so can *never*
-       satisfy clause 1: `BotAllVenuesStale` is `count by (bot_id) (…)` and
-       `NetWorthSamplingPausedTooLong` is `increase(…_stale_skipped_total[30m])`
-       (`fks/infrastructure/config/prometheus/alerts/bot-alerts.yml`). Under
-       the old two-clause filter the CRITICAL `BotAllVenuesStale` — *"ALL
-       real-money venues stale — bot is blind … any position it holds is
-       unmanaged"* — was filtered **OUT** of the cockpit while its per-venue
-       WARNING sibling was shown: the exact inversion this panel exists to
-       prevent, and the shape a repeat of the 2026-07-22 DNS blackout would
-       take on the phone. It is also the only clause that catches
-       `BotVenueStale` on a **`dry-run`** venue — dry-run is REAL money (real
-       balances, no orders), and those rules select `{mode!="paper"}`, so
-       clause 1 alone would miss it. And it **self-maintains**: all four rules
-       in the `bot-venue-freshness` group stamp `channel: money`, so a new one
-       reaches the cockpit with no webui edit.
-    3. `ARMED_ALERTNAMES.has(labels.alertname)` — a hand-maintained allowlist
-       mirroring `armed-path.yml` + `crash-supervision.yml`, covering live
-       rules that stamp neither label. Keep it in sync when those files change.
-
-    **Never "restore" the two-clause form.** Narrowing this filter cannot fail
-    loudly: it silently hides a CRITICAL money alert on the one screen the
-    operator looks at during an incident.
-- **E2E suite (`tests/e2e/`, Playwright).** Hermetic: `cockpit.spec.ts` mocks
-  the three cockpit polls + the kill route via `page.route`, so every
-  honest-empty / kill-guard branch runs with **no DB or Prometheus**. The
-  **kill-flow guards** assert the KILLED badge + KILL→RE-ARM button swap and
-  that `WEBUI_AUTH=disabled` still 403s the kill/re-arm mutations. The
-  viewport spec anchors "last node reachable / page owns the only scroll" to a
-  **structural `.cockpit-page > :last-child`** locator (not a named panel), so
-  it keeps testing "whatever is genuinely last" as panels are added (the
-  Armed-path alerts panel is last since M3).
+- **Pages (six sections, 2026-10-26):**
+  - **Home `/`** — one `AccountCard` per account you have set up
+    (`$lib/accounts.ts`: stored keys + bot configs with an `account` + leases
+    + containers), what is running, data capture, the edge ladder counts, and
+    the alert inbox filtered to money/critical.
+  - **Data `/data`** — recorders (`RecorderCard`: live per-stream rates from
+    the recorder's `/status`, connections, a 30-day coverage calendar from the
+    files scan, stop/start/delete-keeps-data) and janus candle coverage per
+    coin (`/api/market/coverage`, QuestDB).
+  - **Edges `/edges`** — the edge registry and backtest runs (unchanged for
+    now; the ladder over `edge_experiments` / `edge_deployments` is next).
+  - **Tasks `/tasks`** — every instance, saved config and stray container as
+    one list (`$lib/tasks.ts`) with logs, stop/start/delete (live bots behind
+    `ConfirmButton`). **`/tasks/new`** renders any template's JSON-Schema
+    params as a form (`$lib/templateForm.ts`, ordered by `x-order`): Check =
+    `POST /instances/validate`, Create = `POST /instances`, enabled only for
+    the values just checked. **`/tasks/advanced`** is the old `/bots` console
+    (raw spawn, saved configs, run history, net-worth chart).
+  - **Money `/money`** — `AccountCard`s with holdings, then the treasury (the
+    old `/treasury`: net worth, profit vs deposits, transfers).
+  - Charts (`/charts`, `/charts/grid`; crypto quick picks), Settings (keys,
+    notifications, system info), Monitoring, Docs, Users.
+- **E2E suite (`tests/e2e/`, Playwright).** Hermetic: every page's backend
+  reads are route-mocked (`fixtures/home.ts` mirrors oryx on 2026-10-26: one
+  Kraken key, the live crypto-regime bot holding `kraken:spot:default`, the
+  `btc` recorder; `fixtures/data.ts` adds the recorder's status, files scan
+  and template), so the suite runs with no spawner, QuestDB or janus. Matchers
+  are pathname predicates, never `**/api/**` globs (Vite serves
+  `/src/lib/api/*` modules by path). The viewport spec anchors "page owns the
+  only scroll / last node reachable" to Home with a TALL fixture, so the guard
+  cannot pass vacuously. Run locally on Ubuntu 26.04 with
+  `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64` and a private
+  `WEB_E2E_PORT`.
 - **No-fake-success seam (#69).** Unmapped backend **mutations** now return
   `501 not_implemented` instead of falling through to an empty `200`. This
-  closed the `/trading` order ticket reporting "BUY order submitted" against a
-  stub, plus trade-close, signal approve/reject and janus-ai session
-  start/stop, which were silent no-ops by the same route. Unmapped **reads**
+  closed the old `/trading` order ticket reporting "BUY order submitted"
+  against a stub (and trade-close, signal approve/reject, janus-ai session
+  start/stop — pages since removed), which were silent no-ops by the same
+  route. Unmapped **reads**
   still degrade quietly — see the "Truth & freshness" gotcha above.
-- **M4 — truth primitives (#71) + wiring (#73 cockpit, #74 `/exchanges`).**
-  `poll.updatedAt` (last *successful* fetch), `$lib/utils/freshness.ts`
-  (s-vs-ms auto-detect, fresh/stale/unknown), and `Freshness.svelte` (own 1s
-  ticker so the age counts up between fetches). Wired beside the cockpit
-  sentinel badge at 15s, and on `/exchanges` + `/exchanges/[exchange]` at 30s
-  page-level / 540s per-venue (#103, 2026-08-15 — tracks the `BotVenueStale`
-  Prometheus rule threshold, was 900s) — the latter pinned to a **measured**
-  300s venue cadence. The funding bot's trade-event stamp is deliberately
-  excluded.
+- **M4 — truth primitives (#71).** `poll.updatedAt` (last *successful*
+  fetch), `$lib/utils/freshness.ts` (s-vs-ms auto-detect,
+  fresh/stale/unknown), and `Freshness.svelte` (own 1s ticker so the age
+  counts up between fetches). Wired on `AccountCard` (status poll 95 s, venue
+  stamp 540 s — tracks the `BotVenueStale` Prometheus rule, pinned to a
+  **measured** 300 s venue cadence), the data page's market read, and the
+  status bar's health.
 - **M5 — phone frame (#72).** Three measured fixes: (1) the auth gate could
   hide its own submit button at 320×380 (button at bottom=453px with nothing
   scrollable) — `/login`, `/setup` and `/invite/[token]` are now the page's
@@ -370,17 +336,16 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
   services. Two design-review claims (logout clipped off-screen, gate cards
   overflowing at 320px) did **not** reproduce against the real DOM and are
   deliberately unguarded — do not re-add specs for them without re-measuring.
-  The coarse-pointer sweep is COMPLETE for the money path: cockpit instance
-  tabs (#83, `cockpit/+page.svelte:864-887` — 44px floor AND a 12px moat,
-  because a bigger flush segment is a bigger overlap with its neighbour), the
-  alert-inbox ack cluster (#84/#86, `AlertInbox.svelte:376-400`), and every
-  two-step confirm via `ConfirmButton` (#95, `:224-236`). `/bots` Stop /
-  Restart / force-remove was the one surface that missed this sweep — it has
-  since been closed too: all three now route through `ConfirmButton`, and
-  money-bot names (`crypto-spot`, `crypto-funding`) get a named confirm
-  phrase (#98, `routes/bots/+page.svelte:825-854`). **Do not re-open any of
-  these** — re-adding a bare `onclick` here re-creates the unconfirmed-tap
-  failure mode this sweep exists to close.
+  The coarse-pointer sweep is COMPLETE for the money path: the alert-inbox
+  ack cluster (#84/#86, `AlertInbox.svelte` — 44px floor AND a 12px moat,
+  because a bigger flush target is a bigger overlap with its neighbour), and
+  every two-step confirm via `ConfirmButton` (#95). `/tasks/advanced` (the old
+  `/bots`) Stop / Restart / force-remove all route through `ConfirmButton`,
+  and a money bot (mode `live`/`dry-run`, or the legacy names) gets a named
+  confirm phrase (#98); on `/tasks`, a live bot's Stop and Start are
+  `ConfirmButton`s too. **Do not re-open any of these** — re-adding a bare
+  `onclick` here re-creates the unconfirmed-tap failure mode this sweep
+  exists to close.
 - Phase-by-phase buildout detail lives in the **fks** repo at
   `docs/architecture/WEBUI_BUILDOUT_PLAN.md`. Forward roadmap (M4–M10 + an
   explicit NOT DOING list) lives at `~/github/FKS_WEB_ROADMAP_2026-07-27.md`.
