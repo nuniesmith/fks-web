@@ -254,8 +254,10 @@ test.describe("New task form", () => {
     );
 
     await page.goto("/tasks/new?kind=recorder");
-    // One recorder template: it opens straight away.
+    // One recorder template: it opens straight away, and the URL names it
+    // (shareable, the same ?template= an agent would use).
     await expect(page.locator(".panel-title", { hasText: "Binance USDⓈ-M futures recorder" })).toBeVisible();
+    await expect(page).toHaveURL(/template=recorder\.binance-usdm/);
     await page.getByLabel("Symbols *").fill("ethusdt, solusdt");
     await expect(page.getByLabel("Name")).toHaveValue("eth-sol");
     await expect(page.getByText("About", { exact: false }).first()).toContainText("MB");

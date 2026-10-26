@@ -13,7 +13,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, replaceState } from '$app/navigation';
   import { spawner } from '$api/spawner';
   import { ApiError } from '$api/client';
   import Panel from '$components/ui/Panel.svelte';
@@ -84,9 +84,11 @@
     nameTouched = false;
     plan = null;
     serverErrors = [];
+    // Shallow routing: keep the chosen template in the URL (shareable, and
+    // the agent-facing equivalent of ?template=) without a navigation.
     const url = new URL($page.url);
     url.searchParams.set('template', t.id);
-    history.replaceState(history.state, '', url);
+    replaceState(url, $page.state);
   }
 
   onMount(async () => {
