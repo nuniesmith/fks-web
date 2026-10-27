@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { installHome } from "./fixtures/home";
-import { installRecorder } from "./fixtures/data";
+import { installHistory, installRecorder } from "./fixtures/data";
 
 // Playwright tests run in Node.js — process is available at runtime.
 declare const process: { env: Record<string, string | undefined> };
@@ -177,6 +177,35 @@ test.describe("Data", () => {
     await expect(card.getByRole("button", { name: "Stop" })).toBeVisible();
   });
 
+  test("a history recorder gets its own card: files per series, the last check, and what failed", async ({ page }) => {
+    await installHome(page);
+    await installRecorder(page);
+    await installHistory(page);
+    await page.goto("/data");
+
+    // The live recorder keeps its card; the history instance is not one.
+    await expect(page.getByTestId("recorder-card")).toHaveCount(1);
+    const card = page.getByTestId("history-card");
+    await expect(card).toHaveAttribute("data-instance", "majors-history");
+    await expect(card.getByTestId("history-cycle")).toContainText("Last check");
+    await expect(card.getByTestId("history-cycle")).toContainText("247 new, 1 failed");
+    const table = card.getByRole("table", { name: "Archive files held by majors-history" });
+    // BTCUSDT's three series first (candles, funding, open interest), then ETHUSDT.
+    await expect(table.locator("tbody tr")).toHaveCount(4);
+    await expect(table.locator("tbody tr").nth(1)).toContainText("Funding");
+    await expect(table.locator("tbody tr").nth(1)).toContainText("complete");
+    await expect(table.locator("tbody tr").nth(2)).toContainText("Open interest");
+    const eth = table.locator("tbody tr", { hasText: "ETHUSDT" });
+    await expect(eth).toContainText("35 / 37");
+    await expect(eth).toContainText("1 failing");
+    await expect(card.getByRole("list", { name: "Recent download errors" })).toContainText("ETHUSDT-1d-2026-10-20.zip");
+    await expect(card.getByRole("button", { name: /Delete history recorder majors-history/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: "+ New history" })).toHaveAttribute(
+      "href",
+      "/tasks/new?kind=recorder&template=history.binance-usdm",
+    );
+  });
+
   test("janus candles are listed per coin with completeness", async ({ page }) => {
     await installHome(page);
     await page.goto("/data");
@@ -282,6 +311,17 @@ test.describe("New task form", () => {
       mode: "record",
       params: { symbols: ["ETHUSDT", "SOLUSDT"], rest_seconds: 600 },
     });
+  });
+
+  test("New history opens the archive form, named so it can't collide with the live recorder", async ({ page }) => {
+    await installHome(page);
+    await installHistory(page);
+    await page.goto("/tasks/new?kind=recorder&template=history.binance-usdm");
+    await expect(page.locator(".panel-title", { hasText: "Binance USDⓈ-M futures history" })).toBeVisible();
+    await page.getByLabel("Symbols *").fill("BTCUSDT");
+    await expect(page.getByLabel("Name")).toHaveValue("btc-history");
+    await expect(page.getByLabel("From the start of")).toHaveValue("2020");
+    await expect(page.getByRole("button", { name: "Start downloading" })).toBeDisabled();
   });
 
   test("the spawner's refusal is shown line by line, and nothing is created", async ({ page }) => {

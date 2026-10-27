@@ -1,12 +1,16 @@
 <!--
   Data — step 1 of the edge process: capture.
 
-  Two sources, kept apart on purpose (EDGE_FACTORY_PLAN §12, "do not add a
+  Three sources, kept apart on purpose (EDGE_FACTORY_PLAN §12, "do not add a
   second kline path"):
     - Recorders: raw exchange events the platform cannot download later
       (liquidations, top of book, 1 s mark price), written append-only to the
       lake by template instances, with a gap ledger.
-    - janus: 1m/5m candles for the coins it follows, in QuestDB.
+    - History recorders: the exchange's public archive (candles, funding,
+      open interest) as raw files in the lake, years back, for research only.
+      They feed no chart and no signal.
+    - janus: 1m/5m candles for the coins it follows, in QuestDB: the one
+      source of bars and signals.
 
   Everything later in the process (search, validation, forward tests) reads
   what is recorded here, so this page answers "do I have the data, and where
@@ -19,6 +23,8 @@
   import EmptyState from '$components/ui/EmptyState.svelte';
   import Freshness from '$components/ui/Freshness.svelte';
   import RecorderCard from '$components/data/RecorderCard.svelte';
+  import HistoryCard from '$components/data/HistoryCard.svelte';
+  import { isHistory } from '$lib/history';
   import { workloadKind } from '$lib/accounts';
   import { byCoin, completeness, intervalsOf } from '$lib/market';
   import { fmtRelative } from '$lib/utils/format';
@@ -40,9 +46,12 @@
     };
   });
 
-  let recorders = $derived(
+  let capture = $derived(
     ($instances?.instances ?? []).filter((i) => workloadKind(i.mode, i.kind) === 'recorder'),
   );
+  let recorders = $derived(capture.filter((i) => !isHistory(i)));
+  let histories = $derived(capture.filter(isHistory));
+  const NEW_HISTORY = '/tasks/new?kind=recorder&template=history.binance-usdm';
   let marketRows = $derived($market?.ok ? $market.rows : []);
   let coins = $derived(byCoin(marketRows));
   let intervals = $derived(intervalsOf(marketRows));
@@ -62,11 +71,14 @@
       <h1>Data</h1>
       <p>
         Step 1 of the edge process: <strong>capture</strong>. Recorders keep the raw exchange data
-        nobody can download later; janus keeps candles. Search and validation only ever read what is
-        recorded here.
+        nobody can download later; history recorders fetch the exchange's public archive, years back;
+        janus keeps candles. Search and validation only ever read what is recorded here.
       </p>
     </div>
-    <a class="btn-primary" href="/tasks/new?kind=recorder">+ New recorder</a>
+    <div class="intro-actions">
+      <a class="btn-primary" href="/tasks/new?kind=recorder">+ New recorder</a>
+      <a class="btn-primary" href={NEW_HISTORY}>+ New history</a>
+    </div>
   </header>
 
   <Panel title="Recorders">
@@ -93,6 +105,30 @@
           >
             {#snippet action()}
               <a class="btn-primary" href="/tasks/new?kind=recorder">Start a recorder</a>
+            {/snippet}
+          </EmptyState>
+        {/each}
+      </div>
+    {/if}
+  </Panel>
+
+  <Panel title="History (exchange archive)">
+    {#if $instances === null && $instancesError}
+      <EmptyState icon="⚠️" variant="error" title="Couldn't list history recorders" hint={$instancesError} />
+    {:else if $instances === null}
+      <p class="muted" role="status">Loading history recorders…</p>
+    {:else if $instances.db_enabled}
+      <div class="stack">
+        {#each histories as h (`${h.name}:${h.container?.id ?? ''}:${h.container?.state ?? ''}`)}
+          <HistoryCard instance={h} onchanged={() => instances.refresh()} />
+        {:else}
+          <EmptyState
+            icon="📚"
+            title="No history yet"
+            hint="A history recorder downloads Binance's public archive (candles, funding rates, open interest) back to a year you pick, checks every file against the archive's sha256, and keeps it current."
+          >
+            {#snippet action()}
+              <a class="btn-primary" href={NEW_HISTORY}>Download history</a>
             {/snippet}
           </EmptyState>
         {/each}
@@ -180,6 +216,11 @@
   }
   .btn-primary:hover {
     background: var(--bg2);
+  }
+  .intro-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
   }
   .stack {
     display: flex;

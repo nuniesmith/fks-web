@@ -345,7 +345,7 @@
             onclick={create}
             title={checkedOk ? '' : 'Check the form first'}
           >
-            {creating ? 'Creating…' : selected.kind === 'recorder' ? 'Start recording' : 'Create'}
+            {creating ? 'Creating…' : selected.id.startsWith('history.') ? 'Start downloading' : selected.kind === 'recorder' ? 'Start recording' : 'Create'}
           </button>
           <button type="button" class="btn ghost" onclick={() => (selected = null)}>Other template</button>
         </div>

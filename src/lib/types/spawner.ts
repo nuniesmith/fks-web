@@ -808,6 +808,60 @@ export interface RecorderStatus {
   >;
 }
 
+/** One series a history recorder keeps: a dataset for a symbol (and a candle interval). */
+export interface HistorySeries {
+  dataset: string;
+  symbol: string;
+  /** Candle interval; null for funding and metrics. */
+  interval: string | null;
+  /** Files the plan asks for. */
+  expected: number;
+  /** On disk, verified against the archive's sha256. */
+  present: number;
+  /** Recent files the archive has not published yet ("not yet"). */
+  pending: number;
+  /** Old 404s, e.g. before the symbol listed ("never"); asked again weekly. */
+  not_published: number;
+  /** Failed in the last check; retried at the next. */
+  errors: number;
+  bytes: number;
+  /** Oldest and newest period on disk: `YYYY-MM` (monthly) or `YYYY-MM-DD` (daily). */
+  first: string | null;
+  last: string | null;
+}
+
+/** A history recorder's `/status` on :9091 (fks-spawner bots/history). */
+export interface HistoryStatus {
+  bot_id: string;
+  kind: 'history';
+  market: string;
+  symbols: string[];
+  datasets: string[];
+  intervals: string[];
+  /** `YYYY-MM`. */
+  start: string;
+  started_at_ms: number;
+  updated_at_ms: number;
+  cycle: {
+    running: boolean;
+    started_at_ms: number | null;
+    finished_at_ms: number | null;
+    next_at_ms: number | null;
+    /** Files in the running (or last) check, and how many it has been through. */
+    planned: number;
+    checked: number;
+    downloaded: number;
+    errors: number;
+  };
+  /** When the last check finished with no errors. */
+  last_success_ms: number | null;
+  downloads_total: number;
+  errors_total: number;
+  /** The last FINISHED check's counts, by `dataset/symbol/interval`. */
+  series: Record<string, HistorySeries>;
+  recent_errors: { file: string; error: string; at_ms: number }[];
+}
+
 /** `GET /bots/{bot_id}/status`: the running bot's own document. */
 export interface BotStatusResponse<T = unknown> {
   ok: boolean;
