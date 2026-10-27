@@ -28,6 +28,8 @@ import {
   movedPage,
   roleRank,
   spawnerWriteNeedsAdmin,
+  isHypothesisRegistration,
+  withRegisteredBy,
 } from "$lib/server/adapter";
 import {
   AuthStoreUnavailable,
@@ -170,6 +172,8 @@ async function forward(
   event: RequestEvent,
   base: string,
   path: string,
+  /** Sent instead of the request's own body (the adapter rewrote it). */
+  body?: string,
 ): Promise<Response> {
   const method = event.request.method;
   const init: RequestInit & { duplex?: "half" } = {
@@ -188,7 +192,9 @@ async function forward(
     event.request.headers.get("accept")?.includes("text/event-stream") ?? false;
   if (!wantsStream) init.signal = AbortSignal.timeout(15_000);
   if (method !== "GET" && method !== "HEAD") {
-    init.body = await event.request.arrayBuffer();
+    // content-length is a hop header (`upstreamHeaders` drops it), so a
+    // rewritten body gets its own length from fetch.
+    init.body = body ?? (await event.request.arrayBuffer());
     init.duplex = "half";
   }
   try {
@@ -1240,10 +1246,17 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
       return jsonError(403, {
         error: "forbidden",
         reason: "role_denied",
-        detail: "Starting a bot in live mode or with exchange keys needs an admin.",
+        detail:
+          "Going live needs an admin: a bot in live mode or with exchange keys, or an edge deployment promoted to live.",
       });
     }
     const rest = pathname.replace(/^\/api\/spawner/, "") || "/";
+    // A hypothesis records who registered it: the session's user, never
+    // what the browser claims (adapter.ts `withRegisteredBy`).
+    if (isHypothesisRegistration(pathname, event.request.method)) {
+      const stamped = withRegisteredBy(await event.request.clone().text(), operatorName(auth));
+      if (stamped !== null) return forward(event, SPAWNER_URL, rest + search, stamped);
+    }
     return forward(event, SPAWNER_URL, rest + search);
   }
 

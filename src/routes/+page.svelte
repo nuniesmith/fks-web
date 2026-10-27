@@ -21,11 +21,12 @@
   import { buildAccounts } from '$lib/accounts';
   import { buildTasks } from '$lib/tasks';
   import { byCoin } from '$lib/market';
+  import { board } from '$lib/ladder';
   import { fmtRelative } from '$lib/utils/format';
   import type {
     ConfigsResponse,
     ContainersResponse,
-    EdgesResponse,
+    LadderResponse,
     ExchangeKeysStatusResponse,
     InstancesResponse,
     LeasesResponse,
@@ -38,9 +39,9 @@
   const leases = createPoll<LeasesResponse>('/api/spawner/leases', 30_000);
   const containers = createPoll<ContainersResponse>('/api/spawner/containers', 15_000);
   const instances = createPoll<InstancesResponse>('/api/spawner/instances', 30_000);
-  const edges = createPoll<EdgesResponse>('/api/spawner/edges', 60_000);
+  const ladder = createPoll<LadderResponse>('/api/spawner/ladder', 60_000);
   const market = createPoll<MarketCoverageResponse>('/api/market/coverage', 60_000);
-  const polls = [keys, configs, leases, containers, instances, edges, market];
+  const polls = [keys, configs, leases, containers, instances, ladder, market];
   // Client only: a poll started during SSR would fetch a relative URL there.
   onMount(() => {
     polls.forEach((p) => p.start());
@@ -70,16 +71,17 @@
   let coins = $derived($market?.ok ? byCoin($market.rows) : []);
   let lastBar = $derived(coins.reduce<string | null>((m, c) => (c.last && (!m || c.last > m) ? c.last : m), null));
 
+  // The ladder's rungs (EDGE_PROCESS_2026-10-26), counted the way /edges places them.
   const STAGES = [
-    { id: 'research', label: 'Research' },
-    { id: 'paper', label: 'Forward (paper)' },
+    { id: 'hypotheses', label: 'Hypotheses' },
+    { id: 'searched', label: 'Searched' },
+    { id: 'forward', label: 'Forward (paper)' },
     { id: 'live', label: 'Live' },
     { id: 'retired', label: 'Retired' },
   ] as const;
+  let rungs = $derived($ladder ? board($ladder) : null);
   let edgeCounts = $derived(
-    Object.fromEntries(
-      STAGES.map((s) => [s.id, ($edges?.edges ?? []).filter((e) => e.active !== false && e.status === s.id).length]),
-    ) as Record<string, number>,
+    Object.fromEntries(STAGES.map((s) => [s.id, rungs ? rungs[s.id].length : 0])) as Record<string, number>,
   );
   let edgeTotal = $derived(Object.values(edgeCounts).reduce((a, b) => a + b, 0));
 
@@ -170,7 +172,7 @@
         <li><span class="count">{edgeCounts[s.id] ?? 0}</span><span class="stage">{s.label}</span></li>
       {/each}
     </ol>
-    {#if $edges && edgeTotal === 0}
+    {#if $ladder && edgeTotal === 0}
       <p class="muted">
         No edges yet. The process: record data → register a hypothesis → search on old data → validate on
         data the search never saw → forward-test on paper → live, then keep re-checking.

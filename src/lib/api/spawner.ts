@@ -31,6 +31,10 @@
  *   GET    /api/spawner/edges/<id>/backtests?limit=N → /edges/<id>/backtests
  *   POST   /api/spawner/edges/<id>/backtest          → 202 (launch run)
  *   POST   /api/spawner/edges            → /edges (UPSERT by edge_id)
+ *   GET    /api/spawner/ladder           → /ladder (the edge ladder in one read)
+ *   POST   /api/spawner/edges/<id>/hypotheses → register a hypothesis (frozen)
+ *   POST   /api/spawner/hypotheses/<id>/withdraw · /deployments ·
+ *          /deployments/<id>/promote (live = admin, R2b) · /deployments/<id>/retire
  *   POST   /api/spawner/configs/<name>/respawn → /configs/<name>/respawn
  *          (db feature only — stop+recreate from the saved config, current
  *          stored secrets re-injected; the rotate-then-respawn step)
@@ -83,6 +87,12 @@ import type {
   UpsertAccountResponse,
   UpsertEdgeRequest,
   UpsertEdgeResponse,
+  LadderResponse,
+  Hypothesis,
+  RegisterHypothesisRequest,
+  Deployment,
+  CreateDeploymentRequest,
+  PromoteRequest,
 } from "$lib/types/spawner";
 
 /** Base path — matches the nginx + vite proxy passthrough rewrites. */
@@ -248,6 +258,32 @@ export const spawner = {
   /** UPSERT an edge definition (keyed by `edge_id`). */
   upsertEdge: (req: UpsertEdgeRequest) =>
     api.post<UpsertEdgeResponse>(`${BASE}/edges`, req),
+
+  // ── The edge ladder (db feature; Postgres guards every rung) ──────────
+
+  /** Edges, hypotheses, experiments, deployments and search effort. */
+  ladder: () => api.get<LadderResponse>(`${BASE}/ladder`),
+
+  /** Register a hypothesis (stage 2). Frozen from then on. */
+  registerHypothesis: (edgeId: string, req: RegisterHypothesisRequest) =>
+    api.post<{ ok: boolean; hypothesis: Hypothesis }>(
+      `${BASE}/edges/${encodeURIComponent(edgeId)}/hypotheses`,
+      req,
+    ),
+
+  withdrawHypothesis: (id: number, reason: string) =>
+    api.post<{ ok: boolean; hypothesis: Hypothesis }>(`${BASE}/hypotheses/${id}/withdraw`, { reason }),
+
+  /** A deployment row at `backtest` for an experiment. */
+  createDeployment: (req: CreateDeploymentRequest) =>
+    api.post<{ ok: boolean; deployment: Deployment }>(`${BASE}/deployments`, req),
+
+  /** One rung up; the database's refusal comes back as a 409 in its own words. */
+  promoteDeployment: (id: number, req: PromoteRequest) =>
+    api.post<{ ok: boolean; deployment: Deployment }>(`${BASE}/deployments/${id}/promote`, req),
+
+  retireDeployment: (id: number, reason: string) =>
+    api.post<{ ok: boolean; deployment: Deployment }>(`${BASE}/deployments/${id}/retire`, { reason }),
 
   // ── Templates and instances ───────────────────────────────────────────
 

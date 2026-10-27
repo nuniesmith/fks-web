@@ -16,6 +16,9 @@ import {
   spawnSpecNeedsAdmin,
   spawnerWriteNeedsAdmin,
   upstreamHeaders,
+  promotionNeedsAdmin,
+  isHypothesisRegistration,
+  withRegisteredBy,
 } from "./adapter";
 
 describe("isBackend", () => {
@@ -510,6 +513,53 @@ describe("R2b — spawnerWriteNeedsAdmin", () => {
     expect(
       await spawnerWriteNeedsAdmin(path, "POST", noBody, () => Promise.reject(new Error("down"))),
     ).toBe(true);
+  });
+});
+
+describe("R2b — the edge ladder: live is an admin's, and a hypothesis names its author", () => {
+  const body = (b: unknown) => () => Promise.resolve(JSON.stringify(b));
+  const noLookup = () => Promise.reject(new Error("no config lookup expected"));
+  const promote = (b: unknown, path = "/api/spawner/deployments/7/promote") =>
+    spawnerWriteNeedsAdmin(path, "POST", body(b), noLookup);
+
+  it("only a plain promotion to forward (paper) is an operator's", async () => {
+    expect(await promote({ to: "forward", forward_sessions_required: 20 })).toBe(false);
+    expect(await promote({ to: " Forward " })).toBe(false);
+    expect(await promote({ to: "live" })).toBe(true);
+    // fail closed: anything that isn't plainly forward
+    expect(await promote({})).toBe(true);
+    expect(await promote({ to: ["forward"] })).toBe(true);
+    expect(await promote(null)).toBe(true);
+    expect(
+      await spawnerWriteNeedsAdmin("/api/spawner/deployments/7/promote", "POST", () => Promise.resolve("{nope"), noLookup),
+    ).toBe(true);
+    // other spellings of the path
+    expect(await promote({ to: "live" }, "/api/spawner//deployments/7/promote/")).toBe(true);
+    expect(await promote({ to: "live" }, "/api/spawner/Deployments/7/%70romote")).toBe(true);
+  });
+
+  it("leaves the rest of the ladder to operators, without reading bodies", async () => {
+    const noBody = () => Promise.reject(new Error("the body must not be read"));
+    for (const path of [
+      "/api/spawner/deployments",
+      "/api/spawner/deployments/7/retire",
+      "/api/spawner/hypotheses/3/withdraw",
+      "/api/spawner/edges/liq-fade/hypotheses",
+    ]) {
+      expect(await spawnerWriteNeedsAdmin(path, "POST", noBody, noLookup)).toBe(false);
+    }
+    expect(promotionNeedsAdmin({ to: "forward" })).toBe(false);
+  });
+
+  it("stamps the session's user on a hypothesis, whatever the browser sent", () => {
+    expect(isHypothesisRegistration("/api/spawner/edges/liq-fade/hypotheses", "POST")).toBe(true);
+    expect(isHypothesisRegistration("/api/spawner/edges/liq-fade/hypotheses/", "post")).toBe(true);
+    expect(isHypothesisRegistration("/api/spawner/edges/liq-fade/hypotheses", "GET")).toBe(false);
+    expect(isHypothesisRegistration("/api/spawner/edges/liq-fade/backtest", "POST")).toBe(false);
+    const stamped = withRegisteredBy(JSON.stringify({ idea: "x", registered_by: "someone-else" }), "jordan");
+    expect(JSON.parse(stamped!)).toEqual({ idea: "x", registered_by: "jordan" });
+    expect(withRegisteredBy("{nope", "jordan")).toBeNull();
+    expect(withRegisteredBy("[1]", "jordan")).toBeNull();
   });
 });
 

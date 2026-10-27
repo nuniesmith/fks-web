@@ -1,5 +1,10 @@
 <!--
-  /edges — the EDGE PORTFOLIO page.
+  /edges — the edge ladder, then the EDGE PORTFOLIO (the registry).
+
+  The ladder (EDGE_PROCESS_2026-10-26): every hypothesis, search and
+  deployment on its rung (LadderBoard, from GET /ladder, polled), the search
+  effort per family (the N a multiple-testing correction needs), and
+  "Register a hypothesis" (/edges/new), the only way onto the ladder.
 
   Table of registered edges (from the spawner's db-gated GET /edges via the
   /api/spawner/* passthrough): name, type + status badges, asset-scope chips
@@ -11,6 +16,11 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
+  import { createPoll } from '$stores/poll';
+  import LadderBoard from '$components/edges/LadderBoard.svelte';
+  import { fmtScore } from '$lib/ladder';
+  import type { LadderResponse } from '$lib/types/spawner';
   import Panel from '$components/ui/Panel.svelte';
   import Badge from '$components/ui/Badge.svelte';
   import Skeleton from '$components/ui/Skeleton.svelte';
@@ -73,6 +83,17 @@
   }
 
   onMount(load);
+
+  // ─── The ladder ─────────────────────────────────────────────────────────
+
+  const ladder = createPoll<LadderResponse>('/api/spawner/ladder', 30_000);
+  const ladderError = ladder.error;
+  // Client only: a poll started during SSR would fetch a relative URL there.
+  onMount(() => {
+    ladder.start();
+    return () => ladder.stop();
+  });
+  let highlight = $derived(Number($page.url.searchParams.get('hypothesis')) || null);
 
   // ─── Expand-in-place detail ─────────────────────────────────────────────
 
@@ -185,7 +206,64 @@
 </svelte:head>
 
 <div class="page-scroll page">
-  <Panel title="Edge portfolio" fill>
+  <Panel title="The ladder">
+    {#snippet header()}
+      <a class="btn new" href="/edges/new">＋ Register a hypothesis</a>
+    {/snippet}
+    {#if $ladder === null && $ladderError}
+      <EmptyState
+        icon="⚠️"
+        variant="error"
+        title="Couldn't read the ladder"
+        hint={`GET /api/spawner/ladder failed (${$ladderError}).`}
+      />
+    {:else if $ladder === null}
+      <p class="dim" role="status">Reading the ladder…</p>
+    {:else if !$ladder.db_enabled}
+      <EmptyState icon="🗄️" title="The spawner has no database" hint="The ladder lives in Postgres." />
+    {:else}
+      <p class="ladder-intro">
+        Every edge climbs the same rungs, and Postgres refuses a skipped one: hypothesis (registered first) →
+        search → one holdout score → forward on paper for sessions declared in advance → live. Retiring is open
+        from any rung.
+      </p>
+      <LadderBoard ladder={$ladder} {highlight} onchanged={() => ladder.refresh()} />
+    {/if}
+  </Panel>
+
+  {#if $ladder?.effort?.length}
+    <Panel title="Search effort">
+      <div class="table-wrap">
+        <table class="effort" aria-label="Search effort per family">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Family</th><th class="r">Searches</th><th class="r">Trials (N)</th>
+              <th class="r">Best holdout</th><th class="r">Usable</th><th class="r">Adopted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each $ladder.effort as f (`${f.symbol}:${f.config_fingerprint}`)}
+              <tr>
+                <td>{f.symbol}</td>
+                <td class="mono dim">{f.config_fingerprint}</td>
+                <td class="r">{f.experiments}</td>
+                <td class="r">{f.trials_total.toLocaleString('en-US')}</td>
+                <td class="r">{fmtScore(f.best_holdout)}</td>
+                <td class="r">{f.usable}</td>
+                <td class="r">{f.adopted}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="ladder-intro">
+        The best holdout of N trials is the maximum of N draws: the deflated Sharpe (U7) corrects for it, so every
+        search counts, whatever its verdict.
+      </p>
+    </Panel>
+  {/if}
+
+  <Panel title="Edge portfolio">
     {#snippet header()}
       <button type="button" class="btn" onclick={load} disabled={loading} title="Reload the edge list">
         ↻ Refresh
@@ -507,5 +585,46 @@
     margin: 0;
     font-size: 11px;
     color: var(--red, #ea3943);
+  }
+  .ladder-intro {
+    margin: 0 0 8px;
+    max-width: 760px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--t3);
+  }
+  a.btn {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+  }
+  .table-wrap {
+    overflow-x: auto;
+  }
+  .effort {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .effort th {
+    text-align: left;
+    font-size: 9px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--t3);
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--b1);
+    white-space: nowrap;
+  }
+  .effort td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--b1);
+    color: var(--t1);
+    white-space: nowrap;
+  }
+  .effort td.dim {
+    color: var(--t3);
   }
 </style>

@@ -557,6 +557,141 @@ export interface UpsertEdgeResponse {
   [key: string]: unknown;
 }
 
+// ─── The edge ladder (fks-spawner #68, fks #320; EDGE_PROCESS_2026-10-26) ─
+
+/** One tuned parameter of a hypothesis: a range, or a list of choices. */
+export interface ParamSpec {
+  name: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  choices?: (string | number | boolean)[];
+}
+
+/** Costs in basis points; Kraken tier 1 is 40 maker, 80 taker. */
+export interface HypothesisCosts {
+  maker_bps: number;
+  taker_bps: number;
+  slippage_bps: number;
+}
+
+/** Stage 2: an idea registered before its search. Frozen once registered. */
+export interface Hypothesis {
+  id: number;
+  edge_id: string;
+  idea: string;
+  symbols: string[];
+  dataset: string;
+  holdout_share: number;
+  params: ParamSpec[];
+  baseline: string;
+  metric: string;
+  costs: HypothesisCosts;
+  registered_at: string;
+  registered_by: string | null;
+  status: 'registered' | 'withdrawn';
+  withdrawn_reason: string | null;
+  withdrawn_at: string | null;
+}
+
+/** Stages 3–4: one search (an Optuna study) and its holdout verdict. */
+export interface Experiment {
+  id: number;
+  study_name: string;
+  config_fingerprint: string;
+  symbol: string;
+  bar_minutes: number;
+  hypothesis: string | null;
+  hypothesis_id: number | null;
+  registered_at: string | null;
+  tuned_params: string[];
+  n_trials: number;
+  train_days: number | null;
+  test_days: number | null;
+  folds: number | null;
+  holdout_folds: number | null;
+  /** What the search maximised: the most flattered number in the row. */
+  selection_score: number | null;
+  /** Scored once, on folds the search never saw. */
+  holdout_score: number | null;
+  baseline_holdout_score: number | null;
+  overfit_gap: number | null;
+  selection_trades: number | null;
+  holdout_trades: number | null;
+  verdict: 'USABLE' | 'DO NOT PASTE';
+  verdict_reasons: string[];
+  outcome: 'pending' | 'adopted' | 'rejected' | 'superseded';
+  finished_at: string | null;
+  created_at: string;
+}
+
+export type DeploymentStage = 'backtest' | 'forward' | 'live' | 'retired';
+
+/** Stages 5–6: an experiment bound to an account, one rung at a time. */
+export interface Deployment {
+  id: number;
+  experiment_id: number;
+  account_id: string;
+  symbol: string;
+  stage: DeploymentStage;
+  execution: 'manual' | 'auto';
+  params_snapshot: Record<string, unknown>;
+  forward_sessions_required: number | null;
+  forward_sessions_observed: number;
+  live_trades: number;
+  live_r_sum: number;
+  divergence_vs_backtest: number | null;
+  since: string;
+  retired_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `edge_search_effort`: what was tried per family, the N for a multiple-testing correction. */
+export interface EffortRow {
+  symbol: string;
+  config_fingerprint: string;
+  experiments: number;
+  trials_total: number;
+  best_holdout: number | null;
+  usable: number;
+  adopted: number;
+  first_run: string | null;
+  last_run: string | null;
+}
+
+/** `GET /ladder`: the whole board, each list newest first. */
+export interface LadderResponse {
+  db_enabled: boolean;
+  edges: Edge[];
+  hypotheses: Hypothesis[];
+  experiments: Experiment[];
+  deployments: Deployment[];
+  effort: EffortRow[];
+}
+
+/** `POST /edges/{id}/hypotheses`. The adapter stamps `registered_by`. */
+export interface RegisterHypothesisRequest {
+  idea: string;
+  symbols: string[];
+  dataset: string;
+  holdout_share: number;
+  params: ParamSpec[];
+  baseline: string;
+  metric: string;
+  costs: HypothesisCosts;
+}
+
+export interface CreateDeploymentRequest {
+  experiment_id: number;
+  account_id: string;
+  symbol: string;
+  params_snapshot: Record<string, unknown>;
+  execution?: 'manual' | 'auto';
+}
+
+export type PromoteRequest = { to: 'forward'; forward_sessions_required: number } | { to: 'live' };
+
 // ─── Errors ──────────────────────────────────────────────────────────────
 
 /** Error envelope used by all 4xx/5xx responses. */

@@ -81,12 +81,14 @@ fks-web/
 │   │   │   ├── shell/        # TabBar, StatusBar (the terminal chrome)
 │   │   │   ├── accounts/     # AccountCard (Home, Money)
 │   │   │   ├── data/         # RecorderCard (live status + coverage calendar), HistoryCard, InstanceActions
+│   │   │   ├── edges/        # LadderBoard, DeploymentCard (the ladder), EdgeDetail
 │   │   │   ├── tasks/        # LogViewer (SSE container logs)
 │   │   │   └── ui/           # Panel, Badge, Skeleton, ConfirmButton, Freshness, …
 │   │   ├── accounts.ts       # keys + configs + leases + containers → accounts
 │   │   ├── tasks.ts          # instances + configs + containers → task rows
 │   │   ├── coverage.ts       # recorder files scan → 30-day calendar verdicts
 │   │   ├── history.ts        # history recorder /status → rows per series, the check line
+│   │   ├── ladder.ts         # GET /ladder → board rungs, what each item waits for, the hypothesis form's rules
 │   │   ├── market.ts         # janus candle coverage per coin
 │   │   ├── templateForm.ts   # template JSON-Schema ↔ form state
 │   │   ├── utils/format.ts   # fmtPrice, fmtPct, fmtDollar, fmtTime, fmtRelative, …
@@ -143,7 +145,7 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   - **Phase 2A — RBAC ENFORCED at the `routeRequest` seam** (roles are live, not just modelled). Rank order `viewer < operator < admin` (`roleRank` in `adapter.ts`, fail-closed: any unknown/garbage role → viewer rank 0). The §1.1 rule table is a set of exported prefix constants evaluated top-down in `roleDenies` (backend, 403 `role_denied`) + `routeRequest` (pages redirect home, never 403):
     - **R1 `ADMIN_ONLY_BACKEND_PREFIXES`** (`/api/users`, `/api/invites`) — admin-only for ANY method incl. GET (the list itself leaks). Both surfaces now EXIST (Phase B/C/D below) and ride this rule.
     - **R2 `ADMIN_ONLY_MUTATION_RULES`** (non-GET only) — config/credential surfaces: the `*-keys` routes, `/api/settings/notifications`, and the same spawner stores through the passthrough (`/api/spawner/secrets`, `/api/spawner/notifications`).
-    - **R2b `spawnerWriteNeedsAdmin`** — anything that could START trading real money is admin-only, decided by what would run: a spawn or saved config (`mode:"live"` or any `secrets`), a respawn or an instance start (the STORED config decides), and an instance create (`instanceNeedsAdmin`: live mode, or a template whose `secrets_allowed` is non-empty — the template decides, fetched from the spawner). It reads the body, so it runs in `proxyBackend`'s spawner branch, not in `routeRequest`, and it fails closed (bad JSON, an unknown config or an unreadable template → admin).
+    - **R2b `spawnerWriteNeedsAdmin`** — anything that could START trading real money is admin-only, decided by what would run: a spawn or saved config (`mode:"live"` or any `secrets`), a respawn or an instance start (the STORED config decides), an instance create (`instanceNeedsAdmin`: live mode, or a template whose `secrets_allowed` is non-empty — the template decides, fetched from the spawner), and an edge deployment promotion that isn't plainly `{to:"forward"}` (`promotionNeedsAdmin`: live is an admin's). The same seam stamps a hypothesis registration's `registered_by` with the session user (`withRegisteredBy`), whatever the browser sent. It reads the body, so it runs in `proxyBackend`'s spawner branch, not in `routeRequest`, and it fails closed (bad JSON, an unknown config or an unreadable template → admin).
     - **R3** — every OTHER backend mutation is operator+ (viewer denied): stopping, restarting or deleting a task, acking an alert. Stopping is the SAFE direction, so an operator can stop a bot without admin (a live bot's Stop is still a two-step `ConfirmButton`).
     - **R5 `ADMIN_ONLY_PAGE_PREFIXES`** (`/users`) — non-admins get a redirect to `/`.
     - **Solo-admin default is unchanged:** with zero non-admin users every session is admin, so nothing here alters single-operator behaviour. Pinned by `adapter.test.ts` + `roleGating` tests.
@@ -292,8 +294,20 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
     per dataset × symbol × interval from the bot's `/status`, the last check
     and what failed; research input only, janus stays the bar source) and
     janus candle coverage per coin (`/api/market/coverage`, QuestDB).
-  - **Edges `/edges`** — the edge registry and backtest runs (unchanged for
-    now; the ladder over `edge_experiments` / `edge_deployments` is next).
+  - **Edges `/edges`** — **the ladder** first (EDGE_PROCESS_2026-10-26;
+    `LadderBoard` over the spawner's `GET /ladder`, polled 30 s): hypotheses
+    waiting for a search → searches with their verdict (USABLE / DO NOT PASTE
+    and its reasons) → deployments on paper (backtest or forward, sessions
+    observed of declared) → live, with retired and withdrawn kept below. Each
+    card says what it waits for (`$lib/ladder.ts`) and offers the one next
+    move: withdraw (with a reason), deploy a USABLE search at backtest, start
+    forward (declare the sessions), go live (admin + typed
+    `account/symbol`), retire (with a reason). **Postgres guards every rung**
+    (fks 018/020/024); a refusal comes back as a 409 in its own words and is
+    shown as is. Then the search effort per family (the N for the deflated
+    Sharpe), then the edge registry and backtest runs. **`/edges/new`** is
+    the Register-hypothesis form (§2: idea, data + holdout, parameter ranges,
+    baseline, metric net of costs); registering freezes it.
   - **Tasks `/tasks`** — every instance, saved config and stray container as
     one list (`$lib/tasks.ts`) with logs, stop/start/delete (live bots behind
     `ConfirmButton`). **`/tasks/new`** renders any template's JSON-Schema
