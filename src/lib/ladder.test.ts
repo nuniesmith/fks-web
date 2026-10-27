@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   board,
+  datasetText,
   deploymentNext,
   emptyParam,
   experimentNext,
   fmtScore,
+  lakeFolders,
   paramSpecs,
   paramText,
   symbolList,
+  yesterday,
 } from './ladder';
 import type { Deployment, Experiment, Hypothesis } from '$lib/types/spawner';
 
@@ -178,3 +181,30 @@ describe('paramSpecs', () => {
     expect(paramSpecs([]).errors).toEqual(['A hypothesis tunes at least one parameter']);
   });
 });
+
+describe('the dataset, as the search job reads it', () => {
+  it('lists the lake folders, history recorders first, with their bars and start', () => {
+    const folders = lakeFolders([
+      { template: 'recorder.binance-usdm', data_dir: '/srv/fks-lake/raw/binance/usdm/btc', params: { symbols: ['BTCUSDT'] } },
+      {
+        template: 'history.binance-spot',
+        data_dir: '/srv/fks-lake/raw/binance/spot/spot-history',
+        params: { intervals: ['1h', '1d'], start_year: 2017 },
+      },
+      { template: 'job.edge-search', data_dir: '/srv/fks-lake/jobs/edge-search-h3', params: {} },
+    ]);
+    expect(folders).toEqual([
+      { path: 'raw/binance/spot/spot-history', history: true, intervals: ['1h', '1d'], from: '2017-01-01' },
+      { path: 'raw/binance/usdm/btc', history: false, intervals: [], from: null },
+    ]);
+  });
+
+  it('writes the one form the job parses', () => {
+    expect(datasetText('raw/binance/spot/spot-history', '1d', '2017-08-17', '2026-10-25')).toBe(
+      'raw/binance/spot/spot-history 1d 2017-08-17..2026-10-25',
+    );
+    expect(datasetText('', '1d', '2017-08-17', '2026-10-25')).toBe('');
+    expect(yesterday(Date.parse('2026-10-27T03:00:00Z'))).toBe('2026-10-26');
+  });
+});
+

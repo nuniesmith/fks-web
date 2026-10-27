@@ -18,11 +18,23 @@
   import { spawner } from '$api/spawner';
   import { errorLines } from '$api/errors';
   import Panel from '$components/ui/Panel.svelte';
-  import { BASELINES, emptyParam, paramSpecs, symbolList, type ParamRow } from '$lib/ladder';
+  import {
+    ALL_INTERVALS,
+    BASELINES,
+    METRICS,
+    datasetText,
+    emptyParam,
+    lakeFolders,
+    paramSpecs,
+    symbolList,
+    yesterday,
+    type LakeFolder,
+    type ParamRow,
+  } from '$lib/ladder';
   import type { Edge, Instance } from '$lib/types/spawner';
 
   let edges = $state<Edge[] | null>(null);
-  let lakeFolders = $state<string[]>([]);
+  let folders = $state<LakeFolder[]>([]);
   let loadError = $state('');
 
   // ── The form ──────────────────────────────────────────────────────────────
@@ -32,12 +44,16 @@
   let newEdgeType = $state<'rule' | 'adaptive'>('rule');
   let idea = $state('');
   let symbols = $state('');
-  let dataset = $state('');
+  let folder = $state('');
+  let folderOther = $state('');
+  let interval = $state('1d');
+  let from = $state('');
+  let to = $state(yesterday());
   let holdout = $state('0.25');
   let params = $state<ParamRow[]>([emptyParam()]);
   let baseline = $state<string>(BASELINES[0].value);
   let baselineOther = $state('');
-  let metric = $state('net return after fees');
+  let metric = $state<string>(METRICS[0].value);
   let maker = $state('40');
   let taker = $state('80');
   let slippage = $state('5');
@@ -47,6 +63,7 @@
   let tried = $state(false);
 
   const NEW_EDGE = '__new__';
+  const OTHER = '__other__';
   let creatingEdge = $derived(edgeId === NEW_EDGE);
   let role = $derived(($page.data.user?.role as string | undefined) ?? null);
   let canOperate = $derived(role == null || role === 'admin' || role === 'operator');
@@ -54,6 +71,11 @@
   let parsedParams = $derived(paramSpecs(params));
   let symbolValues = $derived(symbolList(symbols));
   let baselineValue = $derived(baseline === 'other' ? baselineOther.trim() : baseline);
+  let folderValue = $derived(folder === OTHER ? folderOther.trim() : folder);
+  let chosenFolder = $derived(folders.find((f) => f.path === folder) ?? null);
+  let intervals = $derived(chosenFolder?.intervals.length ? chosenFolder.intervals : ALL_INTERVALS);
+  // The form the search job reads: '<lake folder> <interval> <from>..<to>'.
+  let dataset = $derived(datasetText(folderValue, interval, from, to));
 
   let localErrors = $derived.by(() => {
     const out: string[] = [];
@@ -64,12 +86,13 @@
     if (creatingEdge && !newEdgeName.trim()) out.push('A new edge needs a name');
     if (idea.trim().length < 20) out.push('The idea needs at least 20 characters: one sentence, with the mechanism');
     if (symbolValues.length === 0) out.push('Name at least one symbol');
-    if (!dataset.trim()) out.push('Name the data: the lake folder and the date range');
+    if (!/^raw\/[a-z0-9._/-]+$/.test(folderValue)) out.push('Pick the lake folder (raw/…) the data is in');
+    if (!from || !to || to <= from) out.push('The data needs a start date before its end date');
     const h = Number(holdout);
     if (!(h >= 0.1 && h <= 0.5)) out.push('The holdout share is between 0.1 and 0.5');
     out.push(...parsedParams.errors);
     if (!baselineValue) out.push('Name the baseline it must beat');
-    if (!metric.trim()) out.push('Name the metric');
+
     for (const [name, v] of [['maker', maker], ['taker', taker], ['slippage', slippage]] as const) {
       const n = Number(v);
       if (v.trim() === '' || !(n >= 0 && n <= 1000)) out.push(`The ${name} cost is 0 to 1000 bps`);
@@ -83,9 +106,15 @@
       edges = (e.edges ?? []).filter((x) => x.active !== false);
       const wanted = $page.url.searchParams.get('edge');
       edgeId = wanted && edges.some((x) => x.edge_id === wanted) ? wanted : (edges[0]?.edge_id ?? NEW_EDGE);
-      lakeFolders = ((i?.instances ?? []) as Instance[])
-        .map((x) => x.data_dir?.replace(/^.*?\/raw\//, 'raw/') ?? '')
-        .filter(Boolean);
+      folders = lakeFolders((i?.instances ?? []) as Instance[]);
+      const first = folders.find((f) => f.history) ?? folders[0];
+      if (first) {
+        folder = first.path;
+        if (first.intervals.length && !first.intervals.includes(interval)) interval = first.intervals.at(-1)!;
+        if (first.from) from = first.from;
+      } else {
+        folder = OTHER;
+      }
     } catch (err) {
       loadError = errorLines(err).join('; ');
       edges = [];
@@ -120,11 +149,11 @@
       const res = await spawner.registerHypothesis(target, {
         idea: idea.trim(),
         symbols: symbolValues,
-        dataset: dataset.trim(),
+        dataset,
         holdout_share: Number(holdout),
         params: parsedParams.params,
         baseline: baselineValue,
-        metric: metric.trim(),
+        metric,
         costs: { maker_bps: Number(maker), taker_bps: Number(taker), slippage_bps: Number(slippage) },
       });
       await goto(`/edges?hypothesis=${res.hypothesis.id}`);
@@ -196,13 +225,27 @@
             <input type="number" step="0.05" min="0.1" max="0.5" bind:value={holdout} />
           </label>
         </div>
-        <label>
-          Dataset: the lake folder and the date range
-          <input bind:value={dataset} list="lake-folders" placeholder="raw/binance/usdm/btc 2026-10-27..2027-01-27" />
-          <datalist id="lake-folders">
-            {#each lakeFolders as f (f)}<option value={f}></option>{/each}
-          </datalist>
-        </label>
+        <div class="row">
+          <label>
+            Lake folder
+            <select bind:value={folder} aria-label="Lake folder">
+              {#each folders as f (f.path)}<option value={f.path}>{f.path}{f.history ? ' (history)' : ''}</option>{/each}
+              <option value={OTHER}>Another folder…</option>
+            </select>
+          </label>
+          {#if folder === OTHER}
+            <label>Folder <input bind:value={folderOther} placeholder="raw/binance/spot/spot-history" /></label>
+          {/if}
+          <label>
+            Bars
+            <select bind:value={interval} aria-label="Bars">
+              {#each intervals as iv (iv)}<option value={iv}>{iv}</option>{/each}
+            </select>
+          </label>
+          <label>From <input type="date" bind:value={from} /></label>
+          <label>To <input type="date" bind:value={to} /></label>
+        </div>
+        <p class="hint" data-testid="dataset-text">Recorded as: <code>{dataset || '—'}</code></p>
         <p class="hint">
           The holdout is the last part of the window: nothing touches it until it is scored once. EDGE_PROCESS
           proposes the last 25% (†, not confirmed yet). Use a dataset whose days are complete on the Data page.
@@ -248,14 +291,22 @@
           {#if baseline === 'other'}
             <label>The baseline <input bind:value={baselineOther} /></label>
           {/if}
-          <label>Metric <input bind:value={metric} /></label>
+          <label>
+            Metric, net of costs
+            <select bind:value={metric} aria-label="Metric">
+              {#each METRICS as m (m.value)}<option value={m.value}>{m.label}</option>{/each}
+            </select>
+          </label>
         </div>
         <div class="row">
           <label>Maker bps <input type="number" min="0" bind:value={maker} /></label>
           <label>Taker bps <input type="number" min="0" bind:value={taker} /></label>
           <label>Slippage bps <input type="number" min="0" bind:value={slippage} /></label>
         </div>
-        <p class="hint">Use whichever baseline is harder. Costs default to Kraken tier 1, plus a stated slippage.</p>
+        <p class="hint">
+          Use whichever baseline is harder. The search job computes these two baselines and these three metrics;
+          costs default to Kraken tier 1, plus a stated slippage.
+        </p>
       </fieldset>
 
       <p class="frozen" role="note">

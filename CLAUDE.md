@@ -307,7 +307,14 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
     shown as is. Then the search effort per family (the N for the deflated
     Sharpe), then the edge registry and backtest runs. **`/edges/new`** is
     the Register-hypothesis form (§2: idea, data + holdout, parameter ranges,
-    baseline, metric net of costs); registering freezes it.
+    baseline, metric net of costs); registering freezes it. Its dataset is
+    built from a lake folder (the instances' `raw/…` folders, history
+    recorders first), bars and dates into the one string the search job
+    parses (`<folder> <interval> <from>..<to>`), and the metric and baseline
+    are the ones the job computes. **Search it** on a hypothesis opens
+    `/tasks/new?template=job.edge-search&hypothesis_id=N`: `/tasks/new`
+    prefills any field the query names (`prefill`), and a search is named
+    `edge-search-hN`.
   - **Tasks `/tasks`** — every instance, saved config and stray container as
     one list (`$lib/tasks.ts`) with logs, stop/start/delete (live bots behind
     `ConfirmButton`). **`/tasks/new`** renders any template's JSON-Schema

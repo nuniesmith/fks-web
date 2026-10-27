@@ -8,6 +8,34 @@ import type { Page } from "@playwright/test";
  * effort. Plus the registry and the accounts the Deploy form lists.
  * Pathname predicates, like fixtures/home.ts. Install after installHome.
  */
+/** fks templates/job.edge-search.json, as the spawner lists it. */
+export const JOB_TEMPLATE = {
+  id: "job.edge-search",
+  version: 1,
+  kind: "job",
+  display_name: "Search and validate a hypothesis",
+  description: "EDGE_PROCESS steps 3 and 4 for one registered hypothesis.",
+  image: "ghcr.io/nuniesmith/fks-bot-edge-search:latest",
+  modes: ["backtest"],
+  secrets_allowed: [],
+  resources: { cpu: 2, memory_mb: 1024 },
+  params: {
+    type: "object",
+    required: ["hypothesis_id", "family"],
+    properties: {
+      hypothesis_id: { "x-order": 1, type: "integer", title: "Hypothesis", minimum: 1 },
+      family: {
+        "x-order": 2,
+        type: "string",
+        title: "Strategy family",
+        enum: ["trend-band"],
+        default: "trend-band",
+        "x-labels": { "trend-band": "Trend band" },
+      },
+    },
+  },
+};
+
 export const LADDER_EDGE = {
   edge_id: "liq-fade",
   display_name: "Liquidation fade",

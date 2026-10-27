@@ -1,6 +1,6 @@
 import { test, expect, type Route } from "@playwright/test";
 import { installHome } from "./fixtures/home";
-import { installLadder, LADDER } from "./fixtures/ladder";
+import { installLadder, JOB_TEMPLATE, LADDER } from "./fixtures/ladder";
 
 /**
  * The edge ladder (EDGE_PROCESS_2026-10-26): the board on /edges, the
@@ -117,6 +117,7 @@ test.describe("Edges: register a hypothesis", () => {
     await page.getByRole("button", { name: "Register, frozen from now" }).click();
     const fix = page.getByRole("list", { name: "What to fix" });
     await expect(fix).toContainText("The idea needs at least 20 characters");
+    await expect(fix).toContainText("a start date before its end date");
     await expect(fix).toContainText("Name at least one symbol");
     await expect(fix).toContainText("a name is lower-case letters");
     expect(posted).toBe(false);
@@ -139,7 +140,13 @@ test.describe("Edges: register a hypothesis", () => {
       .getByLabel("One sentence, with the mechanism")
       .fill("Funding spikes on SOLUSDT mean-revert within a day; fade the extreme.");
     await page.getByLabel("Symbols").fill("solusdt, ethusdt");
-    await page.getByLabel(/Dataset/).fill("raw/binance/usdm/sol 2026-10-27..2027-01-27");
+    // The lake folders come from the instances (here the btc recorder's).
+    await expect(page.getByRole("combobox", { name: "Lake folder", exact: true })).toHaveValue("raw/binance/usdm/btc");
+    await page.getByRole("combobox", { name: "Bars", exact: true }).selectOption("1h");
+    await page.getByLabel("From").fill("2026-01-01");
+    await page.getByLabel("To", { exact: true }).fill("2026-10-01");
+    await expect(page.getByTestId("dataset-text")).toContainText("raw/binance/usdm/btc 1h 2026-01-01..2026-10-01");
+    await page.getByRole("combobox", { name: "Metric", exact: true }).selectOption("sharpe after fees");
     await page.getByLabel("Parameter 1 name").fill("z_entry");
     await page.getByLabel("Parameter 1 min").fill("1.5");
     await page.getByLabel("Parameter 1 max").fill("4");
@@ -155,14 +162,14 @@ test.describe("Edges: register a hypothesis", () => {
     expect(body).toEqual({
       idea: "Funding spikes on SOLUSDT mean-revert within a day; fade the extreme.",
       symbols: ["SOLUSDT", "ETHUSDT"],
-      dataset: "raw/binance/usdm/sol 2026-10-27..2027-01-27",
+      dataset: "raw/binance/usdm/btc 1h 2026-01-01..2026-10-01",
       holdout_share: 0.25,
       params: [
         { name: "z_entry", min: 1.5, max: 4, step: 0.5 },
         { name: "side", choices: ["long", "short"] },
       ],
       baseline: "trend-200d-5pct",
-      metric: "net return after fees",
+      metric: "sharpe after fees",
       costs: { maker_bps: 40, taker_bps: 80, slippage_bps: 5 },
     });
   });
@@ -181,13 +188,34 @@ test.describe("Edges: register a hypothesis", () => {
       .getByLabel("One sentence, with the mechanism")
       .fill("Funding spikes on SOLUSDT mean-revert within a day; fade the extreme.");
     await page.getByLabel("Symbols").fill("SOLUSDT");
-    await page.getByLabel(/Dataset/).fill("raw/binance/usdm/sol");
+    await page.getByLabel("From").fill("2026-01-01");
     await page.getByLabel("Parameter 1 name").fill("z_entry");
     await page.getByLabel("Parameter 1 min").fill("1");
     await page.getByLabel("Parameter 1 max").fill("4");
     await page.getByRole("button", { name: "Register, frozen from now" }).click();
     await expect(page.getByRole("list", { name: "The spawner refused it" })).toContainText("keep them few");
     await expect(page).toHaveURL(/\/edges\/new/);
+  });
+});
+
+test.describe("Edges: searching a hypothesis", () => {
+  test("Search it opens the search job's form with the hypothesis filled in", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    await page.route(
+      (url) => url.pathname === "/api/spawner/templates",
+      (route: Route) => route.fulfill({ json: { templates: [JOB_TEMPLATE], errors: [] } }),
+    );
+    await page.goto("/edges");
+    const card = page.locator('[data-testid="hypothesis-card"][data-hypothesis="3"]');
+    await expect(card.getByTestId("search-it")).toHaveAttribute(
+      "href",
+      "/tasks/new?kind=job&template=job.edge-search&hypothesis_id=3",
+    );
+    await page.goto("/tasks/new?kind=job&template=job.edge-search&hypothesis_id=3");
+    await expect(page.locator(".panel-title", { hasText: "Search and validate a hypothesis" })).toBeVisible();
+    await expect(page.getByLabel("Hypothesis")).toHaveValue("3");
+    await expect(page.getByLabel("Name")).toHaveValue("edge-search-h3");
   });
 });
 

@@ -126,8 +126,16 @@
           beat {h.baseline} · {h.metric} · holdout {Math.round(h.holdout_share * 100)}% · {h.dataset}
         </p>
         <p class="meta">registered {ago(h.registered_at)} UTC{h.registered_by ? ` by ${h.registered_by}` : ''}</p>
-        <p class="next">Next: a search job tests it on the training part (EDGE_PROCESS step 3; the job is not built yet).</p>
+        <p class="next">Next: search it. Every grid point is a trial and counts toward N; the holdout is scored once.</p>
         <div class="actions">
+          <a
+            class="btn primary"
+            href={`/tasks/new?kind=job&template=job.edge-search&hypothesis_id=${h.id}`}
+            aria-disabled={!canOperate}
+            data-testid="search-it"
+          >
+            Search it
+          </a>
           <button
             class="btn"
             disabled={!canOperate}
@@ -478,5 +486,14 @@
     .form select {
       min-height: 44px;
     }
+  }
+  a.btn {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+  }
+  a.btn[aria-disabled='true'] {
+    opacity: 0.5;
+    pointer-events: none;
   }
 </style>

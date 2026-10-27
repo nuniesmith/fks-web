@@ -160,8 +160,59 @@ export function symbolList(raw: string): string[] {
   return out;
 }
 
-/** The baselines EDGE_PROCESS §2.4 names; anything else is typed. */
+/** The baselines EDGE_PROCESS §2.4 names, the two the search job computes. */
 export const BASELINES = [
   { value: 'trend-200d-5pct', label: 'The live trend rule (200-day ±5%)' },
   { value: 'buy-and-hold', label: 'Buy and hold' },
 ] as const;
+
+/** The metrics the search job scores (fks-spawner bots/edge-search), all net of costs. */
+export const METRICS = [
+  { value: 'net return after fees', label: 'Net return (CAGR)' },
+  { value: 'sharpe after fees', label: 'Sharpe' },
+  { value: 'return over max drawdown after fees', label: 'Return over max drawdown (Calmar)' },
+] as const;
+
+export const ALL_INTERVALS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d'];
+
+/** A folder in the lake an instance writes, as a hypothesis names it. */
+export interface LakeFolder {
+  path: string;
+  /** A history recorder's: the search job reads its klines. */
+  history: boolean;
+  /** Its candle intervals, from the instance's form. */
+  intervals: string[];
+  /** Its first day, from the form's start year. */
+  from: string | null;
+}
+
+/** The lake folders the instances write, history recorders first. */
+export function lakeFolders(
+  instances: { template: string | null; data_dir: string | null; params: Record<string, unknown> | null }[],
+): LakeFolder[] {
+  const out: LakeFolder[] = [];
+  for (const i of instances) {
+    const m = /\/raw\/(.+)$/.exec(i.data_dir ?? '');
+    if (!m) continue;
+    const history = i.template?.startsWith('history.') ?? false;
+    const iv = Array.isArray(i.params?.intervals) ? (i.params!.intervals as string[]) : [];
+    const year = Number(i.params?.start_year);
+    out.push({
+      path: `raw/${m[1]}`,
+      history,
+      intervals: history ? (iv.length ? iv : ['1d']) : [],
+      from: history && year >= 2017 ? `${year}-01-01` : null,
+    });
+  }
+  return out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
+}
+
+/** The dataset as the search job reads it: `<lake folder> <interval> <from>..<to>`. */
+export function datasetText(folder: string, interval: string, from: string, to: string): string {
+  return folder && interval && from && to ? `${folder} ${interval} ${from}..${to}` : '';
+}
+
+/** Yesterday in UTC, `YYYY-MM-DD`: the archive's newest complete day. */
+export function yesterday(now = Date.now()): string {
+  return new Date(now - 86_400_000).toISOString().slice(0, 10);
+}
