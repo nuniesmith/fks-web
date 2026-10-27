@@ -80,12 +80,13 @@ fks-web/
 │   │   ├── components/
 │   │   │   ├── shell/        # TabBar, StatusBar (the terminal chrome)
 │   │   │   ├── accounts/     # AccountCard (Home, Money)
-│   │   │   ├── data/         # RecorderCard (live status + coverage calendar)
+│   │   │   ├── data/         # RecorderCard (live status + coverage calendar), HistoryCard, InstanceActions
 │   │   │   ├── tasks/        # LogViewer (SSE container logs)
 │   │   │   └── ui/           # Panel, Badge, Skeleton, ConfirmButton, Freshness, …
 │   │   ├── accounts.ts       # keys + configs + leases + containers → accounts
 │   │   ├── tasks.ts          # instances + configs + containers → task rows
 │   │   ├── coverage.ts       # recorder files scan → 30-day calendar verdicts
+│   │   ├── history.ts        # history recorder /status → rows per series, the check line
 │   │   ├── market.ts         # janus candle coverage per coin
 │   │   ├── templateForm.ts   # template JSON-Schema ↔ form state
 │   │   ├── utils/format.ts   # fmtPrice, fmtPct, fmtDollar, fmtTime, fmtRelative, …
@@ -286,8 +287,11 @@ The dashboard is fully repointed to janus / Prometheus / QuestDB via the
     the alert inbox filtered to money/critical.
   - **Data `/data`** — recorders (`RecorderCard`: live per-stream rates from
     the recorder's `/status`, connections, a 30-day coverage calendar from the
-    files scan, stop/start/delete-keeps-data) and janus candle coverage per
-    coin (`/api/market/coverage`, QuestDB).
+    files scan, stop/start/delete-keeps-data), history recorders
+    (`HistoryCard`, for `history.*` templates: Binance's public archive, files
+    per dataset × symbol × interval from the bot's `/status`, the last check
+    and what failed; research input only, janus stays the bar source) and
+    janus candle coverage per coin (`/api/market/coverage`, QuestDB).
   - **Edges `/edges`** — the edge registry and backtest runs (unchanged for
     now; the ladder over `edge_experiments` / `edge_deployments` is next).
   - **Tasks `/tasks`** — every instance, saved config and stray container as

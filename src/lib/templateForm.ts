@@ -154,7 +154,12 @@ export function nameError(name: string): string | null {
   return null;
 }
 
-/** A name from the form's first symbol(s): BTCUSDT → btc, [ETH, SOL] → eth-sol. */
+/**
+ * A name from the form's first symbol(s): BTCUSDT → btc, [ETH, SOL] → eth-sol.
+ * A recorder from another template family gets the family as a suffix
+ * (history.binance-usdm → btc-history), so it doesn't collide with the live
+ * recorder of the same symbols; bots and jobs get their kind.
+ */
 export function suggestName(t: Template, values: Record<string, FieldValue>): string {
   const listKey = Object.entries(t.params.properties).find(([, f]) => fieldKind(f) === 'list' && isSymbolList(f))?.[0];
   const symbols = listKey ? parseList(String(values[listKey] ?? ''), true) : [];
@@ -163,7 +168,8 @@ export function suggestName(t: Template, values: Record<string, FieldValue>): st
     .map((s) => s.toLowerCase().replace(/(usdt|usdc|usd|busd)$/, ''))
     .filter(Boolean)
     .join('-');
-  const suffix = t.kind === 'recorder' ? '' : `-${t.kind}`;
+  const family = t.id.split('.')[0];
+  const suffix = t.kind !== 'recorder' ? `-${t.kind}` : family === 'recorder' ? '' : `-${family}`;
   return (base || t.id.split('.').pop() || 'task').replace(/[^a-z0-9-]/g, '-').slice(0, 40 - suffix.length) + suffix;
 }
 

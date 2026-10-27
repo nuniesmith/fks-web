@@ -11,17 +11,14 @@
   can download later for liquidations or 1 s mark price, which is why the
   calendar is the centre of this card.
 
-  Actions: stop, start, delete. Deleting removes the container and the saved
-  config; the data folder is always kept.
+  Actions: stop, start, delete (InstanceActions). Deleting removes the
+  container and the saved config; the data folder is always kept.
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { page } from '$app/stores';
   import { createPoll } from '$stores/poll';
-  import { spawner } from '$api/spawner';
-  import { ApiError } from '$api/client';
   import Badge from '$components/ui/Badge.svelte';
-  import ConfirmButton from '$components/ui/ConfirmButton.svelte';
+  import InstanceActions from '$components/data/InstanceActions.svelte';
   import { calendar, completeShare, fmtBytes, fmtDuration, utcDay, type DayCell } from '$lib/coverage';
   import type {
     BotStatusResponse,
@@ -75,7 +72,7 @@
   let doc = $derived(status && $status?.ok ? ($status.status ?? null) : null);
   $effect(() => {
     if (!doc) return;
-    const counts = Object.fromEntries(Object.entries(doc.streams).map(([k, v]) => [k, v.count]));
+    const counts = Object.fromEntries(Object.entries(doc.streams ?? {}).map(([k, v]) => [k, v.count]));
     const at = doc.updated_at_ms;
     if (prev && at > prev.at) {
       const dt = (at - prev.at) / 1000;
@@ -88,12 +85,12 @@
 
   let streams = $derived(
     doc
-      ? Object.entries(doc.streams)
+      ? Object.entries(doc.streams ?? {})
           .map(([key, s]) => ({ key, ...s }))
           .sort((a, b) => a.stream.localeCompare(b.stream))
       : [],
   );
-  let groups = $derived(doc ? Object.entries(doc.groups) : []);
+  let groups = $derived(doc ? Object.entries(doc.groups ?? {}) : []);
 
   // ── Coverage ──────────────────────────────────────────────────────────────
   let coverage = $derived($files?.ok ? $files.coverage : null);
@@ -114,28 +111,6 @@
     const gaps = c.gapCount ? ` · ${c.gapCount} gaps, ${fmtDuration(c.gapSeconds)}` : '';
     const why = c.reasons.length ? ` — ${c.reasons.join('; ')}` : '';
     return head + size + gaps + why;
-  }
-
-  // ── Actions ───────────────────────────────────────────────────────────────
-  let role = $derived(($page.data.user?.role as string | undefined) ?? null);
-  let canOperate = $derived(role == null || role === 'admin' || role === 'operator');
-  let busy = $state<'stop' | 'start' | 'delete' | null>(null);
-  let actionError = $state('');
-
-  async function act(kind: 'stop' | 'start' | 'delete') {
-    busy = kind;
-    actionError = '';
-    try {
-      if (kind === 'stop') await spawner.stopInstance(instance.name);
-      else if (kind === 'start') await spawner.startInstance(instance.name);
-      else await spawner.deleteInstance(instance.name);
-      onchanged?.();
-    } catch (e) {
-      actionError =
-        e instanceof ApiError ? `${e.status}: ${typeof e.body === 'string' ? e.body : e.statusText}` : String(e);
-    } finally {
-      busy = null;
-    }
   }
 
   const symbols = fixed.symbols;
@@ -215,28 +190,7 @@
     {/if}
   </section>
 
-  <footer class="rec-actions">
-    {#if running}
-      <button class="btn" disabled={!canOperate || busy !== null} onclick={() => act('stop')}>
-        {busy === 'stop' ? 'Stopping…' : 'Stop'}
-      </button>
-    {:else}
-      <button class="btn" disabled={!canOperate || busy !== null} onclick={() => act('start')}>
-        {busy === 'start' ? 'Starting…' : 'Start'}
-      </button>
-    {/if}
-    <ConfirmButton
-      label="Delete"
-      confirmLabel="Delete? Data is kept"
-      busyLabel="Deleting…"
-      busy={busy === 'delete'}
-      disabled={!canOperate || busy !== null}
-      onconfirm={() => act('delete')}
-      ariaLabel="Delete recorder {instance.name} (its data folder is kept)"
-    />
-    <span class="dir" title="Data folder">{instance.data_dir ?? ''}</span>
-  </footer>
-  {#if actionError}<p class="rec-line warn" role="alert">{actionError}</p>{/if}
+  <InstanceActions {instance} {running} noun="recorder" {onchanged} />
 </article>
 
 <style>
@@ -352,41 +306,5 @@
     width: 10px;
     height: 10px;
     margin-right: 2px;
-  }
-  .rec-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-  }
-  .btn {
-    min-height: 28px;
-    padding: 3px 12px;
-    background: transparent;
-    border: 1px solid var(--b2);
-    border-radius: var(--r);
-    color: var(--t1);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--cyan);
-    color: var(--cyan);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .dir {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--t3);
-    overflow-wrap: anywhere;
-  }
-  @media (pointer: coarse) {
-    .btn {
-      min-height: 44px;
-    }
   }
 </style>

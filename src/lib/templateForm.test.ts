@@ -87,6 +87,10 @@ describe('names and estimates', () => {
     expect(suggestName(recorder, v)).toBe('btc');
     v.symbols = 'ETHUSDT SOLUSDT XRPUSDT';
     expect(suggestName(recorder, v)).toBe('eth-sol');
+    // Another recorder family names itself, so it can't collide with `btc`.
+    const history = { ...recorder, id: 'history.binance-usdm' };
+    v.symbols = 'BTCUSDT';
+    expect(suggestName(history, v)).toBe('btc-history');
     expect(nameError('btc')).toBeNull();
     expect(nameError('B')).not.toBeNull();
     expect(nameError('-btc')).not.toBeNull();
