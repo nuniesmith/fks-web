@@ -25,6 +25,10 @@ export interface NotificationChannel {
   kind: string;
   events: string[];
   updated_at?: string;
+  /** false: a bot's own channel (its webhook set into the bot at spawn,
+   *  fks-spawner `webhooks`); the spawner sends it no platform events.
+   *  Absent (an older spawner) = true. */
+  platform_events?: boolean;
 }
 
 export interface NotificationEventKind {

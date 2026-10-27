@@ -988,7 +988,10 @@ async function notificationsPost(event: RequestEvent): Promise<Response> {
     );
   }
   const events = scope.events;
-  const payload = { name, kind, url, events };
+  // Off: a bot's own channel (its webhook set at spawn); the spawner sends it
+  // no platform events. Anything but an explicit false keeps them on.
+  const platform_events = body?.platform_events !== false;
+  const payload = { name, kind, url, events, platform_events };
   try {
     const headers = withInternalToken(SPAWNER_URL, upstreamHeaders(event.request.headers));
     headers.set("content-type", "application/json");

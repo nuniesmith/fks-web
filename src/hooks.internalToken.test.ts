@@ -33,6 +33,7 @@ interface Captured {
   url: string;
   headers: Headers;
   method: string;
+  body?: string;
 }
 let calls: Captured[] = [];
 
@@ -43,7 +44,12 @@ function installFetch() {
     vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const headers = new Headers(init?.headers ?? {});
-      calls.push({ url, headers, method: (init?.method ?? "GET").toUpperCase() });
+      calls.push({
+        url,
+        headers,
+        method: (init?.method ?? "GET").toUpperCase(),
+        body: typeof init?.body === "string" ? init.body : undefined,
+      });
       // Shapes the helpers tolerate: status/notifications list endpoints expect
       // an object with the relevant array; POST/DELETE just check r.ok + parse.
       return new Response(JSON.stringify({ exchanges: [], channels: [], ok: true }), {
@@ -120,3 +126,19 @@ describe("H5: the seam strips a client-supplied internal token", () => {
     expect(out.get("content-type")).toBe("application/json");
   });
 });
+
+describe("a channel can be a bot's own (fks-spawner #71)", () => {
+  const save = async (body: Record<string, unknown>) => {
+    installFetch();
+    await proxyBackend(makeEvent("/api/settings/notifications", "POST", body));
+    const call = calls.find((k) => k.url.startsWith(SPAWNER) && k.method === "POST");
+    return JSON.parse(call!.body!);
+  };
+
+  it("forwards platform_events: off only when explicitly false", async () => {
+    expect((await save({ name: "crypto", url: "https://example.test/hook", platform_events: false })).platform_events).toBe(false);
+    expect((await save({ name: "ops", url: "https://example.test/hook" })).platform_events).toBe(true);
+    expect((await save({ name: "ops", url: "https://example.test/hook", platform_events: "no" })).platform_events).toBe(true);
+  });
+});
+

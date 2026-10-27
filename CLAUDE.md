@@ -168,7 +168,14 @@ Use `lightweight-charts`. Pattern: `routes/charts/+page.svelte`. History bars co
   them server-side, and a raw spawn carrying the placeholder is refused.
 - **Notification channels are submit-only too.** The `/settings`
   "Notifications" section manages Discord webhooks: each channel POSTs
-  `{name, kind, url, events}` to `/api/settings/notifications`; the adapter
+  `{name, kind, url, events, platform_events}` to `/api/settings/notifications`.
+  **`platform_events: false` makes it a bot's own channel** (fks-spawner
+  #71): FKS sends it no platform events, and a bot whose config says
+  `webhooks: {ENV_VAR: channel}` gets its URL in env at every spawn (the
+  crypto bot's #crypto reports, fks #323). The list badges such a channel
+  "a bot's own"; a spawn or config carrying `webhooks` is admin-only (R2b,
+  like `secrets`). Rotating a bot's webhook = save the channel again, then
+  respawn the bot; the adapter
   forwards to the spawner's `POST /notifications`, which stores it in Postgres
   (`fks_db.notification_channels`) with the **webhook URL encrypted at rest**
   (same cipher as exchange keys — a webhook URL is a bearer capability). The

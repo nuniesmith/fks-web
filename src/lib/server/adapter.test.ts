@@ -400,6 +400,16 @@ describe("R2b — spawnSpecNeedsAdmin", () => {
   });
 });
 
+describe("R2b — a spec that takes webhooks from Settings needs an admin", () => {
+  it("decides by the webhooks map", () => {
+    expect(spawnSpecNeedsAdmin({ mode: "paper", webhooks: {} })).toBe(false);
+    expect(spawnSpecNeedsAdmin({ mode: "paper", webhooks: { CRYPTO_DISCORD_WEBHOOK_URL: "crypto" } })).toBe(true);
+    // fail closed on a malformed one
+    expect(spawnSpecNeedsAdmin({ mode: "paper", webhooks: ["crypto"] })).toBe(true);
+    expect(spawnSpecNeedsAdmin({ mode: "paper", webhooks: "crypto" })).toBe(true);
+  });
+});
+
 describe("R2b — spawnerWriteNeedsAdmin", () => {
   const body = (spec: unknown) => () => Promise.resolve(JSON.stringify(spec));
   const noBody = () => Promise.reject(new Error("the body must not be read"));

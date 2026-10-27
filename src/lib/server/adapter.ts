@@ -370,12 +370,18 @@ export function roleDenies(
  * or it asks for stored exchange keys (`secrets`): the keys are what let an
  * image trade, and an image can trade live whatever its mode label says (the
  * disabled `crypto-regime` bot did). Anything that isn't a spec object needs
- * admin too, so a malformed body or a missing config fails closed.
+ * admin too, so a malformed body or a missing config fails closed. So does a
+ * spec that takes webhooks from Settings (`webhooks`, fks-spawner #71): their
+ * URLs are bearer capabilities set into the container, like the keys.
  */
 export function spawnSpecNeedsAdmin(spec: unknown): boolean {
   if (spec === null || typeof spec !== "object" || Array.isArray(spec)) return true;
-  const { mode, secrets } = spec as { mode?: unknown; secrets?: unknown };
+  const { mode, secrets, webhooks } = spec as { mode?: unknown; secrets?: unknown; webhooks?: unknown };
   if (typeof mode === "string" && mode.trim().toLowerCase() === "live") return true;
+  if (webhooks !== undefined && webhooks !== null) {
+    if (typeof webhooks !== "object" || Array.isArray(webhooks)) return true;
+    if (Object.keys(webhooks).length > 0) return true;
+  }
   if (secrets === undefined || secrets === null) return false;
   return !Array.isArray(secrets) || secrets.length > 0;
 }
