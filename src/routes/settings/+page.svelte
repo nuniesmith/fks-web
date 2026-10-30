@@ -329,6 +329,9 @@
   let channelName = $state('');
   let channelUrl = $state('');
   let channelCatchAll = $state(true); // true = subscribe to all events
+  // Off: a bot's own channel. FKS sends it nothing; a bot config names it in
+  // `webhooks` to get its URL at spawn (fks-spawner #71).
+  let channelPlatformEvents = $state(true);
   let channelEvents = $state<Set<string>>(new Set());
   let channelSaving = $state(false);
   // (Arming state lives in each row's ConfirmButton — see credDeleting above.)
@@ -399,7 +402,7 @@
     // always-delivered kinds (bot_crashed): they bypass the filter anyway, and
     // recording them keeps the stored scope honest — a channel scoped to only
     // "Bot crashed" stores exactly ["bot_crashed"].
-    const events = channelCatchAll
+    const events = channelCatchAll || !channelPlatformEvents
       ? []
       : Array.from(new Set([...channelEvents, ...ALWAYS_DELIVERED_EVENT_IDS]));
     channelSaving = true;
@@ -410,6 +413,7 @@
         kind: 'discord_webhook',
         url,
         events,
+        platform_events: channelPlatformEvents,
       });
       channelFeedback = `${name} saved ✓`;
       channelFeedbackVariant = 'green';
@@ -418,6 +422,7 @@
       channelUrl = '';
       channelCatchAll = true;
       channelEvents = new Set();
+      channelPlatformEvents = true;
       loadNotifications();
       clearFeedbackAfter(v => channelFeedback = v);
     } catch (err: any) {
@@ -434,6 +439,7 @@
   function startChannelUpdate(ch: NotificationChannel) {
     channelName = ch.name;
     channelUrl = '';
+    channelPlatformEvents = ch.platform_events !== false;
     channelCatchAll = ch.events.length === 0;
     // Seed only the operator-selectable kinds: drop always-delivered ids (their
     // checkbox is disabled and re-added on save) and any legacy/unknown ids
@@ -750,7 +756,9 @@
             <span class="cred-name">{ch.name}</span>
             <Badge variant="cyan">{ch.kind === 'discord_webhook' ? 'discord' : ch.kind}</Badge>
             <span class="channel-events mono">
-              {#if ch.events.length === 0}
+              {#if ch.platform_events === false}
+                <Badge variant="purple">a bot's own</Badge> no platform events
+              {:else if ch.events.length === 0}
                 all events
               {:else}
                 {#each ch.events as ev (ev)}
@@ -821,6 +829,19 @@
         </div>
         <div class="form-group">
           <label class="check-row">
+            <input type="checkbox" bind:checked={channelPlatformEvents} data-testid="channel-platform-events" />
+            <span>Send FKS platform events here (bot lifecycle, crashes, risk halts)</span>
+          </label>
+          {#if !channelPlatformEvents}
+            <span class="form-hint">
+              Off: a bot's own channel. FKS sends it nothing; a bot whose config names it
+              (<code>webhooks: {'{'}ENV_VAR: {channelName.trim() || 'name'}{'}'}</code>) gets its URL at spawn.
+              To rotate the webhook, save it here again, then respawn the bot.
+            </span>
+          {/if}
+        </div>
+        <div class="form-group" class:hidden={!channelPlatformEvents}>
+          <label class="check-row">
             <input type="checkbox" bind:checked={channelCatchAll} />
             <span>Send all events (catch-all)</span>
           </label>
@@ -856,7 +877,7 @@
               !canAdmin ||
               !channelName.trim() ||
               !channelUrl.trim() ||
-              (!channelCatchAll && channelEvents.size === 0)}
+              (channelPlatformEvents && !channelCatchAll && channelEvents.size === 0)}
           >
             {channelSaving ? 'Saving…' : 'Save Channel'}
           </button>
@@ -1559,4 +1580,7 @@
     font-family: var(--font-mono, monospace);
   }
 
+  .hidden {
+    display: none;
+  }
 </style>
