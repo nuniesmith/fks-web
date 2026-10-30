@@ -78,6 +78,40 @@ export function initialValues(t: Template): Record<string, FieldValue> {
   return out;
 }
 
+/**
+ * Form values from the URL: a query parameter named like a field sets it
+ * (`/tasks/new?template=job.edge-search&hypothesis_id=3`), so a page can
+ * link straight to a filled form. Values the field can't hold are ignored;
+ * the spawner still checks everything.
+ */
+export function prefill(
+  t: Template,
+  values: Record<string, FieldValue>,
+  query: URLSearchParams,
+): Record<string, FieldValue> {
+  const out = { ...values };
+  for (const [key, f] of Object.entries(t.params.properties)) {
+    const raw = query.get(key);
+    if (raw == null) continue;
+    switch (fieldKind(f)) {
+      case 'multi-enum': {
+        const allowed = (f.items?.enum ?? []).map(String);
+        out[key] = raw.split(',').map((x) => x.trim()).filter((x) => allowed.includes(x));
+        break;
+      }
+      case 'enum':
+        if ((f.enum ?? []).map(String).includes(raw)) out[key] = raw;
+        break;
+      case 'boolean':
+        out[key] = raw === 'true' || raw === '1';
+        break;
+      default:
+        out[key] = raw;
+    }
+  }
+  return out;
+}
+
 export function parseList(raw: string, upper = false): string[] {
   const items = raw
     .split(/[\s,]+/)
@@ -169,6 +203,11 @@ export function suggestName(t: Template, values: Record<string, FieldValue>): st
     .filter(Boolean)
     .join('-');
   const family = t.id.split('.')[0];
+  // A search is named after the hypothesis it tests: edge-search-h3.
+  const hypothesis = String(values.hypothesis_id ?? '').trim();
+  if (t.kind === 'job' && /^\d+$/.test(hypothesis)) {
+    return `${t.id.split('.').pop()}-h${hypothesis}`.replace(/[^a-z0-9-]/g, '-').slice(0, 40);
+  }
   const suffix = t.kind !== 'recorder' ? `-${t.kind}` : family === 'recorder' ? '' : `-${family}`;
   return (base || t.id.split('.').pop() || 'task').replace(/[^a-z0-9-]/g, '-').slice(0, 40 - suffix.length) + suffix;
 }

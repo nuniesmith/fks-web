@@ -106,6 +106,7 @@ export async function installHome(page: Page, opts: { tall?: boolean } = {}): Pr
     "/api/spawner/containers": { containers, total: containers.length, running: containers.length },
     "/api/spawner/instances": { db_enabled: true, instances },
     "/api/spawner/edges": { db_enabled: true, total: 0, edges: [] },
+    "/api/spawner/ladder": { db_enabled: true, edges: [], hypotheses: [], experiments: [], deployments: [], effort: [] },
     "/api/spawner/bots/crypto-regime/status": {
       ok: true,
       bot_id: "crypto-regime",

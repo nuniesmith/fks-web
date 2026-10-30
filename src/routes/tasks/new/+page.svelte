@@ -24,6 +24,7 @@
     estimateMbPerDay,
     fieldKind,
     initialValues,
+    prefill,
     nameError,
     orderedFields,
     suggestName,
@@ -79,7 +80,7 @@
 
   function pick(t: Template) {
     selected = t;
-    values = initialValues(t);
+    values = prefill(t, initialValues(t), $page.url.searchParams);
     mode = t.modes[0] ?? '';
     nameTouched = false;
     plan = null;

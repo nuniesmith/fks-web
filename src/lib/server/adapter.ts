@@ -363,7 +363,8 @@ export function roleDenies(
 
 /**
  * R2b — starting something that can trade real money needs an admin, decided
- * by what would run rather than by the path. The spawner's `/spawn` and
+ * by what would run rather than by the path. Promoting an edge deployment to
+ * live is the same kind of step (`promotionNeedsAdmin`). The spawner's `/spawn` and
  * `/configs` take a spawn spec, and `/configs/{name}/respawn` runs a stored
  * one; through the `/api/spawner/*` passthrough all three are otherwise R3
  * (EDGE_FACTORY_PLAN finding 2). A spec needs admin when its `mode` is `live`
@@ -400,6 +401,43 @@ const SPAWN_SPEC_PATHS: readonly string[] = ["/api/spawner/spawn", "/api/spawner
 const RESPAWN_PATH = /^\/api\/spawner\/configs\/([^/]+)\/respawn$/i;
 const INSTANCE_CREATE_PATH = "/api/spawner/instances";
 const INSTANCE_START_PATH = /^\/api\/spawner\/instances\/([^/]+)\/start$/i;
+const PROMOTE_PATH = /^\/api\/spawner\/deployments\/([^/]+)\/promote$/i;
+const HYPOTHESIS_PATH = /^\/api\/spawner\/edges\/([^/]+)\/hypotheses$/i;
+
+/**
+ * Whether promoting an edge deployment needs an admin (EDGE_PROCESS §6: live
+ * needs "an admin"). Only a plain promotion to `forward` (paper) is an
+ * operator's; `live`, or a body that isn't plainly forward, needs an admin.
+ * The database decides whether the rung can be climbed at all; this decides
+ * who may ask.
+ */
+export function promotionNeedsAdmin(body: unknown): boolean {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return true;
+  const { to } = body as { to?: unknown };
+  return !(typeof to === "string" && to.trim().toLowerCase() === "forward");
+}
+
+/** A hypothesis registration (`POST /api/spawner/edges/{id}/hypotheses`). */
+export function isHypothesisRegistration(pathname: string, method: string): boolean {
+  return method.toUpperCase() === "POST" && HYPOTHESIS_PATH.test(normalizedSpawnerPath(pathname));
+}
+
+/**
+ * The body of a hypothesis registration with `registered_by` set to the
+ * signed-in user, whatever the browser sent: the registry records who wrote
+ * the hypothesis down, and a browser could claim anyone. Null when the body
+ * isn't a JSON object; it goes through unchanged and the spawner refuses it.
+ */
+export function withRegisteredBy(body: string, user: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return JSON.stringify({ ...(parsed as Record<string, unknown>), registered_by: user });
+}
 
 /**
  * Whether making an instance from a template needs an admin. The request
@@ -464,6 +502,15 @@ export async function spawnerWriteNeedsAdmin(
       template = null;
     }
     return instanceNeedsAdmin(request, template);
+  }
+  if (PROMOTE_PATH.test(path)) {
+    let request: unknown = null;
+    try {
+      request = JSON.parse(await readBody());
+    } catch {
+      return true;
+    }
+    return promotionNeedsAdmin(request);
   }
   // A respawn and an instance start both run a stored config as it is saved.
   const stored_name = RESPAWN_PATH.exec(path)?.[1] ?? INSTANCE_START_PATH.exec(path)?.[1];

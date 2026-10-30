@@ -6,6 +6,7 @@ import {
   nameError,
   orderedFields,
   parseList,
+  prefill,
   suggestName,
   toParams,
 } from './templateForm';
@@ -120,3 +121,33 @@ describe('orderedFields', () => {
     expect(orderedFields(t).map(([k]) => k)).toEqual(['backfill_oi', 'symbols', 'streams', 'rest_seconds']);
   });
 });
+
+describe('prefill from the URL', () => {
+  const job = {
+    ...recorder,
+    id: 'job.edge-search',
+    kind: 'job' as const,
+    params: {
+      type: 'object' as const,
+      required: ['hypothesis_id', 'family'],
+      properties: {
+        hypothesis_id: { type: 'integer' as const, title: 'Hypothesis', minimum: 1 },
+        family: { type: 'string' as const, title: 'Family', enum: ['trend-band'], default: 'trend-band' },
+      },
+    },
+  };
+
+  it('fills the fields the query names, and names a search after its hypothesis', () => {
+    const v = prefill(job, initialValues(job), new URLSearchParams('template=job.edge-search&hypothesis_id=3&family=nope'));
+    expect(v.hypothesis_id).toBe('3');
+    expect(v.family).toBe('trend-band'); // not one of the enum: ignored
+    expect(suggestName(job, v)).toBe('edge-search-h3');
+    expect(toParams(job, v).params).toEqual({ hypothesis_id: 3, family: 'trend-band' });
+  });
+
+  it('keeps only allowed values in a multi-choice field', () => {
+    const v = prefill(recorder, initialValues(recorder), new URLSearchParams('streams=forceOrder,bogus'));
+    expect(v.streams).toEqual(['forceOrder']);
+  });
+});
+
