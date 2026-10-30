@@ -117,6 +117,14 @@
 
     let spawnImage = $state("fks-bot-");
     let spawnBotId = $state("");
+    // The account and webhooks of an applied saved config. Dropping them made
+    // "apply, then Spawn" start a second, unleased live trader beside the
+    // config's bot (2026-10-30), and "apply, then Save config" would have
+    // erased them from the saved config.
+    let spawnAccount = $state("");
+    let spawnWebhooks = $state<Record<string, string>>({});
+    // The saved config last applied, while the form still names its bot.
+    let appliedConfig = $state<BotConfig | null>(null);
     let spawnMode = $state("paper");
     let spawnCpu = $state("");
     let spawnMem = $state("");
@@ -193,6 +201,9 @@
                 cpu_limit: Number.isFinite(cpu) ? cpu : undefined,
                 memory_limit_mb: Number.isFinite(mem) ? mem : undefined,
                 secrets: secrets.length > 0 ? secrets : undefined,
+                account: spawnAccount.trim() || undefined,
+                webhooks:
+                    Object.keys(spawnWebhooks).length > 0 ? spawnWebhooks : undefined,
             });
             feedback = {
                 msg: `Spawned ${res.container_name} (${res.container_id})`,
@@ -281,6 +292,10 @@
     }
 
     function applyConfig(c: BotConfig) {
+        appliedConfig = c;
+        spawnBotId = c.bot_id ?? "";
+        spawnAccount = c.account ?? "";
+        spawnWebhooks = { ...(c.webhooks ?? {}) };
         spawnImage = c.image;
         spawnMode = c.mode || "paper";
         spawnCpu = c.cpu_limit != null ? String(c.cpu_limit) : "";
@@ -320,6 +335,9 @@
                 // when blank — a config with no Bot ID just isn't
                 // respawn-ready until saved again with one.
                 bot_id: spawnBotId.trim() || undefined,
+                account: spawnAccount.trim() || undefined,
+                webhooks:
+                    Object.keys(spawnWebhooks).length > 0 ? spawnWebhooks : undefined,
             });
             feedback = { msg: `Saved config "${name}"`, ok: true };
             loadConfigs();
@@ -667,6 +685,36 @@
                         config needs this to be Respawn-able.</span
                     >
                 </label>
+
+                <label class="field">
+                    <span class="lbl">Account (live bots)</span>
+                    <input
+                        class="inp"
+                        type="text"
+                        bind:value={spawnAccount}
+                        placeholder="e.g. kraken:spot:default"
+                    />
+                    <span class="help"
+                        >The exchange account it trades. One bot per account:
+                        the spawner refuses a second, and a live bot with keys
+                        needs one.</span
+                    >
+                </label>
+                {#if Object.keys(spawnWebhooks).length > 0}
+                    <p class="help" data-testid="applied-webhooks">
+                        Webhooks from Settings:
+                        {Object.entries(spawnWebhooks)
+                            .map(([v, ch]) => `${v} ← ${ch}`)
+                            .join(", ")}
+                    </p>
+                {/if}
+                {#if appliedConfig?.bot_id && spawnBotId.trim() === appliedConfig.bot_id}
+                    <p class="warn" role="note" data-testid="applied-is-a-bot">
+                        This is saved bot "{appliedConfig.bot_id}". To restart it,
+                        use ↻ next to "{appliedConfig.name}" above. Spawn starts
+                        a new container and fails while that bot is running.
+                    </p>
+                {/if}
 
                 <label class="field">
                     <span class="lbl">Mode</span>
@@ -1295,6 +1343,15 @@
     .feedback.ok {
         background: var(--green-dim);
         color: var(--green);
+    }
+
+    /* The applied config is a running bot's: point at ↻, not Spawn. */
+    .warn {
+        font-size: 10px;
+        padding: 5px 8px;
+        border-radius: var(--r);
+        background: var(--amber-dim, var(--red-dim));
+        color: var(--amber, var(--red));
     }
 
     /* ─── Container list ───────────────────────────────────────────────── */
