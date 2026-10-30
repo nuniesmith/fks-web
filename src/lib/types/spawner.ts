@@ -79,6 +79,14 @@ export interface SpawnRequest {
    * exchange has no stored credentials.
    */
   secrets?: string[];
+  /**
+   * The exchange account the bot trades, e.g. `kraken:spot:default`. The
+   * spawner leases it, so a second bot can't trade the same account; a live
+   * spawn with exchange keys and no account is refused.
+   */
+  account?: string;
+  /** `{ENV_VAR: channel}`: a Settings channel's URL set at spawn (fks-spawner #71). */
+  webhooks?: Record<string, string>;
 }
 
 /** Response body for `POST /spawn` (HTTP 201). */
@@ -345,6 +353,14 @@ export interface SaveConfigRequest {
    * the caller passes an override in the respawn body).
    */
   bot_id?: string;
+  /**
+   * The exchange account the bot trades, e.g. `kraken:spot:default`. The
+   * spawner leases it, so a second bot can't trade the same account; a live
+   * spawn with exchange keys and no account is refused.
+   */
+  account?: string;
+  /** `{ENV_VAR: channel}`: a Settings channel's URL set at spawn (fks-spawner #71). */
+  webhooks?: Record<string, string>;
 }
 
 /** A saved spawn config row from `GET /configs`. */
@@ -366,6 +382,8 @@ export interface BotConfig {
   bot_id?: string | null;
   /** The exchange account the bot trades, e.g. `kraken:spot:default` (leases). */
   account?: string | null;
+  /** `{ENV_VAR: channel}`: a Settings channel's URL set at spawn. */
+  webhooks?: Record<string, string> | null;
   /** Set when the config is an instance made from a template. */
   template?: { id: string; version: number; params: Record<string, unknown> } | null;
   template_unreadable?: boolean;
