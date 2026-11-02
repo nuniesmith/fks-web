@@ -130,7 +130,7 @@ export const LADDER = {
     hypothesis(1, { status: "withdrawn", withdrawn_reason: "superseded by #2", withdrawn_at: "2026-10-27T04:59:00Z" }),
   ],
   experiments: [
-    experiment(1),
+    experiment(1, { selected_params: { threshold_usd: 5000000 } }),
     experiment(2, {
       verdict: "DO NOT PASTE",
       holdout_score: -0.2,

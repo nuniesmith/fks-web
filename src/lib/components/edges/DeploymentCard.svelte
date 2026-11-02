@@ -72,6 +72,12 @@
       {#if d.stage === 'backtest'}
         <button class="btn" disabled={!canOperate || busy} onclick={() => toggle('forward')}>Start forward…</button>
       {:else if d.stage === 'forward'}
+        <a
+          class="btn"
+          href={`/tasks/new?template=bot.edge-forward&deployment_id=${d.id}`}
+          title="A paper instance that records this deployment's sessions in the forward ledger"
+          >Forward runner…</a
+        >
         <button
           class="btn"
           disabled={!isAdmin || busy}

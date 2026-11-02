@@ -100,6 +100,34 @@ test.describe("Edges: the ladder", () => {
   });
 });
 
+test.describe("Edges: a deployment trades its search's selection", () => {
+  test("deploy shows the selection and sends no parameters; a forward card links its runner", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    let body: Record<string, unknown> | null = null;
+    await page.route(
+      (url) => url.pathname === "/api/spawner/deployments",
+      async (route: Route) => {
+        if (route.request().method() !== "POST") return route.fallback();
+        body = route.request().postDataJSON();
+        await route.fulfill({ status: 201, json: { ok: true, deployment: {} } });
+      },
+    );
+    await page.goto("/edges");
+    await page.getByRole("button", { name: "Deploy…" }).click();
+    await expect(page.getByTestId("deploy-selection")).toContainText('{"threshold_usd":5000000}');
+    await expect(page.getByRole("textbox", { name: /Parameters it trades/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "Create at backtest" }).click();
+    await expect.poll(() => body).toEqual({ experiment_id: 1, account_id: "kraken-main", symbol: "BTCUSDT" });
+
+    const forwardCard = page.locator('[data-testid="deployment-card"][data-stage="forward"]');
+    await expect(forwardCard.getByRole("link", { name: "Forward runner…" })).toHaveAttribute(
+      "href",
+      "/tasks/new?template=bot.edge-forward&deployment_id=11",
+    );
+  });
+});
+
 test.describe("Edges: register a hypothesis", () => {
   test("says what to fix before anything is sent", async ({ page }) => {
     await installHome(page);
