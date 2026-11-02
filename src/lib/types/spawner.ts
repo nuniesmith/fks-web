@@ -605,6 +605,8 @@ export interface Hypothesis {
   baseline: string;
   metric: string;
   costs: HypothesisCosts;
+  /** The evidence path, declared at registration and frozen (fks 028). Absent on old rows = trades. */
+  evidence?: HypothesisEvidence;
   registered_at: string;
   registered_by: string | null;
   status: 'registered' | 'withdrawn';
@@ -689,7 +691,16 @@ export interface LadderResponse {
 }
 
 /** `POST /edges/{id}/hypotheses`. The adapter stamps `registered_by`. */
+/**
+ * How the search judges U4 (fks 028): `trades` needs 30 holdout trades;
+ * `low-frequency` (a trend band trades a few times a year per coin) needs
+ * 10 pooled over at least 3 coins sharing one parameter set, every coin
+ * trading. Declared before the search, never chosen after it.
+ */
+export type HypothesisEvidence = 'trades' | 'low-frequency';
+
 export interface RegisterHypothesisRequest {
+  evidence: HypothesisEvidence;
   idea: string;
   symbols: string[];
   dataset: string;

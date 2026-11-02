@@ -123,7 +123,7 @@ test.describe("Edges: register a hypothesis", () => {
     expect(posted).toBe(false);
   });
 
-  test("sends the five parts of §2, then shows it on the board", async ({ page }) => {
+  test("sends the five parts of §2 and its evidence path, then shows it on the board", async ({ page }) => {
     await installHome(page);
     await installLadder(page);
     let body: Record<string, unknown> | null = null;
@@ -156,6 +156,9 @@ test.describe("Edges: register a hypothesis", () => {
     await page.getByLabel("Parameter 2 kind").selectOption("choices");
     await page.getByLabel("Parameter 2 choices").fill("long, short");
     await page.getByRole("combobox", { name: "It must beat", exact: true }).selectOption("trend-200d-5pct");
+    // §3–4: the evidence path is declared here, before the search (fks 028).
+    await expect(page.getByRole("radio", { name: /^Trades:/ })).toBeChecked();
+    await page.getByRole("radio", { name: /^Low-frequency:/ }).check();
     await page.getByRole("button", { name: "Register, frozen from now" }).click();
 
     await expect(page).toHaveURL(/\/edges\?hypothesis=7$/);
@@ -171,6 +174,7 @@ test.describe("Edges: register a hypothesis", () => {
       baseline: "trend-200d-5pct",
       metric: "sharpe after fees",
       costs: { maker_bps: 40, taker_bps: 80, slippage_bps: 5 },
+      evidence: "low-frequency",
     });
   });
 
