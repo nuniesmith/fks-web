@@ -125,6 +125,10 @@ test.describe("Edges: a deployment trades its search's selection", () => {
       "href",
       "/tasks/new?template=bot.edge-forward&deployment_id=11",
     );
+    await expect(forwardCard.getByRole("link", { name: "Signal runner…" })).toHaveAttribute(
+      "href",
+      "/tasks/new?template=bot.edge-signal&deployment_id=11",
+    );
   });
 });
 

@@ -113,6 +113,12 @@
           title="A paper instance that replays this deployment's sessions into the ledger the monitor judges (forward and live)"
           >Forward runner…</a
         >
+        <a
+          class="btn"
+          href={`/tasks/new?template=bot.edge-signal&deployment_id=${d.id}`}
+          title="Real-time entries and exits for you to place by hand (PAPER while forward, LIVE once live)"
+          >Signal runner…</a
+        >
       {/if}
       {#if d.stage === 'forward'}
         <button
