@@ -4,11 +4,14 @@
 
 import type {
   AdminGuardOutcome,
+  ApiTokenSummary,
+  ApiTokenWithUser,
   AuditEntry,
   AuditView,
   AuthStore,
   InviteRow,
   InviteSummary,
+  NewApiToken,
   NewInvite,
   NewSession,
   NewUser,
@@ -19,6 +22,13 @@ import type {
 
 interface StoredSession extends NewSession {}
 
+interface StoredApiToken extends NewApiToken {
+  id: number;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
 export class MemoryStore implements AuthStore {
   private users = new Map<number, UserRow>();
   private createdAt = new Map<number, Date>();
@@ -26,6 +36,10 @@ export class MemoryStore implements AuthStore {
   private invites = new Map<number, InviteRow>();
   private seq = 0;
   private inviteSeq = 0;
+  private apiTokens = new Map<number, StoredApiToken>();
+  private apiTokenSeq = 0;
+  /** Test seam: false models a scoped deploy without fks 027 applied. */
+  tokensTablePresent = true;
   /** Exposed for test assertions on the append-only audit trail. Carries the
    *  synthetic `at` stamp so `listAudit` can order/return it like Postgres. */
   readonly auditLog: AuditView[] = [];
@@ -321,5 +335,75 @@ export class MemoryStore implements AuthStore {
     i.redeemedBy = userId;
     i.redeemedAt = new Date();
     return true;
+  }
+
+  // ── Personal access tokens ─────────────────────────────────────────────────
+
+  apiTokensAvailable(): boolean {
+    return this.tokensTablePresent;
+  }
+
+  private tokenSummary(t: StoredApiToken): ApiTokenSummary {
+    return {
+      id: t.id,
+      name: t.name,
+      roleCap: t.roleCap,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+      lastUsedAt: t.lastUsedAt,
+      revokedAt: t.revokedAt,
+    };
+  }
+
+  async createApiToken(token: NewApiToken): Promise<ApiTokenSummary> {
+    const row: StoredApiToken = {
+      ...token,
+      id: ++this.apiTokenSeq,
+      createdAt: new Date(),
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    this.apiTokens.set(row.id, row);
+    return this.tokenSummary(row);
+  }
+
+  async getApiTokenByHash(tokenHash: string): Promise<ApiTokenWithUser | null> {
+    for (const t of this.apiTokens.values()) {
+      if (t.tokenHash !== tokenHash) continue;
+      const u = this.users.get(t.userId);
+      if (!u) return null; // ON DELETE CASCADE
+      return {
+        id: t.id,
+        userId: u.id,
+        username: u.username,
+        role: u.role,
+        roleCap: t.roleCap,
+        mustChange: u.mustChange,
+        disabled: u.disabled,
+        expiresAt: t.expiresAt,
+        lastUsedAt: t.lastUsedAt,
+        revokedAt: t.revokedAt,
+      };
+    }
+    return null;
+  }
+
+  async listApiTokens(userId: number): Promise<ApiTokenSummary[]> {
+    return [...this.apiTokens.values()]
+      .filter((t) => t.userId === userId)
+      .sort((a, b) => b.id - a.id)
+      .map((t) => this.tokenSummary(t));
+  }
+
+  async revokeApiToken(id: number, userId: number): Promise<boolean> {
+    const t = this.apiTokens.get(id);
+    if (!t || t.userId !== userId || t.revokedAt !== null) return false;
+    t.revokedAt = new Date();
+    return true;
+  }
+
+  async touchApiToken(id: number, at: Date): Promise<void> {
+    const t = this.apiTokens.get(id);
+    if (t) t.lastUsedAt = at;
   }
 }

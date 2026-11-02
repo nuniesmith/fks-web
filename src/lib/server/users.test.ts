@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { invitesDispatch, usersDispatch } from "./users";
+import { invitesDispatch, tokensDispatch, usersDispatch } from "./users";
 import { AuthService } from "./auth/service";
 import { MemoryStore } from "./auth/memoryStore";
 import type { ScryptParams } from "./auth/hash";
@@ -351,5 +351,57 @@ describe("invitesDispatch — same admin defense in depth", () => {
     expect(nf.status).toBe(404);
     const na = await invitesDispatch(req("DELETE", "/api/invites"), "/api/invites", adminAuth(adminSession), CTX, getService);
     expect(na.status).toBe(405);
+  });
+});
+
+describe("tokensDispatch — a user's own tokens, browser session only", () => {
+  it("refuses no auth, disabled mode, mustChange and a token", async () => {
+    const { adminSession, getService } = await harness();
+    const call = (auth: AuthState | undefined) =>
+      tokensDispatch(req("GET", "/api/tokens"), "/api/tokens", auth, CTX, getService);
+    expect((await call(undefined)).status).toBe(403);
+    expect((await call({ mode: "disabled" })).status).toBe(403);
+    expect((await call(adminAuth({ ...adminSession, mustChange: true }))).status).toBe(403);
+    expect((await call(adminAuth({ ...adminSession, via: "token", tokenId: 1 }))).status).toBe(403);
+  });
+
+  it("mints (token once), lists without it, and revokes", async () => {
+    const { adminSession, getService } = await harness();
+    const auth = adminAuth(adminSession);
+    const created = await tokensDispatch(
+      req("POST", "/api/tokens", { name: "muse", role: "viewer", ttlDays: 30 }),
+      "/api/tokens",
+      auth,
+      CTX,
+      getService,
+    );
+    expect(created.status).toBe(200);
+    const body = await created.json();
+    expect(body.token).toMatch(/^fks_pat_/);
+
+    const listed = await tokensDispatch(req("GET", "/api/tokens"), "/api/tokens", auth, CTX, getService);
+    const list = await listed.json();
+    expect(list.available).toBe(true);
+    expect(list.tokens).toHaveLength(1);
+    expect(JSON.stringify(list)).not.toContain(body.token);
+
+    const path = `/api/tokens/${body.apiToken.id}/revoke`;
+    const revoked = await tokensDispatch(req("POST", path), path, auth, CTX, getService);
+    expect(revoked.status).toBe(200);
+  });
+
+  it("a viewer can mint a viewer token but not an operator one", async () => {
+    const { adminSession, getService } = await harness();
+    const auth = adminAuth({ ...adminSession, role: "viewer" });
+    const mint = (role: string) =>
+      tokensDispatch(
+        req("POST", "/api/tokens", { name: "x", role, ttlDays: 7 }),
+        "/api/tokens",
+        auth,
+        CTX,
+        getService,
+      );
+    expect((await mint("viewer")).status).toBe(200);
+    expect((await mint("operator")).status).toBe(403);
   });
 });

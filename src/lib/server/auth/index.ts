@@ -108,7 +108,46 @@ export const inviteRateLimiter = new LoginRateLimiter({
   windowMs: 5 * 60 * 1000,
 });
 
+/**
+ * Per-IP limiter on FAILED personal-access-token attempts (20 / 5 min). A
+ * token is 32 random bytes, so this is not what stops a guess; it stops a
+ * leaked-and-revoked token or a misconfigured agent from hammering the DB.
+ */
+export const apiTokenFailureLimiter = new LoginRateLimiter({
+  max: 20,
+  windowMs: 5 * 60 * 1000,
+});
+
+/** Per-token request budget (EDGE_FACTORY_PLAN §7.2 "rate-limited"): 600 / min. */
+export const apiTokenRequestLimiter = new LoginRateLimiter({
+  max: 600,
+  windowMs: 60 * 1000,
+});
+
 export class AuthStoreUnavailable extends Error {}
+
+/**
+ * Resolve the AuthState for a request carrying `Authorization: Bearer …`. Same
+ * fail-closed contract as `resolveAuthState`; `session` is null for a token
+ * that is unknown, revoked, expired, or whose owner is disabled. The cookie
+ * is NOT consulted: a request that names a token acts as that token or not
+ * at all.
+ */
+export async function resolveBearerAuthState(token: string): Promise<AuthState> {
+  if (authDisabled()) return { mode: "disabled" };
+  let svc: AuthService;
+  try {
+    svc = await getAuthService();
+  } catch (e) {
+    throw new AuthStoreUnavailable((e as Error).message);
+  }
+  try {
+    if (!(await svc.hasUsers())) return { mode: "bootstrap" };
+    return { mode: "enabled", session: await svc.resolveApiToken(token) };
+  } catch (e) {
+    throw new AuthStoreUnavailable((e as Error).message);
+  }
+}
 
 /**
  * Resolve the AuthState for a request from its session cookie. Throws

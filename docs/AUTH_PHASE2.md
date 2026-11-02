@@ -103,6 +103,37 @@ Viewer = R4 only: any non-GET backend request → `{kind:"forbidden", reason:"ro
   back. The "Recent auth events" panel colour-codes the action badge by class:
   auth successes, failures, admin mutations, and invite events.
 
+### Personal access tokens (API v1, `/api/tokens`, 2026-11-01)
+
+EDGE_FACTORY_PLAN §7.2 item 3: an agent or script sends
+`Authorization: Bearer fks_pat_…` to the same `/api/…` routes the UI calls.
+
+- **Minted on Settings → API tokens** by any signed-in role, for itself:
+  `POST /api/tokens {name, role, ttlDays}` returns the raw token **once**; only
+  `sha256(token)` is stored (`webui_api_tokens`, fks 027). The audit log gets
+  `api_token_created` / `api_token_revoked` with the token's id and name, never
+  its value. Lifetimes are 7, 30, 90 or 365 days; every token expires.
+- **No admin tokens.** `role_cap` is `operator` or `viewer` (a DB CHECK), and
+  can't exceed the minter's role. Everything admin-only (R1, R2, R2b: keys,
+  webhooks, users, a live spawn or promotion) therefore needs a human session.
+  That is §6.3's "no PAT arms money", by construction.
+- **Effective role = min(owner's CURRENT role, cap).** Demoting the owner
+  demotes the token. A disabled owner, a revoked or expired token, or an owner
+  still on the bootstrap credential resolves to nothing. Revocation and
+  `purgeUserFromCache` drop the cached entry at once on this process.
+- **API only, and no identity management.** A token can't open pages (403
+  `token_cannot_open_pages`) or reach `SESSION_ONLY_BACKEND_PREFIXES`
+  (`/api/tokens`, `/api/users`, `/api/invites`; 403 `session_required`), so a
+  token can never mint a longer-lived one.
+- **A Bearer header replaces the cookie.** A bad token is a 401
+  `invalid_token`; it never falls back to a session cookie on the same request.
+- **Rate limits** (in-process): 20 failed token attempts per IP per 5 min
+  (then 429), 600 requests per token per minute.
+- **Optional table.** If `webui_api_tokens` is missing and the scoped role
+  can't create it, the webui logs one line and runs with tokens off: the panel
+  says so, minting is a 503, and login is unaffected.
+- Reachable only where the UI is: on the tailnet.
+
 ---
 
 ## 3. PSQL recovery — role mistakes

@@ -53,4 +53,18 @@ CREATE TABLE IF NOT EXISTS webui_invites (
     redeemed_at TIMESTAMPTZ,
     revoked_at  TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS webui_api_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES webui_users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,         -- sha256(token); raw token shown once, at mint
+    role_cap     TEXT NOT NULL DEFAULT 'viewer'
+                 CHECK (role_cap IN ('operator','viewer')),  -- no admin tokens
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,         -- service sets now()+TTL at mint
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS webui_api_tokens_user_idx ON webui_api_tokens (user_id);
 `;

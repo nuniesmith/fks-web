@@ -6,11 +6,14 @@ import postgres from "postgres";
 import { SCHEMA_SQL } from "./schema";
 import type {
   AdminGuardOutcome,
+  ApiTokenSummary,
+  ApiTokenWithUser,
   AuditEntry,
   AuditView,
   AuthStore,
   InviteRow,
   InviteSummary,
+  NewApiToken,
   NewInvite,
   NewSession,
   NewUser,
@@ -71,8 +74,31 @@ function toInviteRow(r: InviteRecord): InviteRow {
   };
 }
 
+interface ApiTokenRecord {
+  id: string;
+  name: string;
+  role_cap: string;
+  created_at: Date;
+  expires_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
+}
+
+function toApiTokenSummary(r: ApiTokenRecord): ApiTokenSummary {
+  return {
+    id: Number(r.id),
+    name: r.name,
+    roleCap: r.role_cap,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    lastUsedAt: r.last_used_at,
+    revokedAt: r.revoked_at,
+  };
+}
+
 export class PgStore implements AuthStore {
   private sql: Sql;
+  private tokensTable = false;
 
   constructor(connectionString: string) {
     this.sql = postgres(connectionString, {
@@ -95,26 +121,33 @@ export class PgStore implements AuthStore {
     // run. `to_regclass` needs only USAGE + visibility, both of which the scoped
     // role has. Only when the tables are ABSENT do we run the DDL, which
     // succeeds for a privileged connecting role (dev / single-role deploys).
-    const present = await this.tablesExist();
-    if (present) return;
-    // Simple protocol, multiple statements, all idempotent.
-    await this.sql.unsafe(SCHEMA_SQL);
+    //
+    // `webui_invites` is the newest table login needs; `webui_api_tokens`
+    // (fks 027) is OPTIONAL. If the webui deploys before a DBA applies 027,
+    // the DDL is attempted once and its failure only switches tokens off:
+    // a missing optional table must never take login down with it.
+    if (!(await this.tableExists("webui_invites"))) {
+      // Simple protocol, multiple statements, all idempotent.
+      await this.sql.unsafe(SCHEMA_SQL);
+    } else if (!(await this.tableExists("webui_api_tokens"))) {
+      try {
+        await this.sql.unsafe(SCHEMA_SQL);
+      } catch (e) {
+        console.warn(
+          "[FKS Auth] webui_api_tokens is missing and can't be created as this " +
+            "role; API tokens are OFF until fks/src/sql/spawner/027_webui_api_tokens.sql " +
+            `is applied (${(e as Error).message})`,
+        );
+      }
+    }
+    this.tokensTable = await this.tableExists("webui_api_tokens");
   }
 
-  /** Whether the auth tables are already present (migration already applied). */
-  private async tablesExist(): Promise<boolean> {
+  /** Whether `public.<name>` exists (a migration's table is present). */
+  private async tableExists(name: string): Promise<boolean> {
     try {
-      // Probe the NEWEST table, not the oldest. Convention: always probe the
-      // LAST table this schema adds (currently `webui_invites`, C1). SCHEMA_SQL
-      // is one idempotent CREATE-IF-NOT-EXISTS batch, so on a privileged dev DB
-      // that already has the Phase-1/B tables but NOT the newly-added one,
-      // probing an OLD table (`webui_users`) would report "present" and skip the
-      // batch — silently never creating `webui_invites`. Probing the newest
-      // table makes an additive migration run exactly when it must. On the
-      // scoped live role (no CREATE) the DBA applies the SQL by hand first, so
-      // this returns true and the DDL is correctly skipped.
       const rows = await this.sql<{ present: boolean }[]>`
-        SELECT to_regclass('public.webui_invites') IS NOT NULL AS present`;
+        SELECT to_regclass(${"public." + name}) IS NOT NULL AS present`;
       return rows[0]?.present === true;
     } catch {
       // Couldn't even probe (e.g. no USAGE) — fall through and let the DDL
@@ -453,5 +486,79 @@ export class PgStore implements AuthStore {
       WHERE id = ${id} AND redeemed_at IS NULL AND revoked_at IS NULL
       RETURNING id`;
     return rows.length === 1;
+  }
+
+  // ── Personal access tokens ─────────────────────────────────────────────────
+
+  apiTokensAvailable(): boolean {
+    return this.tokensTable;
+  }
+
+  async createApiToken(token: NewApiToken): Promise<ApiTokenSummary> {
+    const rows = await this.sql<ApiTokenRecord[]>`
+      INSERT INTO webui_api_tokens (user_id, name, token_hash, role_cap, expires_at)
+      VALUES (${token.userId}, ${token.name}, ${token.tokenHash}, ${token.roleCap},
+              ${token.expiresAt})
+      RETURNING id, name, role_cap, created_at, expires_at, last_used_at, revoked_at`;
+    return toApiTokenSummary(rows[0]);
+  }
+
+  async getApiTokenByHash(tokenHash: string): Promise<ApiTokenWithUser | null> {
+    const rows = await this.sql<
+      {
+        id: string;
+        user_id: string;
+        username: string;
+        role: string;
+        role_cap: string;
+        must_change_credentials: boolean;
+        disabled: boolean;
+        expires_at: Date;
+        last_used_at: Date | null;
+        revoked_at: Date | null;
+      }[]
+    >`
+      SELECT t.id, t.user_id, u.username, u.role, t.role_cap,
+             u.must_change_credentials, u.disabled,
+             t.expires_at, t.last_used_at, t.revoked_at
+      FROM webui_api_tokens t
+      JOIN webui_users u ON u.id = t.user_id
+      WHERE t.token_hash = ${tokenHash}
+      LIMIT 1`;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: Number(r.id),
+      userId: Number(r.user_id),
+      username: r.username,
+      role: r.role,
+      roleCap: r.role_cap,
+      mustChange: r.must_change_credentials,
+      disabled: r.disabled,
+      expiresAt: r.expires_at,
+      lastUsedAt: r.last_used_at,
+      revokedAt: r.revoked_at,
+    };
+  }
+
+  async listApiTokens(userId: number): Promise<ApiTokenSummary[]> {
+    const rows = await this.sql<ApiTokenRecord[]>`
+      SELECT id, name, role_cap, created_at, expires_at, last_used_at, revoked_at
+      FROM webui_api_tokens WHERE user_id = ${userId}
+      ORDER BY id DESC`;
+    return rows.map(toApiTokenSummary);
+  }
+
+  async revokeApiToken(id: number, userId: number): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      UPDATE webui_api_tokens SET revoked_at = now()
+      WHERE id = ${id} AND user_id = ${userId} AND revoked_at IS NULL
+      RETURNING id`;
+    return rows.length === 1;
+  }
+
+  async touchApiToken(id: number, at: Date): Promise<void> {
+    await this.sql`
+      UPDATE webui_api_tokens SET last_used_at = ${at} WHERE id = ${id}`;
   }
 }

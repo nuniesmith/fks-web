@@ -7,6 +7,7 @@
   import Panel from '$components/ui/Panel.svelte';
   import EmptyState from '$components/ui/EmptyState.svelte';
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
+  import ApiTokensPanel from '$components/settings/ApiTokensPanel.svelte';
   import { createPoll } from '$lib/stores/poll';
   import { fmtRelative, fmtDateTime } from '$lib/utils/format';
   import {
@@ -963,6 +964,9 @@
         address.
       </div>
     </Panel>
+
+    <!-- ── Panel: API tokens (API v1 personal access tokens) ──────── -->
+    <ApiTokensPanel />
 
   </div>
 
