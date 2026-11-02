@@ -106,6 +106,82 @@ export const SPAWNER_ROUTES: readonly Route[] = [
   r("DELETE", "/ui/layouts/{name}", "operator", "ui", "Delete a saved layout"),
 ];
 
+/**
+ * The routes fks-web serves itself (each an explicit handler in
+ * hooks.server.ts), with the same columns, so OpenAPI and the parity test
+ * cover all of `/api`. Their access is decided by `routeRequest` (the
+ * prefix rules and the session-only list); a test checks each row against
+ * it. A read this table doesn't have answers empty and a write a 501: no
+ * path here reaches an upstream it doesn't name.
+ */
+export interface AppRoute extends Omit<Route, "guard"> {
+  /** A personal access token can't call it (identity management). */
+  sessionOnly?: boolean;
+}
+
+const a = (method: Method, path: string, minRole: Role, tag: string, summary: string, sessionOnly = false): AppRoute => ({
+  method,
+  path,
+  minRole,
+  tag,
+  summary,
+  ...(sessionOnly ? { sessionOnly } : {}),
+});
+
+export const APP_ROUTES: readonly AppRoute[] = [
+  a("GET", "/api/openapi.json", "viewer", "system", "This document"),
+  a("GET", "/api/health", "viewer", "system", "The platform's health (redis, janus, feed)"),
+  a("GET", "/api/exchanges/{venue}/ping", "viewer", "system", "Whether a venue's public API answers"),
+  // Alerts
+  a("GET", "/api/alerts/inbox", "viewer", "alerts", "Firing alerts with their acknowledgements"),
+  a("POST", "/api/alerts/ack", "operator", "alerts", "Acknowledge an alert (an audit row)"),
+  // Settings: credentials and channels (write-only secrets)
+  a("GET", "/api/settings/exchange-keys/status", "viewer", "settings", "Which exchanges have keys stored"),
+  a("POST", "/api/settings/exchange-keys", "admin", "settings", "Store an exchange's keys"),
+  a("DELETE", "/api/settings/exchange-keys/{exchange}", "admin", "settings", "Delete an exchange's keys"),
+  a("GET", "/api/settings/notifications", "viewer", "settings", "List the notification channels"),
+  a("POST", "/api/settings/notifications", "admin", "settings", "Store a notification channel"),
+  a("GET", "/api/settings/notifications/history", "viewer", "settings", "The delivery ledger"),
+  a("POST", "/api/settings/notifications/{name}/test", "admin", "settings", "Send a channel a test message"),
+  a("DELETE", "/api/settings/notifications/{name}", "admin", "settings", "Delete a notification channel"),
+  // Monitoring (Prometheus)
+  a("GET", "/api/metrics/query", "viewer", "monitoring", "A PromQL instant query"),
+  a("GET", "/api/metrics/query_range", "viewer", "monitoring", "A PromQL range query"),
+  a("GET", "/api/metrics/targets", "viewer", "monitoring", "Prometheus's scrape targets"),
+  a("GET", "/api/metrics/alerts", "viewer", "monitoring", "Prometheus's alerts"),
+  a("GET", "/api/metrics/layout", "viewer", "monitoring", "The monitoring page's panels"),
+  // Market data
+  a("GET", "/bars/{symbol}/candles", "viewer", "market", "Candles for a symbol (QuestDB)"),
+  a("GET", "/sse/bars/{symbol}", "viewer", "market", "Live bars for a symbol (SSE)"),
+  a("GET", "/api/chart/{symbol}/indicators", "viewer", "market", "Indicators computed on a symbol's candles"),
+  a("GET", "/api/indicators/catalog", "viewer", "market", "The chart's indicator catalog"),
+  a("GET", "/api/janus/indicators/catalog", "viewer", "market", "Janus's indicator catalog"),
+  a("GET", "/api/janus/indicators/compute", "viewer", "market", "An indicator computed by janus"),
+  a("GET", "/api/market/coverage", "viewer", "market", "Which symbols have candles, from when"),
+  a("GET", "/api/assets/search", "viewer", "market", "Search instruments"),
+  a("GET", "/api/assets/{short}", "viewer", "market", "One instrument"),
+  // Identity (sessions only: a token can't manage identity)
+  a("GET", "/api/tokens", "viewer", "identity", "Your personal access tokens", true),
+  // A write is an operator's (the mutation rule): a viewer can list their
+  // tokens but not make one.
+  a("POST", "/api/tokens", "operator", "identity", "Create a personal access token (shown once)", true),
+  a("POST", "/api/tokens/{id}/revoke", "operator", "identity", "Revoke one of your tokens", true),
+  a("GET", "/api/users", "admin", "identity", "List the users", true),
+  a("POST", "/api/users", "admin", "identity", "Create a user", true),
+  a("GET", "/api/users/audit", "admin", "identity", "The identity audit log", true),
+  a("POST", "/api/users/{id}/{action}", "admin", "identity",
+    "disable | enable | role | reset-password | revoke-sessions", true),
+  a("GET", "/api/invites", "admin", "identity", "List the invites", true),
+  a("POST", "/api/invites", "admin", "identity", "Create a one-time invite link", true),
+  a("POST", "/api/invites/{id}/revoke", "admin", "identity", "Revoke an invite", true),
+];
+
+/** The registered app route for a full path and method, or null. */
+export function matchAppRoute(method: string, path: string): AppRoute | null {
+  const m = method.toUpperCase() === "HEAD" ? "GET" : method.toUpperCase();
+  return APP_ROUTES.find((x) => x.method === m && matches(x.path, path)) ?? null;
+}
+
 function segments(path: string): string[] {
   return path.split("/").filter((s, i) => i > 0 || s !== "");
 }
@@ -158,6 +234,28 @@ export function openapi(): Record<string, unknown> {
       },
     };
   }
+  for (const route of APP_ROUTES) {
+    const params = [...route.path.matchAll(/\{([^}]+)\}/g)].map((m) => ({
+      name: m[1],
+      in: "path",
+      required: true,
+      schema: { type: "string" },
+    }));
+    const key = route.path.startsWith("/api/") ? "/api/v1/" + route.path.slice("/api/".length) : route.path;
+    paths[key] ??= {};
+    paths[key][route.method.toLowerCase()] = {
+      summary: route.summary,
+      tags: [route.tag],
+      ...(params.length ? { parameters: params } : {}),
+      "x-min-role": route.minRole,
+      ...(route.sessionOnly ? { "x-session-only": true, security: [{ session: [] }] } : {}),
+      responses: {
+        "200": { description: "JSON (SSE for live bars)" },
+        "401": { description: "No session or token" },
+        "403": { description: "The role is too low, or a token where a session is needed" },
+      },
+    };
+  }
   return {
     openapi: "3.1.0",
     info: {
@@ -169,7 +267,10 @@ export function openapi(): Record<string, unknown> {
         "/api/ are also served under /api/v1/.",
     },
     components: {
-      securitySchemes: { pat: { type: "http", scheme: "bearer", description: "A personal access token" } },
+      securitySchemes: {
+        pat: { type: "http", scheme: "bearer", description: "A personal access token" },
+        session: { type: "apiKey", in: "cookie", name: "fks_session", description: "A signed-in browser" },
+      },
     },
     security: [{ pat: [] }],
     paths,
