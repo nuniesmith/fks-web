@@ -77,7 +77,7 @@ describe("a PROXIED upstream 401 is NOT marked", () => {
 
   it("spawner X-Internal-Token mismatch → 401 with NO marker (signing in can't fix it)", async () => {
     upstream401();
-    const res = await proxyBackend(makeEvent("/api/spawner/bots"));
+    const res = await proxyBackend(makeEvent("/api/spawner/containers"));
     // The status is proxied through unchanged — that behaviour is deliberate.
     expect(res.status).toBe(401);
     // …but it must not claim the operator's session expired.
@@ -90,7 +90,7 @@ describe("a PROXIED upstream 401 is NOT marked", () => {
     // explicitly — otherwise a misconfigured upstream could raise a false
     // "sign in again" on a proxied 401.
     upstream401({ [SESSION_HEADER]: SESSION_REQUIRED });
-    const res = await proxyBackend(makeEvent("/api/spawner/bots"));
+    const res = await proxyBackend(makeEvent("/api/spawner/containers"));
     expect(res.status).toBe(401);
     expect(res.headers.get(SESSION_HEADER)).toBeNull();
   });
@@ -106,7 +106,7 @@ describe("a PROXIED upstream 401 is NOT marked", () => {
           }),
       ),
     );
-    const res = await proxyBackend(makeEvent("/api/spawner/bots"));
+    const res = await proxyBackend(makeEvent("/api/spawner/containers"));
     expect(res.headers.get("x-fks-thing")).toBe("kept");
   });
 });

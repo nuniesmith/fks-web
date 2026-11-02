@@ -31,6 +31,7 @@ import {
   isHypothesisRegistration,
   withRegisteredBy,
 } from "$lib/server/adapter";
+import { matchSpawnerRoute, openapi, spawnerPathExists } from "$lib/server/routes";
 import {
   apiTokenFailureLimiter,
   apiTokenRequestLimiter,
@@ -1242,9 +1243,34 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     );
   }
 
-  // ── Spawner — a real, working backend (the /bots page) ──────────────────────
-  // /api/spawner/<rest> → spawner /<rest>  (mirrors the old vite/nginx rewrite)
+  // ── API v1's description, generated from the route registry ─────────────────
+  if (pathname === "/api/openapi.json" && isGetLike(event.request.method)) {
+    return json(openapi());
+  }
+
+  // ── Spawner — only the routes the registry lists (routes.ts) ────────────────
+  // /api/spawner/<rest> → spawner /<rest>, when <rest> is a registered route
+  // for this method; anything else is a 404 here and never reaches the
+  // spawner (the generic passthrough is closed: §7.2 item 4, finding 2).
   if (pathname === "/api/spawner" || pathname.startsWith("/api/spawner/")) {
+    const spawnerPath = pathname.replace(/^\/api\/spawner/, "");
+    const registered = matchSpawnerRoute(event.request.method, spawnerPath);
+    if (!registered) {
+      return spawnerPathExists(spawnerPath)
+        ? jsonError(405, { error: "method_not_allowed", detail: `${event.request.method} ${pathname}` })
+        : jsonError(404, { error: "unknown_route", detail: `${pathname} is not an API route (see /api/v1/openapi.json)` });
+    }
+    if (
+      auth?.mode === "enabled" &&
+      auth.session !== null &&
+      roleRank(auth.session.role) < roleRank(registered.minRole)
+    ) {
+      return jsonError(403, {
+        error: "forbidden",
+        reason: "role_denied",
+        detail: `${registered.method} ${registered.path} needs ${registered.minRole}`,
+      });
+    }
     // R2b (adapter.ts `spawnerWriteNeedsAdmin`): a spawn, saved config or
     // respawn that could trade real money needs an admin, whatever routed it
     // here. The body is read from a clone, so `forward` still has it.
@@ -1494,7 +1520,18 @@ function sessionRequired(): Response {
   });
 }
 
+/** `/api/v1/<x>` → `/api/<x>`; null for any other path. `/api/v1` alone is the API's root. */
+export function apiV1Path(pathname: string): string | null {
+  if (pathname === "/api/v1" || pathname === "/api/v1/") return "/api/openapi.json";
+  return pathname.startsWith("/api/v1/") ? "/api/" + pathname.slice("/api/v1/".length) : null;
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
+  // API v1 (EDGE_FACTORY_PLAN §7.2 item 2): `/api/v1/<x>` is `/api/<x>`, so
+  // every route, its RBAC and its handler are the same under either spelling
+  // until the UI has moved. Rewritten once, here, before anything reads it.
+  const v1 = apiV1Path(event.url.pathname);
+  if (v1 !== null) event.url.pathname = v1;
   const { pathname, search } = event.url;
   const method = event.request.method;
   const backend = isBackend(pathname);
