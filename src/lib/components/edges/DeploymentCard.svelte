@@ -10,6 +10,10 @@
   Live needs an admin (EDGE_PROCESS §6, the adapter's R2b) and a typed
   confirmation naming the account and the symbol. Retiring is always open to
   an operator, with a reason: demotion is cheaper than promotion on purpose.
+
+  The monitor (fks 030) is the database's: the forward band, judged once on
+  the declared window, and a CUSUM from the first forward session through
+  live. A breach retires the deployment by itself; this card only shows it.
 -->
 <script lang="ts">
   import { page } from '$app/stores';
@@ -18,9 +22,17 @@
   import Badge from '$components/ui/Badge.svelte';
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import { deploymentNext } from '$lib/ladder';
-  import type { Deployment } from '$lib/types/spawner';
+  import type { Deployment, DeploymentHealth } from '$lib/types/spawner';
 
-  let { deployment: d, onchanged }: { deployment: Deployment; onchanged?: () => void } = $props();
+  let {
+    deployment: d,
+    health,
+    onchanged
+  }: { deployment: Deployment; health?: DeploymentHealth; onchanged?: () => void } = $props();
+
+  /** A session return (a fraction of notional) as a percentage. */
+  const pct = (v: number | null | undefined) => (v == null ? '–' : `${(v * 100).toFixed(3)}%`);
+  const bandVariant = { pending: 'default', pass: 'green', fail: 'red' } as const;
 
   let role = $derived(($page.data.user?.role as string | undefined) ?? null);
   let canOperate = $derived(role == null || role === 'admin' || role === 'operator');
@@ -66,18 +78,43 @@
   </header>
   <p class="next">{deploymentNext(d)}</p>
   <p class="meta">experiment #{d.experiment_id} · since {d.since.slice(0, 10)}</p>
+  {#if d.stage === 'retired' && d.retired_reason}
+    <p class="reason" data-testid="retired-reason">{d.retired_reason}</p>
+  {/if}
+
+  {#if health && d.stage !== 'backtest'}
+    {#if health.applies && health.band && health.cusum}
+      <dl class="monitor" data-testid="deployment-monitor">
+        <dt>Band</dt>
+        <dd>
+          <Badge variant={bandVariant[health.band.verdict]}>{health.band.verdict}</Badge>
+          {health.band.n}/{health.band.required ?? '?'} sessions, mean {pct(health.band.mean)} against a floor of
+          {pct(health.band.floor)}
+        </dd>
+        <dt>CUSUM</dt>
+        <dd title="One-sided, on standardized sessions; k {health.cusum.k.toFixed(3)}. It retires the deployment above h.">
+          {health.cusum.value.toFixed(2)} of {health.cusum.h.toFixed(2)} over {health.cusum.sessions} sessions
+          {#if health.cusum.alarm}(alarm on {health.cusum.alarm_at}){/if}
+        </dd>
+      </dl>
+    {:else if health.why}
+      <p class="hint" data-testid="deployment-monitor">Monitor: {health.why}</p>
+    {/if}
+  {/if}
 
   {#if d.stage !== 'retired'}
     <div class="actions">
       {#if d.stage === 'backtest'}
         <button class="btn" disabled={!canOperate || busy} onclick={() => toggle('forward')}>Start forward…</button>
-      {:else if d.stage === 'forward'}
+      {:else}
         <a
           class="btn"
           href={`/tasks/new?template=bot.edge-forward&deployment_id=${d.id}`}
-          title="A paper instance that records this deployment's sessions in the forward ledger"
+          title="A paper instance that replays this deployment's sessions into the ledger the monitor judges (forward and live)"
           >Forward runner…</a
         >
+      {/if}
+      {#if d.stage === 'forward'}
         <button
           class="btn"
           disabled={!isAdmin || busy}
@@ -175,6 +212,27 @@
     margin: 0;
     font-size: 10px;
     color: var(--t3);
+  }
+  .reason {
+    margin: 0;
+    font-size: 11px;
+    color: var(--amber);
+    overflow-wrap: anywhere;
+  }
+  .monitor {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 8px;
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--t2);
+  }
+  .monitor dt {
+    color: var(--t3);
+  }
+  .monitor dd {
+    margin: 0;
+    min-width: 0;
   }
   .actions {
     display: flex;
