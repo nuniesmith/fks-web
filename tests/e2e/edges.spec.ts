@@ -224,12 +224,12 @@ test.describe("Edges: register a hypothesis", () => {
     await page.getByLabel("Symbols").fill("mes, mnq, mgc");
     await page
       .getByRole("combobox", { name: "Lake folder", exact: true })
-      .selectOption("raw/cme/massive-cache+raw/cme/massive");
+      .selectOption("raw/cme/massive-cache+raw/cme/massive/cme");
     await expect(page.getByRole("combobox", { name: "Bars", exact: true })).toHaveValue("1m");
     await expect(page.getByLabel("From")).toHaveValue("2024-09-09");
     await page.getByLabel("To", { exact: true }).fill("2027-05-31");
     await expect(page.getByTestId("dataset-text")).toContainText(
-      "raw/cme/massive-cache+raw/cme/massive 1m 2024-09-09..2027-05-31",
+      "raw/cme/massive-cache+raw/cme/massive/cme 1m 2024-09-09..2027-05-31",
     );
     // Futures: the intraday baseline, and costs per contract instead of bps.
     await expect(page.getByRole("combobox", { name: "It must beat", exact: true })).toHaveValue("session-hold");
@@ -256,7 +256,7 @@ test.describe("Edges: register a hypothesis", () => {
     expect(body).toEqual({
       idea: "Opening-range breakouts on index and gold futures carry on through the session.",
       symbols: ["MES", "MNQ", "MGC"],
-      dataset: "raw/cme/massive-cache+raw/cme/massive 1m 2024-09-09..2027-05-31",
+      dataset: "raw/cme/massive-cache+raw/cme/massive/cme 1m 2024-09-09..2027-05-31",
       holdout_share: 0.25,
       params: [
         { name: "orb_minutes", choices: [5, 10, 15, 30, 60] },

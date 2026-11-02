@@ -197,14 +197,14 @@ export interface LakeFolder {
 }
 
 /**
- * CME futures in the lake, which no instance writes yet: the futures repo's
- * imported Massive cache (2024-09-09..2026-09-11), joined with the folder the
- * Massive recorder will keep current. The search job reads both, the cache
- * winning any minute in both.
+ * CME futures in the lake: the futures repo's imported Massive cache
+ * (2024-09-09..2026-09-11), joined with the folder the Massive recorder
+ * instance named `cme` keeps current (raw/cme/massive/cme). The search job
+ * reads both, the cache winning any UTC day in both.
  */
 export const CME_FOLDERS: LakeFolder[] = [
   {
-    path: 'raw/cme/massive-cache+raw/cme/massive',
+    path: 'raw/cme/massive-cache+raw/cme/massive/cme',
     history: true,
     intervals: ['1m'],
     from: '2024-09-09',
@@ -230,11 +230,13 @@ export function lakeFolders(
     const history = i.template?.startsWith('history.') ?? false;
     const iv = Array.isArray(i.params?.intervals) ? (i.params!.intervals as string[]) : [];
     const year = Number(i.params?.start_year);
+    const path = `raw/${m[1]}`;
     out.push({
-      path: `raw/${m[1]}`,
+      path,
       history,
       intervals: history ? (iv.length ? iv : ['1d']) : [],
       from: history && year >= 2017 ? `${year}-01-01` : null,
+      ...(isFuturesFolder(path) ? { futures: true, intervals: ['1m'] } : {}),
     });
   }
   out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
