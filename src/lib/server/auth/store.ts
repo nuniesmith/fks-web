@@ -115,6 +115,41 @@ export interface InviteSummary {
   revokedAt: Date | null;
 }
 
+/** A personal access token to mint — only its sha256 crosses this boundary. */
+export interface NewApiToken {
+  userId: number;
+  name: string;
+  tokenHash: string;
+  roleCap: string;
+  expiresAt: Date;
+}
+
+/** A token joined with its owner's live identity, for resolving a request. */
+export interface ApiTokenWithUser {
+  id: number;
+  userId: number;
+  username: string;
+  /** The owner's CURRENT role; the effective role is min(this, roleCap). */
+  role: string;
+  roleCap: string;
+  mustChange: boolean;
+  disabled: boolean;
+  expiresAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
+/** A token as its owner's list shows it — no token_hash, like InviteSummary. */
+export interface ApiTokenSummary {
+  id: number;
+  name: string;
+  roleCap: string;
+  createdAt: Date;
+  expiresAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
 /**
  * Outcome of an atomic last-admin-guarded mutation (`disableUserGuarded` /
  * `setUserRoleGuarded`):
@@ -204,4 +239,19 @@ export interface AuthStore {
    * the race (rowcount 1); false means a concurrent claim already consumed it.
    */
   redeemInvite(id: number, userId: number): Promise<boolean>;
+
+  // ── Personal access tokens (API v1, EDGE_FACTORY_PLAN §7.2) ────────────────
+  /**
+   * Whether `webui_api_tokens` exists. False on a scoped deploy whose DBA has
+   * not applied fks 027 yet: tokens are then refused, and login is unaffected.
+   */
+  apiTokensAvailable(): boolean;
+  createApiToken(token: NewApiToken): Promise<ApiTokenSummary>;
+  getApiTokenByHash(tokenHash: string): Promise<ApiTokenWithUser | null>;
+  /** One user's tokens, newest first, secret-free. */
+  listApiTokens(userId: number): Promise<ApiTokenSummary[]>;
+  /** Revoke one of `userId`'s own tokens; true iff it was live and is now revoked. */
+  revokeApiToken(id: number, userId: number): Promise<boolean>;
+  /** Stamp `last_used_at` with the service clock (one clock, testable). */
+  touchApiToken(id: number, at: Date): Promise<void>;
 }

@@ -46,6 +46,13 @@ export class LoginRateLimiter {
     return true;
   }
 
+  /** Whether `key` has exhausted its window, WITHOUT counting an attempt. */
+  blocked(key: string): boolean {
+    if (!key) return false;
+    const w = this.windows.get(key);
+    return !!w && this.now() < w.resetAt && w.count >= this.max;
+  }
+
   private prune(now: number): void {
     if (this.windows.size < 1024) return;
     for (const [k, w] of this.windows) {

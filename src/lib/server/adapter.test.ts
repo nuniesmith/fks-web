@@ -763,3 +763,41 @@ describe("movedPage — old URLs after the six-section rework", () => {
     }
   });
 });
+
+describe("personal access tokens at the seam (API v1)", () => {
+  const tok = (role: string): SessionInfo => ({
+    userId: 5,
+    username: "agent-owner",
+    role,
+    mustChange: false,
+    via: "token",
+    tokenId: 9,
+  });
+
+  it("reaches the API at its own role", () => {
+    expect(routeRequest("/api/spawner/ladder", "", "GET", enabled(tok("viewer")))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/alerts/ack", "", "POST", enabled(tok("operator")))).toEqual({ kind: "backend" });
+    expect(routeRequest("/api/alerts/ack", "", "POST", enabled(tok("viewer")))).toEqual({
+      kind: "forbidden",
+      reason: "role_denied",
+    });
+  });
+
+  it("can't open pages", () => {
+    expect(routeRequest("/tasks", "", "GET", enabled(tok("operator")))).toEqual({
+      kind: "forbidden",
+      reason: "token_cannot_open_pages",
+    });
+  });
+
+  it("can't reach identity management, even read-only", () => {
+    for (const p of ["/api/tokens", "/api/tokens/3/revoke", "/api/users", "/api/invites"]) {
+      expect(routeRequest(p, "", "GET", enabled(tok("operator")))).toEqual({
+        kind: "forbidden",
+        reason: "session_required",
+      });
+    }
+    // A browser session is unaffected.
+    expect(routeRequest("/api/tokens", "", "GET", enabled(viewer))).toEqual({ kind: "backend" });
+  });
+});

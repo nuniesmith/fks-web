@@ -20,6 +20,7 @@
 --   GRANT USAGE,SELECT ON SEQUENCE webui_users_id_seq      TO fks_webui;
 --   GRANT USAGE,SELECT ON SEQUENCE webui_sessions_id_seq   TO fks_webui;
 --   GRANT USAGE,SELECT ON SEQUENCE webui_auth_audit_id_seq TO fks_webui;
+--   -- webui_invites and webui_api_tokens: fks/src/sql/spawner/012 and 027.
 -- Deliberately NOT granted: exchange_secrets, transfers, accounts, bot_configs,
 -- and everything else in fks_db. Empty WEBUI_DB_PASSWORD → role cannot log in
 -- (fail closed), identical to 009_backtest_role.sql.
@@ -74,3 +75,17 @@ CREATE TABLE IF NOT EXISTS webui_invites (
     redeemed_at TIMESTAMPTZ,
     revoked_at  TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS webui_api_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES webui_users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,         -- sha256(token); raw token shown once, at mint
+    role_cap     TEXT NOT NULL DEFAULT 'viewer'
+                 CHECK (role_cap IN ('operator','viewer')),  -- no admin tokens
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,         -- service sets now()+TTL at mint
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS webui_api_tokens_user_idx ON webui_api_tokens (user_id);

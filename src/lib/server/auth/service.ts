@@ -22,8 +22,14 @@ import {
   validateNewCredentials,
   validateUsername,
 } from "./policy";
-import { generateBootstrapPassword, generateSessionToken, hashToken } from "./tokens";
-import type { AuditView, AuthStore, UserRow, UserSummary } from "./store";
+import {
+  generateApiToken,
+  generateBootstrapPassword,
+  generateSessionToken,
+  hashToken,
+  looksLikeApiToken,
+} from "./tokens";
+import type { ApiTokenSummary, AuditView, AuthStore, UserRow, UserSummary } from "./store";
 
 /** Roles an admin may assign — the CHECK-constrained set (schema.sql). */
 export const ASSIGNABLE_ROLES = ["admin", "operator", "viewer"] as const;
@@ -48,6 +54,36 @@ function isInviteRole(role: string): role is InviteRole {
 
 /** Default invite lifetime (plan OD-5: 48 h, single-use). */
 export const INVITE_TTL_HOURS = 48;
+
+/**
+ * Personal access tokens (API v1, EDGE_FACTORY_PLAN §7.2) are capped at
+ * operator: no admin tokens. Everything admin-only (keys, webhooks, users,
+ * a spawn or promotion that could trade real money) therefore needs a human
+ * session, which is §6.3's "an operator or a PAT arming money" closed by
+ * construction.
+ */
+export const API_TOKEN_ROLES = ["operator", "viewer"] as const;
+export type ApiTokenRole = (typeof API_TOKEN_ROLES)[number];
+function isApiTokenRole(role: string): role is ApiTokenRole {
+  return (API_TOKEN_ROLES as readonly string[]).includes(role);
+}
+/** Token lifetimes the form offers; a token always expires. */
+export const API_TOKEN_TTL_DAYS = [7, 30, 90, 365] as const;
+export const API_TOKEN_MAX_NAME = 64;
+/** `last_used_at` is written at most this often per token. */
+export const API_TOKEN_TOUCH_MS = 60 * 1000;
+
+/** The lower of two roles (viewer < operator < admin; unknown = viewer). */
+const ROLES_BY_RANK = ["viewer", "operator", "admin"] as const;
+export function minRole(a: string, b: string): string {
+  const rank = (r: string) => Math.max(0, ROLES_BY_RANK.indexOf(r as never));
+  return ROLES_BY_RANK[Math.min(rank(a), rank(b))];
+}
+
+/** A token as its owner's list shows it, with a derived status. */
+export interface ApiTokenView extends ApiTokenSummary {
+  status: "active" | "expired" | "revoked";
+}
 
 /** An invite row projected for the admin console, with a derived status. */
 export interface InviteView {
@@ -329,6 +365,134 @@ export class AuthService {
     };
     if (caching) this.cache.set(tokenHash, { info, cachedAt: now });
     return info;
+  }
+
+  // ── Personal access tokens (API v1) ───────────────────────────────────────
+
+  /** Whether tokens can be used here (fks 027 applied). */
+  apiTokensAvailable(): boolean {
+    return this.store.apiTokensAvailable();
+  }
+
+  /**
+   * Resolve a `Bearer fks_pat_…` token to the identity it acts as, or null.
+   * The role is min(owner's CURRENT role, the token's cap), so demoting the
+   * owner demotes the token; a disabled owner, a revoked or expired token, or
+   * an owner still on the bootstrap credential resolves to nothing. Cached in
+   * the session cache, so `purgeUserFromCache` drops it with the owner's
+   * sessions.
+   */
+  async resolveApiToken(token: string): Promise<SessionInfo | null> {
+    if (!looksLikeApiToken(token) || !this.store.apiTokensAvailable()) return null;
+    const tokenHash = hashToken(token);
+    const now = this.now();
+    const caching = this.cacheTtlMs > 0;
+    if (caching) {
+      const cached = this.cache.get(tokenHash);
+      if (cached && now - cached.cachedAt < this.cacheTtlMs) return cached.info;
+    }
+    const t = await this.store.getApiTokenByHash(tokenHash);
+    if (
+      !t ||
+      t.revokedAt !== null ||
+      t.expiresAt.getTime() <= now ||
+      t.disabled ||
+      t.mustChange
+    ) {
+      this.cache.delete(tokenHash);
+      return null;
+    }
+    if (!t.lastUsedAt || now - t.lastUsedAt.getTime() >= API_TOKEN_TOUCH_MS) {
+      await this.store.touchApiToken(t.id, new Date(now));
+    }
+    const info: SessionInfo = {
+      userId: t.userId,
+      username: t.username,
+      role: minRole(t.role, t.roleCap),
+      mustChange: false,
+      via: "token",
+      tokenId: t.id,
+    };
+    if (caching) this.cache.set(tokenHash, { info, cachedAt: now });
+    return info;
+  }
+
+  /** The caller's own tokens, newest first, with a derived status. */
+  async listApiTokens(actor: SessionInfo): Promise<ApiTokenView[]> {
+    const now = this.now();
+    return (await this.store.listApiTokens(actor.userId)).map((t) => ({
+      ...t,
+      status: t.revokedAt
+        ? "revoked"
+        : t.expiresAt.getTime() <= now
+          ? "expired"
+          : "active",
+    }));
+  }
+
+  /**
+   * Mint a token for the caller. The raw token is returned EXACTLY ONCE; only
+   * its sha256 is stored, and the audit row names the token, never its value.
+   * The cap can't exceed the caller's own role (a viewer can't mint operator).
+   */
+  async createApiToken(
+    actor: SessionInfo,
+    name: string,
+    roleCap: string,
+    ttlDays: number,
+    ctx: RequestCtx,
+  ): Promise<AdminResult<{ token: string; apiToken: ApiTokenSummary }>> {
+    if (!this.store.apiTokensAvailable()) {
+      return { ok: false, error: "API tokens aren't set up on this server (fks 027).", status: 503 };
+    }
+    const n = name.trim();
+    if (n.length < 1 || n.length > API_TOKEN_MAX_NAME) {
+      return { ok: false, error: `Name must be 1-${API_TOKEN_MAX_NAME} characters.`, status: 400 };
+    }
+    if (!isApiTokenRole(roleCap)) {
+      return { ok: false, error: "A token's role must be operator or viewer.", status: 400 };
+    }
+    if (minRole(actor.role, roleCap) !== roleCap) {
+      return { ok: false, error: `A ${actor.role} can't mint a ${roleCap} token.`, status: 403 };
+    }
+    if (!(API_TOKEN_TTL_DAYS as readonly number[]).includes(ttlDays)) {
+      return { ok: false, error: `Lifetime must be one of ${API_TOKEN_TTL_DAYS.join(", ")} days.`, status: 400 };
+    }
+    const token = generateApiToken();
+    const expiresAt = new Date(this.now() + ttlDays * 24 * 60 * 60 * 1000);
+    const apiToken = await this.store.createApiToken({
+      userId: actor.userId,
+      name: n,
+      tokenHash: hashToken(token),
+      roleCap,
+      expiresAt,
+    });
+    await this.store.audit({
+      username: actor.username,
+      action: "api_token_created",
+      ip: ctx.ip,
+      detail: `token ${apiToken.id} "${n}"; role=${roleCap}; expires=${expiresAt.toISOString()}`,
+    });
+    return { ok: true, token, apiToken };
+  }
+
+  /** Revoke one of the caller's own tokens; it stops working on this process at once. */
+  async revokeApiToken(actor: SessionInfo, id: number, ctx: RequestCtx): Promise<AdminMutation> {
+    if (!this.store.apiTokensAvailable()) {
+      return { ok: false, error: "API tokens aren't set up on this server (fks 027).", status: 503 };
+    }
+    const revoked = await this.store.revokeApiToken(id, actor.userId);
+    if (!revoked) return { ok: false, error: "No such live token of yours.", status: 404 };
+    for (const [hash, entry] of this.cache) {
+      if (entry.info.tokenId === id) this.cache.delete(hash);
+    }
+    await this.store.audit({
+      username: actor.username,
+      action: "api_token_revoked",
+      ip: ctx.ip,
+      detail: `token ${id}`,
+    });
+    return { ok: true };
   }
 
   /**

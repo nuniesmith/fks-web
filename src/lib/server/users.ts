@@ -234,3 +234,63 @@ export async function invitesDispatch(
   }
   return json({ error: "not_found" }, 404);
 }
+
+// ── Personal access tokens (API v1) ──────────────────────────────────────────
+//
+//   GET  /api/tokens              → { available, tokens: ApiTokenView[] }  (own)
+//   POST /api/tokens {name, role, ttlDays} → { ok, token, apiToken }  (token ONCE)
+//   POST /api/tokens/:id/revoke   → { ok }
+//
+// Any signed-in role manages its OWN tokens, through a browser session only:
+// routeRequest refuses a token here (SESSION_ONLY_BACKEND_PREFIXES), and this
+// re-checks for the outage path and WEBUI_AUTH=disabled, like requireAdmin.
+
+const TOKEN_ROUTE = /^\/api\/tokens(?:\/(\d+)\/(revoke))?$/;
+
+function requireBrowserSession(auth: AuthState | undefined): SessionInfo | Response {
+  if (auth?.mode === "disabled") return forbidden("tokens_require_auth");
+  const s = auth?.mode === "enabled" ? auth.session : null;
+  if (!s || s.mustChange) return forbidden("session_required");
+  if (s.via === "token") return forbidden("session_required");
+  return s;
+}
+
+export async function tokensDispatch(
+  request: Request,
+  pathname: string,
+  auth: AuthState | undefined,
+  ctx: RequestCtx,
+  getService: () => Promise<AuthService>,
+): Promise<Response> {
+  const actor = requireBrowserSession(auth);
+  if (actor instanceof Response) return actor;
+
+  const m = TOKEN_ROUTE.exec(pathname);
+  if (!m) return json({ error: "not_found" }, 404);
+  const svc = await getService();
+  const method = request.method;
+
+  if (!m[1]) {
+    if (method === "GET") {
+      const available = svc.apiTokensAvailable();
+      return json({ available, tokens: available ? await svc.listApiTokens(actor) : [] });
+    }
+    if (method === "POST") {
+      const body = await readBody(request);
+      const r = await svc.createApiToken(
+        actor,
+        typeof body.name === "string" ? body.name : "",
+        typeof body.role === "string" ? body.role : "",
+        typeof body.ttlDays === "number" ? body.ttlDays : NaN,
+        ctx,
+      );
+      if (!r.ok) return fail(r);
+      return json({ ok: true, token: r.token, apiToken: r.apiToken });
+    }
+    return json({ error: "method_not_allowed" }, 405);
+  }
+
+  if (method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const r = await svc.revokeApiToken(actor, Number(m[1]), ctx);
+  return r.ok ? json({ ok: true }) : fail(r);
+}

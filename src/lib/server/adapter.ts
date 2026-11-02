@@ -146,6 +146,14 @@ export interface SessionInfo {
   role: string;
   /** Bootstrap credential not yet rotated — user is confined to `/setup`. */
   mustChange: boolean;
+  /**
+   * How the request authenticated: a browser session (the default) or a
+   * personal access token (`Authorization: Bearer fks_pat_…`, API v1). A token
+   * reaches the API only: no pages, and none of SESSION_ONLY_BACKEND_PREFIXES.
+   */
+  via?: "session" | "token";
+  /** The token's id when `via === "token"` (revocation drops its cache entry). */
+  tokenId?: number;
 }
 
 /**
@@ -300,6 +308,17 @@ export function roleRank(role: string): number {
  * for ANY method (even a GET leaks the user/invite list). These routes do not
  * exist yet (Phase B/C) — future-proofing the seam is intentional and harmless.
  */
+/**
+ * Surfaces a personal access token can never reach, whatever its role: the
+ * ones that manage identity. A token minting tokens would outlive its own
+ * expiry, and users/invites are admin-only, which no token is. Session only.
+ */
+export const SESSION_ONLY_BACKEND_PREFIXES: readonly string[] = [
+  "/api/tokens",
+  "/api/users",
+  "/api/invites",
+];
+
 export const ADMIN_ONLY_BACKEND_PREFIXES: readonly string[] = [
   "/api/users",
   "/api/invites",
@@ -611,6 +630,15 @@ export function routeRequest(
     if (backend) return get ? { kind: "backend" } : { kind: "forbidden" };
     if (pathname.startsWith(SETUP_PREFIX)) return { kind: "pass" };
     return { kind: "redirect", location: SETUP_PREFIX };
+  }
+
+  // A personal access token (API v1) is for the API: no pages (it isn't a
+  // browser), and no identity management (SESSION_ONLY_BACKEND_PREFIXES).
+  if (session.via === "token") {
+    if (!backend) return { kind: "forbidden", reason: "token_cannot_open_pages" };
+    if (SESSION_ONLY_BACKEND_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
+      return { kind: "forbidden", reason: "session_required" };
+    }
   }
 
   // Fully authenticated (RBAC enforcement point — plan 01 §1.1, R1-R5).

@@ -25,3 +25,19 @@ export function hashToken(token: string): string {
 export function generateBootstrapPassword(): string {
   return randomBytes(18).toString("base64url"); // 18 bytes → 24 base64url chars
 }
+
+/**
+ * Personal access tokens (API v1): `fks_pat_` + 32 bytes of CSPRNG base64url.
+ * The prefix lets the hook tell a PAT from a session at a glance and lets
+ * secret scanners recognise one that leaked into a file or a log.
+ */
+export const API_TOKEN_PREFIX = "fks_pat_";
+
+export function generateApiToken(): string {
+  return API_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+
+/** Shape check only (prefix + 43 base64url chars); the DB lookup decides. */
+export function looksLikeApiToken(token: string): boolean {
+  return /^fks_pat_[A-Za-z0-9_-]{43}$/.test(token);
+}

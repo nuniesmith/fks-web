@@ -32,14 +32,17 @@ import {
   withRegisteredBy,
 } from "$lib/server/adapter";
 import {
+  apiTokenFailureLimiter,
+  apiTokenRequestLimiter,
   AuthStoreUnavailable,
   getAuthService,
   resolveAuthState,
+  resolveBearerAuthState,
   trustForwardedFor,
 } from "$lib/server/auth";
 import { clientIp } from "$lib/server/auth/http";
 import type { RequestCtx } from "$lib/server/auth/service";
-import { invitesDispatch, usersDispatch } from "$lib/server/users";
+import { invitesDispatch, tokensDispatch, usersDispatch } from "$lib/server/users";
 import {
   coerceNotificationHistory,
   validateNotificationEvents,
@@ -1213,6 +1216,19 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     );
   }
 
+  // ── Personal access tokens (API v1) — a user's own tokens ───────────────────
+  // Session only (routeRequest refuses a token here: SESSION_ONLY_BACKEND_
+  // PREFIXES); tokensDispatch re-checks, for the same outage/disabled reasons.
+  if (pathname === "/api/tokens" || pathname.startsWith("/api/tokens/")) {
+    return tokensDispatch(
+      event.request,
+      pathname,
+      auth,
+      requestCtx(event),
+      getAuthService,
+    );
+  }
+
   // ── Invites (Phase C) — mint / list / revoke one-time signup links ──────────
   // Admin-only at the seam (R1 covers /api/invites for ANY method); invitesDispatch
   // re-checks admin as defense in depth (same outage/disabled reasoning as users).
@@ -1496,10 +1512,21 @@ export const handle: Handle = async ({ event, resolve }) => {
   event.locals.user = null;
   event.locals.authDisabled = false;
 
+  // A personal access token (API v1) replaces the cookie: `Authorization:
+  // Bearer fks_pat_…` acts as that token or not at all. Failed attempts are
+  // limited per IP, and each token has a request budget.
+  const bearer = /^Bearer\s+(\S+)\s*$/i.exec(event.request.headers.get("authorization") ?? "")?.[1];
+  const ip = bearer ? requestCtx(event).ip : "";
+  if (bearer && apiTokenFailureLimiter.blocked(ip)) {
+    return jsonError(429, { error: "too_many_failed_token_attempts" });
+  }
+
   // Resolve auth posture; fail CLOSED if the store is unreachable (never open).
   let auth: AuthState;
   try {
-    auth = await resolveAuthState(event.cookies.get("fks_session") ?? "");
+    auth = bearer
+      ? await resolveBearerAuthState(bearer)
+      : await resolveAuthState(event.cookies.get("fks_session") ?? "");
   } catch (e) {
     if (e instanceof AuthStoreUnavailable) {
       // Fail closed for anything needing auth, but keep health probes working
@@ -1523,6 +1550,16 @@ export const handle: Handle = async ({ event, resolve }) => {
       }
     }
     throw e;
+  }
+
+  if (bearer && auth.mode === "enabled") {
+    if (!auth.session) {
+      apiTokenFailureLimiter.hit(ip);
+      return jsonError(401, { error: "invalid_token" });
+    }
+    if (!apiTokenRequestLimiter.hit(`t${auth.session.tokenId}`)) {
+      return jsonError(429, { error: "token_rate_limited" });
+    }
   }
 
   // Expose the resolved identity to page loads (A3). Only a full, real session
