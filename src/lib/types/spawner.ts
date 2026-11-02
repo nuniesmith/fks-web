@@ -647,6 +647,13 @@ export interface Experiment {
   outcome: 'pending' | 'adopted' | 'rejected' | 'superseded';
   finished_at: string | null;
   created_at: string;
+  /**
+   * The parameter set the search selected (fks 029). A deployment trades
+   * exactly this: the spawner fills params_snapshot from it, and Postgres
+   * refuses anything else. Absent on searches before 029: those can't be
+   * deployed.
+   */
+  selected_params?: Record<string, unknown> | null;
 }
 
 export type DeploymentStage = 'backtest' | 'forward' | 'live' | 'retired';
@@ -719,7 +726,8 @@ export interface CreateDeploymentRequest {
   experiment_id: number;
   account_id: string;
   symbol: string;
-  params_snapshot: Record<string, unknown>;
+  /** Left out: the spawner deploys the experiment's selected_params (fks 029). */
+  params_snapshot?: Record<string, unknown>;
   execution?: 'manual' | 'auto';
 }
 

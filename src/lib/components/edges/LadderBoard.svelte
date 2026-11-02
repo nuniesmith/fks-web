@@ -54,7 +54,6 @@
   let accounts = $state<TreasuryAccount[] | null>(null);
   let account = $state('');
   let symbol = $state('');
-  let snapshot = $state('{}');
   let deployBusy = $state(false);
   let deployErrors = $state<string[]>([]);
 
@@ -62,7 +61,6 @@
     deploying = deploying === e.id ? null : e.id;
     deployErrors = [];
     symbol = e.symbol;
-    snapshot = '{}';
     if (accounts === null) {
       try {
         accounts = ((await spawner.accounts()).accounts ?? []).filter((a) => a.active !== false);
@@ -74,18 +72,9 @@
     account = account || accounts?.[0]?.account_id || '';
   }
 
+  // A deployment trades what its search selected (fks 029): the parameters
+  // aren't typed here, the spawner takes the experiment's selected_params.
   async function deploy(e: Experiment) {
-    let params: unknown;
-    try {
-      params = JSON.parse(snapshot);
-    } catch {
-      deployErrors = ['The parameters must be JSON, e.g. {"band": 0.05}'];
-      return;
-    }
-    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
-      deployErrors = ['The parameters must be a JSON object: the values this deployment trades'];
-      return;
-    }
     deployBusy = true;
     deployErrors = [];
     try {
@@ -93,7 +82,6 @@
         experiment_id: e.id,
         account_id: account,
         symbol: symbol.trim().toUpperCase(),
-        params_snapshot: params as Record<string, unknown>,
       });
       deploying = null;
       onchanged?.();
@@ -216,12 +204,16 @@
                 Symbol
                 <input bind:value={symbol} />
               </label>
-              <label>
-                Parameters it trades (JSON, frozen with the row)
-                <textarea rows="3" bind:value={snapshot} spellcheck="false"></textarea>
-              </label>
+              <div class="selection" data-testid="deploy-selection">
+                <span class="lbl">Parameters it trades: the search's selection, frozen with the row</span>
+                {#if e.selected_params}
+                  <code>{JSON.stringify(e.selected_params)}</code>
+                {:else}
+                  <span class="warn">This search recorded no selection (it ran before fks 029): it can't be deployed.</span>
+                {/if}
+              </div>
               <p class="hint">Starts at backtest. Forward and live are separate steps, each one guarded.</p>
-              <button class="btn primary" type="submit" disabled={deployBusy || !account}>
+              <button class="btn primary" type="submit" disabled={deployBusy || !account || !e.selected_params}>
                 {deployBusy ? 'Creating…' : 'Create at backtest'}
               </button>
               {#if accounts !== null && accounts.length === 0}
@@ -415,8 +407,7 @@
     gap: 3px;
   }
   .form input,
-  .form select,
-  .form textarea {
+  .form select {
     min-height: 28px;
     padding: 3px 6px;
     background: var(--bg1);
@@ -425,13 +416,26 @@
     color: var(--t1);
     font: inherit;
   }
-  .form textarea {
-    font-family: var(--font-mono, monospace);
-  }
   .hint {
     margin: 0;
     font-size: 10px;
     color: var(--t3);
+  }
+  .selection {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+  }
+  .selection .lbl {
+    font-size: 10px;
+    color: var(--t2);
+  }
+  .selection code {
+    word-break: break-all;
+  }
+  .selection .warn {
+    color: var(--amber);
   }
   .btn {
     min-height: 28px;
