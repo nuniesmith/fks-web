@@ -128,6 +128,34 @@ test.describe("Edges: a deployment trades its search's selection", () => {
   });
 });
 
+test.describe("Edges: the monitor (fks 030)", () => {
+  test("a card shows the forward band and the CUSUM; a retired one says why", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    await page.goto("/edges");
+    const forward = page.locator('[data-testid="deployment-card"][data-deployment="11"]');
+    const monitor = forward.getByTestId("deployment-monitor");
+    await expect(monitor).toContainText("pending");
+    await expect(monitor).toContainText("4/20 sessions, mean 0.040% against a floor of -0.020%");
+    await expect(monitor).toContainText("1.20 of 9.80 over 4 sessions");
+
+    await page.getByText("Retired 1 · withdrawn 1").click();
+    const retired = page.locator('[data-testid="deployment-card"][data-deployment="10"]');
+    await expect(retired.getByTestId("retired-reason")).toHaveText("drift on 2 consecutive days");
+    await expect(retired.getByTestId("deployment-monitor")).toContainText("(alarm on 2026-10-30)");
+    await expect(retired.getByRole("link", { name: "Forward runner…" })).toHaveCount(0);
+  });
+
+  test("a board from before the monitor shows no monitor", async ({ page }) => {
+    await installHome(page);
+    const { health: _health, ...old } = LADDER;
+    await installLadder(page, old);
+    await page.goto("/edges");
+    await expect(page.locator('[data-testid="deployment-card"][data-deployment="11"]')).toBeVisible();
+    await expect(page.getByTestId("deployment-monitor")).toHaveCount(0);
+  });
+});
+
 test.describe("Edges: register a hypothesis", () => {
   test("says what to fix before anything is sent", async ({ page }) => {
     await installHome(page);

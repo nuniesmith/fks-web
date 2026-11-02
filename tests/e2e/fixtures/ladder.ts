@@ -143,6 +143,23 @@ export const LADDER = {
     deployment(12),
     deployment(10, { stage: "retired", retired_reason: "drift on 2 consecutive days" }),
   ],
+  // fks 030: edge_deployment_health() by deployment id.
+  health: {
+    "11": {
+      applies: true,
+      version: "edge-monitor-2026-11-02-proposed",
+      holdout: { n: 120, mean: 0.0006, sd: 0.002 },
+      band: { verdict: "pending", n: 4, required: 20, mean: 0.0004, floor: -0.0002 },
+      cusum: { value: 1.2, peak: 1.5, k: 0.15, h: 9.8, sessions: 4, alarm: false, alarm_at: null },
+    },
+    "10": {
+      applies: true,
+      version: "edge-monitor-2026-11-02-proposed",
+      holdout: { n: 120, mean: 0.0006, sd: 0.002 },
+      band: { verdict: "pass", n: 20, required: 20, mean: 0.0005, floor: -0.0002 },
+      cusum: { value: 10.4, peak: 10.4, k: 0.15, h: 9.8, sessions: 61, alarm: true, alarm_at: "2026-10-30" },
+    },
+  },
   effort: [
     {
       symbol: "BTCUSDT",

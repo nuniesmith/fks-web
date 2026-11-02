@@ -235,7 +235,7 @@
     <h3>Forward <span class="n">{b.forward.length}</span></h3>
     <p class="rung">Paper on live data, for sessions declared in advance.</p>
     {#each b.forward as d (d.id)}
-      <DeploymentCard deployment={d} {onchanged} />
+      <DeploymentCard deployment={d} health={ladder.health?.[String(d.id)]} {onchanged} />
     {:else}
       <p class="empty">Nothing on paper.</p>
     {/each}
@@ -245,7 +245,7 @@
     <h3>Live <span class="n">{b.live.length}</span></h3>
     <p class="rung">An admin, a typed confirmation, the account lease and a cap.</p>
     {#each b.live as d (d.id)}
-      <DeploymentCard deployment={d} {onchanged} />
+      <DeploymentCard deployment={d} health={ladder.health?.[String(d.id)]} {onchanged} />
     {:else}
       <p class="empty">No edge trades money yet.</p>
     {/each}
@@ -257,7 +257,7 @@
     <summary>Retired {b.retired.length} · withdrawn {b.withdrawn.length} (kept: they count as tried)</summary>
     <div class="past-grid">
       {#each b.retired as d (d.id)}
-        <DeploymentCard deployment={d} {onchanged} />
+        <DeploymentCard deployment={d} health={ladder.health?.[String(d.id)]} {onchanged} />
       {/each}
       {#each b.withdrawn as h (h.id)}
         <article class="card" data-testid="withdrawn-card">

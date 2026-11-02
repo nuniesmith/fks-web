@@ -654,6 +654,24 @@ export interface Experiment {
    * deployed.
    */
   selected_params?: Record<string, unknown> | null;
+  /** Sessions in the holdout series the monitor judges against (fks 030); null: none recorded. */
+  holdout_sessions?: number | null;
+}
+
+/**
+ * `edge_deployment_health()` (fks 030): the monitor's two tests against the
+ * experiment's holdout. `applies` is false (with `why`) for a low-frequency
+ * edge, judged on mechanics, or when there's no holdout series.
+ */
+export interface DeploymentHealth {
+  applies: boolean;
+  version: string;
+  why?: string;
+  holdout?: { n: number; mean: number; sd: number };
+  /** Once, on the first `required` forward sessions: mean ≥ floor (the holdout's 5th percentile). */
+  band?: { verdict: 'pending' | 'pass' | 'fail'; n: number; required: number | null; mean: number | null; floor: number | null };
+  /** From the first forward session, through live: alarms (and retires) above h. */
+  cusum?: { value: number; peak: number; k: number; h: number; sessions: number; alarm: boolean; alarm_at: string | null };
 }
 
 export type DeploymentStage = 'backtest' | 'forward' | 'live' | 'retired';
@@ -699,6 +717,8 @@ export interface LadderResponse {
   experiments: Experiment[];
   deployments: Deployment[];
   effort: EffortRow[];
+  /** Each deployment's health by id (fks 030); absent before 030. */
+  health?: Record<string, DeploymentHealth>;
 }
 
 /** `POST /edges/{id}/hypotheses`. The adapter stamps `registered_by`. */
