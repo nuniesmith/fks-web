@@ -21,9 +21,12 @@
   import {
     ALL_INTERVALS,
     BASELINES,
+    FOLDER_RE,
+    FUTURES_BASELINES,
     METRICS,
     datasetText,
     emptyParam,
+    isFuturesFolder,
     lakeFolders,
     paramSpecs,
     symbolList,
@@ -55,9 +58,12 @@
   let baselineOther = $state('');
   let metric = $state<string>(METRICS[0].value);
   let evidence = $state<HypothesisEvidence>('trades');
-  let maker = $state('40');
-  let taker = $state('80');
-  let slippage = $state('5');
+  let maker = $state<string | number>('40');
+  let taker = $state<string | number>('80');
+  let slippage = $state<string | number>('5');
+  // Futures (a raw/cme/... folder): per contract instead of bps.
+  let commission = $state<string | number>('1.50');
+  let ticks = $state<string | number>('1');
 
   let submitting = $state(false);
   let serverErrors = $state<string[]>([]);
@@ -74,9 +80,17 @@
   let baselineValue = $derived(baseline === 'other' ? baselineOther.trim() : baseline);
   let folderValue = $derived(folder === OTHER ? folderOther.trim() : folder);
   let chosenFolder = $derived(folders.find((f) => f.path === folder) ?? null);
+  let futures = $derived(isFuturesFolder(folderValue));
+  let baselineChoices = $derived(futures ? FUTURES_BASELINES : BASELINES);
   let intervals = $derived(chosenFolder?.intervals.length ? chosenFolder.intervals : ALL_INTERVALS);
   // The form the search job reads: '<lake folder> <interval> <from>..<to>'.
   let dataset = $derived(datasetText(folderValue, interval, from, to));
+
+  // `bind:value` on a number input hands back a number once it is edited (and
+  // '' or null when cleared), so these fields are not always strings.
+  function blank(v: unknown): boolean {
+    return v === null || v === undefined || String(v).trim() === '';
+  }
 
   let localErrors = $derived.by(() => {
     const out: string[] = [];
@@ -87,16 +101,23 @@
     if (creatingEdge && !newEdgeName.trim()) out.push('A new edge needs a name');
     if (idea.trim().length < 20) out.push('The idea needs at least 20 characters: one sentence, with the mechanism');
     if (symbolValues.length === 0) out.push('Name at least one symbol');
-    if (!/^raw\/[a-z0-9._/-]+$/.test(folderValue)) out.push('Pick the lake folder (raw/…) the data is in');
+    if (!FOLDER_RE.test(folderValue)) out.push('Pick the lake folder (raw/…) the data is in');
     if (!from || !to || to <= from) out.push('The data needs a start date before its end date');
     const h = Number(holdout);
     if (!(h >= 0.1 && h <= 0.5)) out.push('The holdout share is between 0.1 and 0.5');
     out.push(...parsedParams.errors);
     if (!baselineValue) out.push('Name the baseline it must beat');
 
-    for (const [name, v] of [['maker', maker], ['taker', taker], ['slippage', slippage]] as const) {
-      const n = Number(v);
-      if (v.trim() === '' || !(n >= 0 && n <= 1000)) out.push(`The ${name} cost is 0 to 1000 bps`);
+    if (futures) {
+      const c = Number(commission);
+      const t = Number(ticks);
+      if (blank(commission) || !(c >= 0 && c <= 1000)) out.push('The commission is 0 to 1000 dollars a contract');
+      if (blank(ticks) || !(t >= 0 && t <= 100)) out.push('The slippage is 0 to 100 ticks a side');
+    } else {
+      for (const [name, v] of [['maker', maker], ['taker', taker], ['slippage', slippage]] as const) {
+        const n = Number(v);
+        if (blank(v) || !(n >= 0 && n <= 1000)) out.push(`The ${name} cost is 0 to 1000 bps`);
+      }
     }
     return out;
   });
@@ -108,11 +129,12 @@
       const wanted = $page.url.searchParams.get('edge');
       edgeId = wanted && edges.some((x) => x.edge_id === wanted) ? wanted : (edges[0]?.edge_id ?? NEW_EDGE);
       folders = lakeFolders((i?.instances ?? []) as Instance[]);
-      const first = folders.find((f) => f.history) ?? folders[0];
+      // An instance's folder first (history recorders before recorders), the
+      // fixed CME folders only when no instance writes one.
+      const first = folders.find((f) => f.history && !f.futures) ?? folders.find((f) => !f.futures) ?? folders[0];
       if (first) {
         folder = first.path;
-        if (first.intervals.length && !first.intervals.includes(interval)) interval = first.intervals.at(-1)!;
-        if (first.from) from = first.from;
+        folderChanged();
       } else {
         folder = OTHER;
       }
@@ -122,6 +144,15 @@
       edgeId = NEW_EDGE;
     }
   });
+
+  /** A folder brings its own bars, start and, for futures, the intraday baseline. */
+  function folderChanged() {
+    const f = folders.find((x) => x.path === folder);
+    if (f?.intervals.length && !f.intervals.includes(interval)) interval = f.intervals.at(-1)!;
+    if (f?.from) from = f.from;
+    const choices = isFuturesFolder(folder === OTHER ? folderOther.trim() : folder) ? FUTURES_BASELINES : BASELINES;
+    if (baseline !== 'other' && !choices.some((b) => b.value === baseline)) baseline = choices[0].value;
+  }
 
   function addParam() {
     if (params.length < 12) params = [...params, emptyParam()];
@@ -155,7 +186,15 @@
         params: parsedParams.params,
         baseline: baselineValue,
         metric,
-        costs: { maker_bps: Number(maker), taker_bps: Number(taker), slippage_bps: Number(slippage) },
+        costs: futures
+          ? {
+              maker_bps: 0,
+              taker_bps: 0,
+              slippage_bps: 0,
+              commission_usd_rt: Number(commission),
+              slippage_ticks: Number(ticks),
+            }
+          : { maker_bps: Number(maker), taker_bps: Number(taker), slippage_bps: Number(slippage) },
         evidence,
       });
       await goto(`/edges?hypothesis=${res.hypothesis.id}`);
@@ -230,13 +269,21 @@
         <div class="row">
           <label>
             Lake folder
-            <select bind:value={folder} aria-label="Lake folder">
-              {#each folders as f (f.path)}<option value={f.path}>{f.path}{f.history ? ' (history)' : ''}</option>{/each}
+            <select bind:value={folder} aria-label="Lake folder" onchange={folderChanged}>
+              {#each folders as f (f.path)}<option value={f.path}
+                  >{f.path}{f.futures ? ' (CME futures)' : f.history ? ' (history)' : ''}</option
+                >{/each}
               <option value={OTHER}>Another folder…</option>
             </select>
           </label>
           {#if folder === OTHER}
-            <label>Folder <input bind:value={folderOther} placeholder="raw/binance/spot/spot-history" /></label>
+            <label
+              >Folder <input
+                bind:value={folderOther}
+                oninput={folderChanged}
+                placeholder="raw/binance/spot/spot-history"
+              /></label
+            >
           {/if}
           <label>
             Bars
@@ -286,7 +333,7 @@
           <label>
             It must beat
             <select bind:value={baseline} aria-label="It must beat">
-              {#each BASELINES as b (b.value)}<option value={b.value}>{b.label}</option>{/each}
+              {#each baselineChoices as b (b.value)}<option value={b.value}>{b.label}</option>{/each}
               <option value="other">Something else…</option>
             </select>
           </label>
@@ -300,15 +347,27 @@
             </select>
           </label>
         </div>
-        <div class="row">
-          <label>Maker bps <input type="number" min="0" bind:value={maker} /></label>
-          <label>Taker bps <input type="number" min="0" bind:value={taker} /></label>
-          <label>Slippage bps <input type="number" min="0" bind:value={slippage} /></label>
-        </div>
-        <p class="hint">
-          Use whichever baseline is harder. The search job computes these two baselines and these three metrics;
-          costs default to Kraken tier 1, plus a stated slippage.
-        </p>
+        {#if futures}
+          <div class="row" data-testid="futures-costs">
+            <label>Commission $ / contract, round turn <input type="number" min="0" step="0.01" bind:value={commission} /></label>
+            <label>Slippage ticks / side <input type="number" min="0" step="0.5" bind:value={ticks} /></label>
+          </div>
+          <p class="hint">
+            Futures are judged by the search job's <code>orb</code> family: one trade per session, against holding
+            each session from open to close, paying this commission and slippage on every trade. Symbols are
+            contracts: MES, MNQ, MGC (or ES, NQ, GC).
+          </p>
+        {:else}
+          <div class="row">
+            <label>Maker bps <input type="number" min="0" bind:value={maker} /></label>
+            <label>Taker bps <input type="number" min="0" bind:value={taker} /></label>
+            <label>Slippage bps <input type="number" min="0" bind:value={slippage} /></label>
+          </div>
+          <p class="hint">
+            Use whichever baseline is harder. The search job computes these two baselines and these three metrics;
+            costs default to Kraken tier 1, plus a stated slippage.
+          </p>
+        {/if}
       </fieldset>
 
       <fieldset>

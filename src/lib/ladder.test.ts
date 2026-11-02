@@ -11,6 +11,9 @@ import {
   paramText,
   symbolList,
   yesterday,
+  CME_FOLDERS,
+  FOLDER_RE,
+  isFuturesFolder,
 } from './ladder';
 import type { Deployment, Experiment, Hypothesis } from '$lib/types/spawner';
 
@@ -196,7 +199,22 @@ describe('the dataset, as the search job reads it', () => {
     expect(folders).toEqual([
       { path: 'raw/binance/spot/spot-history', history: true, intervals: ['1h', '1d'], from: '2017-01-01' },
       { path: 'raw/binance/usdm/btc', history: false, intervals: [], from: null },
+      ...CME_FOLDERS,
     ]);
+  });
+
+  it('offers the CME futures folders, joined the way the job reads them', () => {
+    const [cme] = CME_FOLDERS;
+    expect(cme.path).toBe('raw/cme/massive-cache+raw/cme/massive');
+    expect(cme).toMatchObject({ intervals: ['1m'], from: '2024-09-09', futures: true });
+    expect(FOLDER_RE.test(cme.path)).toBe(true);
+    expect(FOLDER_RE.test('raw/binance/spot/spot-history')).toBe(true);
+    expect(FOLDER_RE.test('raw/a+lake/b')).toBe(false);
+    expect(isFuturesFolder(cme.path)).toBe(true);
+    expect(isFuturesFolder('raw/binance/spot/spot-history')).toBe(false);
+    // A CME folder an instance writes later isn't listed twice.
+    const again = lakeFolders([{ template: 'history.cme', data_dir: '/srv/fks-lake/raw/cme/massive-cache+raw/cme/massive', params: {} }]);
+    expect(again.filter((f) => f.path === cme.path)).toHaveLength(1);
   });
 
   it('writes the one form the job parses', () => {

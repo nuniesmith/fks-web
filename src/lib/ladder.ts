@@ -166,6 +166,14 @@ export const BASELINES = [
   { value: 'buy-and-hold', label: 'Buy and hold' },
 ] as const;
 
+/**
+ * The intraday baseline the search job's orb family is judged against: long
+ * each session from its first bar to its last, with the same costs.
+ */
+export const FUTURES_BASELINES = [
+  { value: 'session-hold', label: 'Hold each session, open to close (intraday drift)' },
+] as const;
+
 /** The metrics the search job scores (fks-spawner bots/edge-search), all net of costs. */
 export const METRICS = [
   { value: 'net return after fees', label: 'Net return (CAGR)' },
@@ -184,6 +192,31 @@ export interface LakeFolder {
   intervals: string[];
   /** Its first day, from the form's start year. */
   from: string | null;
+  /** A CME futures folder (raw/cme/...): per-contract costs, the session-hold baseline. */
+  futures?: boolean;
+}
+
+/**
+ * CME futures in the lake, which no instance writes yet: the futures repo's
+ * imported Massive cache (2024-09-09..2026-09-11), joined with the folder the
+ * Massive recorder will keep current. The search job reads both, the cache
+ * winning any minute in both.
+ */
+export const CME_FOLDERS: LakeFolder[] = [
+  {
+    path: 'raw/cme/massive-cache+raw/cme/massive',
+    history: true,
+    intervals: ['1m'],
+    from: '2024-09-09',
+    futures: true,
+  },
+];
+
+/** A dataset folder as the search job parses it: raw/… folders, joined by '+'. */
+export const FOLDER_RE = /^raw\/[a-z0-9._/-]+(\+raw\/[a-z0-9._/-]+)*$/;
+
+export function isFuturesFolder(path: string): boolean {
+  return path.startsWith('raw/cme/');
 }
 
 /** The lake folders the instances write, history recorders first. */
@@ -204,7 +237,8 @@ export function lakeFolders(
       from: history && year >= 2017 ? `${year}-01-01` : null,
     });
   }
-  return out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
+  out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
+  return [...out, ...CME_FOLDERS.filter((c) => !out.some((o) => o.path === c.path))];
 }
 
 /** The dataset as the search job reads it: `<lake folder> <interval> <from>..<to>`. */
