@@ -166,6 +166,14 @@ export const BASELINES = [
   { value: 'buy-and-hold', label: 'Buy and hold' },
 ] as const;
 
+/**
+ * The intraday baseline the search job's orb family is judged against: long
+ * each session from its first bar to its last, with the same costs.
+ */
+export const FUTURES_BASELINES = [
+  { value: 'session-hold', label: 'Hold each session, open to close (intraday drift)' },
+] as const;
+
 /** The metrics the search job scores (fks-spawner bots/edge-search), all net of costs. */
 export const METRICS = [
   { value: 'net return after fees', label: 'Net return (CAGR)' },
@@ -184,6 +192,31 @@ export interface LakeFolder {
   intervals: string[];
   /** Its first day, from the form's start year. */
   from: string | null;
+  /** A CME futures folder (raw/cme/...): per-contract costs, the session-hold baseline. */
+  futures?: boolean;
+}
+
+/**
+ * CME futures in the lake: the futures repo's imported Massive cache
+ * (2024-09-09..2026-09-11), joined with the folder the Massive recorder
+ * instance named `cme` keeps current (raw/cme/massive/cme). The search job
+ * reads both, the cache winning any UTC day in both.
+ */
+export const CME_FOLDERS: LakeFolder[] = [
+  {
+    path: 'raw/cme/massive-cache+raw/cme/massive/cme',
+    history: true,
+    intervals: ['1m'],
+    from: '2024-09-09',
+    futures: true,
+  },
+];
+
+/** A dataset folder as the search job parses it: raw/… folders, joined by '+'. */
+export const FOLDER_RE = /^raw\/[a-z0-9._/-]+(\+raw\/[a-z0-9._/-]+)*$/;
+
+export function isFuturesFolder(path: string): boolean {
+  return path.startsWith('raw/cme/');
 }
 
 /** The lake folders the instances write, history recorders first. */
@@ -197,14 +230,17 @@ export function lakeFolders(
     const history = i.template?.startsWith('history.') ?? false;
     const iv = Array.isArray(i.params?.intervals) ? (i.params!.intervals as string[]) : [];
     const year = Number(i.params?.start_year);
+    const path = `raw/${m[1]}`;
     out.push({
-      path: `raw/${m[1]}`,
+      path,
       history,
       intervals: history ? (iv.length ? iv : ['1d']) : [],
       from: history && year >= 2017 ? `${year}-01-01` : null,
+      ...(isFuturesFolder(path) ? { futures: true, intervals: ['1m'] } : {}),
     });
   }
-  return out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
+  out.sort((a, b) => Number(b.history) - Number(a.history) || a.path.localeCompare(b.path));
+  return [...out, ...CME_FOLDERS.filter((c) => !out.some((o) => o.path === c.path))];
 }
 
 /** The dataset as the search job reads it: `<lake folder> <interval> <from>..<to>`. */

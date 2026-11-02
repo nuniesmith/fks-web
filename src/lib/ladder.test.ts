@@ -11,6 +11,9 @@ import {
   paramText,
   symbolList,
   yesterday,
+  CME_FOLDERS,
+  FOLDER_RE,
+  isFuturesFolder,
 } from './ladder';
 import type { Deployment, Experiment, Hypothesis } from '$lib/types/spawner';
 
@@ -196,7 +199,28 @@ describe('the dataset, as the search job reads it', () => {
     expect(folders).toEqual([
       { path: 'raw/binance/spot/spot-history', history: true, intervals: ['1h', '1d'], from: '2017-01-01' },
       { path: 'raw/binance/usdm/btc', history: false, intervals: [], from: null },
+      ...CME_FOLDERS,
     ]);
+  });
+
+  it('offers the CME futures folders, joined the way the job reads them', () => {
+    const [cme] = CME_FOLDERS;
+    expect(cme.path).toBe('raw/cme/massive-cache+raw/cme/massive/cme');
+    expect(cme).toMatchObject({ intervals: ['1m'], from: '2024-09-09', futures: true });
+    expect(FOLDER_RE.test(cme.path)).toBe(true);
+    expect(FOLDER_RE.test('raw/binance/spot/spot-history')).toBe(true);
+    expect(FOLDER_RE.test('raw/a+lake/b')).toBe(false);
+    expect(isFuturesFolder(cme.path)).toBe(true);
+    expect(isFuturesFolder('raw/binance/spot/spot-history')).toBe(false);
+    // The recorder's own folder is futures too, so it never becomes the
+    // form's default ahead of a crypto history folder.
+    const withRecorder = lakeFolders([
+      { template: 'history.cme-massive', data_dir: '/srv/fks-lake/raw/cme/massive/cme', params: {} },
+      { template: 'history.binance-spot', data_dir: '/srv/fks-lake/raw/binance/spot/spot-history', params: {} },
+    ]);
+    expect(withRecorder.find((f) => f.path === 'raw/cme/massive/cme')).toMatchObject({ futures: true, intervals: ['1m'] });
+    expect(withRecorder.find((f) => f.history && !f.futures)?.path).toBe('raw/binance/spot/spot-history');
+    expect(withRecorder.filter((f) => f.path === cme.path)).toHaveLength(1);
   });
 
   it('writes the one form the job parses', () => {

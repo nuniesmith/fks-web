@@ -178,6 +178,98 @@ test.describe("Edges: register a hypothesis", () => {
     });
   });
 
+  test("an edited cost is sent as a number (a number input hands back a number)", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    let body: Record<string, unknown> | null = null;
+    await page.route(
+      (url) => url.pathname === "/api/spawner/edges/liq-fade/hypotheses",
+      async (route: Route) => {
+        body = route.request().postDataJSON();
+        await route.fulfill({ status: 201, json: { ok: true, hypothesis: { ...LADDER.hypotheses[0], id: 9 } } });
+      },
+    );
+    await page.goto("/edges/new");
+    await expect(page.getByRole("combobox", { name: "Edge", exact: true })).toHaveValue("liq-fade");
+    await page.getByLabel("One sentence, with the mechanism").fill("Funding spikes on SOLUSDT mean-revert within a day.");
+    await page.getByLabel("Symbols").fill("solusdt");
+    await page.getByLabel("From").fill("2026-01-01");
+    await page.getByLabel("To", { exact: true }).fill("2026-10-01");
+    await page.getByLabel("Parameter 1 name").fill("z_entry");
+    await page.getByLabel("Parameter 1 min").fill("1.5");
+    await page.getByLabel("Parameter 1 max").fill("4");
+    await page.getByLabel("Parameter 1 step").fill("0.5");
+    await page.getByLabel("Taker bps").fill("60");
+    await page.getByRole("button", { name: "Register, frozen from now" }).click();
+    await expect(page).toHaveURL(/\/edges\?hypothesis=9$/);
+    expect(body).toMatchObject({ costs: { maker_bps: 40, taker_bps: 60, slippage_bps: 5 } });
+  });
+
+  test("a CME futures hypothesis: 1m bars, per-contract costs, the session-hold baseline", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    let body: Record<string, unknown> | null = null;
+    await page.route(
+      (url) => url.pathname === "/api/spawner/edges/liq-fade/hypotheses",
+      async (route: Route) => {
+        body = route.request().postDataJSON();
+        await route.fulfill({ status: 201, json: { ok: true, hypothesis: { ...LADDER.hypotheses[0], id: 8 } } });
+      },
+    );
+    await page.goto("/edges/new");
+    await expect(page.getByRole("combobox", { name: "Edge", exact: true })).toHaveValue("liq-fade");
+    await page
+      .getByLabel("One sentence, with the mechanism")
+      .fill("Opening-range breakouts on index and gold futures carry on through the session.");
+    await page.getByLabel("Symbols").fill("mes, mnq, mgc");
+    await page
+      .getByRole("combobox", { name: "Lake folder", exact: true })
+      .selectOption("raw/cme/massive-cache+raw/cme/massive/cme");
+    await expect(page.getByRole("combobox", { name: "Bars", exact: true })).toHaveValue("1m");
+    await expect(page.getByLabel("From")).toHaveValue("2024-09-09");
+    await page.getByLabel("To", { exact: true }).fill("2027-05-31");
+    await expect(page.getByTestId("dataset-text")).toContainText(
+      "raw/cme/massive-cache+raw/cme/massive/cme 1m 2024-09-09..2027-05-31",
+    );
+    // Futures: the intraday baseline, and costs per contract instead of bps.
+    await expect(page.getByRole("combobox", { name: "It must beat", exact: true })).toHaveValue("session-hold");
+    await expect(page.getByTestId("futures-costs")).toBeVisible();
+    await expect(page.getByLabel("Taker bps")).toHaveCount(0);
+    await page.getByLabel("Commission $ / contract, round turn").fill("1.5");
+    await page.getByLabel("Slippage ticks / side").fill("1");
+    await page.getByRole("combobox", { name: "Metric", exact: true }).selectOption("sharpe after fees");
+    await page.getByLabel("Parameter 1 name").fill("orb_minutes");
+    await page.getByLabel("Parameter 1 kind").selectOption("choices");
+    await page.getByLabel("Parameter 1 choices").fill("5, 10, 15, 30, 60");
+    await page.getByRole("button", { name: "+ Parameter" }).click();
+    await page.getByLabel("Parameter 2 name").fill("target_r");
+    await page.getByLabel("Parameter 2 min").fill("1");
+    await page.getByLabel("Parameter 2 max").fill("3");
+    await page.getByLabel("Parameter 2 step").fill("0.5");
+    await page.getByRole("button", { name: "+ Parameter" }).click();
+    await page.getByLabel("Parameter 3 name").fill("exit");
+    await page.getByLabel("Parameter 3 kind").selectOption("choices");
+    await page.getByLabel("Parameter 3 choices").fill("target, trail");
+    await page.getByRole("button", { name: "Register, frozen from now" }).click();
+
+    await expect(page).toHaveURL(/\/edges\?hypothesis=8$/);
+    expect(body).toEqual({
+      idea: "Opening-range breakouts on index and gold futures carry on through the session.",
+      symbols: ["MES", "MNQ", "MGC"],
+      dataset: "raw/cme/massive-cache+raw/cme/massive/cme 1m 2024-09-09..2027-05-31",
+      holdout_share: 0.25,
+      params: [
+        { name: "orb_minutes", choices: [5, 10, 15, 30, 60] },
+        { name: "target_r", min: 1, max: 3, step: 0.5 },
+        { name: "exit", choices: ["target", "trail"] },
+      ],
+      baseline: "session-hold",
+      metric: "sharpe after fees",
+      costs: { maker_bps: 0, taker_bps: 0, slippage_bps: 0, commission_usd_rt: 1.5, slippage_ticks: 1 },
+      evidence: "trades",
+    });
+  });
+
   test("the spawner's refusal is shown line by line", async ({ page }) => {
     await installHome(page);
     await installLadder(page);

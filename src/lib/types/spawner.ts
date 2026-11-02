@@ -591,6 +591,10 @@ export interface HypothesisCosts {
   maker_bps: number;
   taker_bps: number;
   slippage_bps: number;
+  /** Futures (the orb family): $ per contract, round turn. The bps are then 0. */
+  commission_usd_rt?: number;
+  /** Futures: slippage per side, in ticks. */
+  slippage_ticks?: number;
 }
 
 /** Stage 2: an idea registered before its search. Frozen once registered. */
