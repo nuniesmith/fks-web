@@ -123,7 +123,7 @@
           {#each h.params as p (p.name)}<li class="mono">{paramText(p)}</li>{/each}
         </ul>
         <p class="meta">
-          beat {h.baseline} · {h.metric} · holdout {Math.round(h.holdout_share * 100)}% · {h.dataset}
+          beat {h.baseline} · {h.metric} · holdout {Math.round(h.holdout_share * 100)}%{h.evidence === 'low-frequency' ? ' · low-frequency evidence' : ''} · {h.dataset}
         </p>
         <p class="meta">registered {ago(h.registered_at)} UTC{h.registered_by ? ` by ${h.registered_by}` : ''}</p>
         <p class="next">Next: search it. Every grid point is a trial and counts toward N; the holdout is scored once.</p>

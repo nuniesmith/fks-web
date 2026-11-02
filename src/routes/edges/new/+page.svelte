@@ -31,7 +31,7 @@
     type LakeFolder,
     type ParamRow,
   } from '$lib/ladder';
-  import type { Edge, Instance } from '$lib/types/spawner';
+  import type { Edge, HypothesisEvidence, Instance } from '$lib/types/spawner';
 
   let edges = $state<Edge[] | null>(null);
   let folders = $state<LakeFolder[]>([]);
@@ -54,6 +54,7 @@
   let baseline = $state<string>(BASELINES[0].value);
   let baselineOther = $state('');
   let metric = $state<string>(METRICS[0].value);
+  let evidence = $state<HypothesisEvidence>('trades');
   let maker = $state('40');
   let taker = $state('80');
   let slippage = $state('5');
@@ -155,6 +156,7 @@
         baseline: baselineValue,
         metric,
         costs: { maker_bps: Number(maker), taker_bps: Number(taker), slippage_bps: Number(slippage) },
+        evidence,
       });
       await goto(`/edges?hypothesis=${res.hypothesis.id}`);
     } catch (err) {
@@ -309,6 +311,23 @@
         </p>
       </fieldset>
 
+      <fieldset>
+        <legend>6. The evidence</legend>
+        <label class="choice">
+          <input type="radio" name="evidence" value="trades" bind:group={evidence} />
+          Trades: the holdout has at least 30 trades
+        </label>
+        <label class="choice">
+          <input type="radio" name="evidence" value="low-frequency" bind:group={evidence} />
+          Low-frequency: at least 10 trades pooled over 3 or more coins, one parameter set, every coin trading
+        </label>
+        <p class="hint">
+          Declare it now. A trend band trades a few times a year per coin, so it can't reach 30 on any history:
+          it is judged across many coins instead. Choosing the path after seeing the trade count is what the
+          freeze stops, so it can't change once registered.
+        </p>
+      </fieldset>
+
       <p class="frozen" role="note">
         Registering freezes it. The database refuses any edit: to change it, withdraw it and register a new one.
       </p>
@@ -403,6 +422,12 @@
   }
   .param .wide {
     flex: 3 1 200px;
+  }
+  .choice {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 11px;
   }
   .hint {
     margin: 0;
