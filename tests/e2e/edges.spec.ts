@@ -265,6 +265,21 @@ test.describe("Edges: register a hypothesis", () => {
     expect(body).toMatchObject({ costs: { maker_bps: 40, taker_bps: 60, slippage_bps: 5 } });
   });
 
+  test("the Databento decade comes first and brings its own dates; a broken account is caught", async ({ page }) => {
+    await installHome(page);
+    await installLadder(page);
+    await page.goto("/edges/new");
+    await page
+      .getByRole("combobox", { name: "Lake folder", exact: true })
+      .selectOption("raw/cme/databento+raw/cme/massive/cme");
+    await expect(page.getByLabel("From")).toHaveValue("2014-09-02");
+    await expect(page.getByLabel("To", { exact: true })).toHaveValue("2024-09-06");
+    await expect(page.getByTestId("futures-account")).toBeVisible();
+    await page.getByLabel("Trailing drawdown $").fill("200000");
+    await page.getByRole("button", { name: "Register, frozen from now" }).click();
+    await expect(page.getByText("The trailing drawdown is at least 100 dollars and under the account")).toBeVisible();
+  });
+
   test("a CME futures hypothesis: 1m bars, per-contract costs, the session-hold baseline", async ({ page }) => {
     await installHome(page);
     await installLadder(page);
@@ -325,7 +340,16 @@ test.describe("Edges: register a hypothesis", () => {
       ],
       baseline: "session-hold",
       metric: "sharpe after fees",
-      costs: { maker_bps: 0, taker_bps: 0, slippage_bps: 0, commission_usd_rt: 1.5, slippage_ticks: 1 },
+      costs: {
+        maker_bps: 0,
+        taker_bps: 0,
+        slippage_bps: 0,
+        commission_usd_rt: 1.5,
+        slippage_ticks: 1,
+        contracts: 1,
+        account_usd: 150000,
+        trail_usd: 4500,
+      },
       evidence: "trades",
     });
   });

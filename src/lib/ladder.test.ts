@@ -204,7 +204,8 @@ describe('the dataset, as the search job reads it', () => {
   });
 
   it('offers the CME futures folders, joined the way the job reads them', () => {
-    const [cme] = CME_FOLDERS;
+    const [decade, cme] = CME_FOLDERS;
+    expect(decade).toMatchObject({ path: 'raw/cme/databento+raw/cme/massive/cme', from: '2014-09-02', to: '2024-09-06' });
     expect(cme.path).toBe('raw/cme/massive-cache+raw/cme/massive/cme');
     expect(cme).toMatchObject({ intervals: ['1m'], from: '2024-09-09', futures: true });
     expect(FOLDER_RE.test(cme.path)).toBe(true);
