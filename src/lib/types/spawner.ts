@@ -595,6 +595,10 @@ export interface HypothesisCosts {
   commission_usd_rt?: number;
   /** Futures: slippage per side, in ticks. */
   slippage_ticks?: number;
+  /** Futures: the prop account the edge would trade (the search's U13), all three or none. */
+  contracts?: number;
+  account_usd?: number;
+  trail_usd?: number;
 }
 
 /** Stage 2: an idea registered before its search. Frozen once registered. */

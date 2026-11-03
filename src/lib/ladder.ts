@@ -194,15 +194,32 @@ export interface LakeFolder {
   from: string | null;
   /** A CME futures folder (raw/cme/...): per-contract costs, the session-hold baseline. */
   futures?: boolean;
+  /** The last day the folder's own history reaches, when it ends (a bought dataset). */
+  to?: string | null;
 }
 
 /**
- * CME futures in the lake: the futures repo's imported Massive cache
- * (2024-09-09..2026-09-11), joined with the folder the Massive recorder
- * instance named `cme` keeps current (raw/cme/massive/cme). The search job
- * reads both, the cache winning any UTC day in both.
+ * CME futures in the lake, each joined with the folder the Massive recorder
+ * instance named `cme` keeps current (raw/cme/massive/cme): the search job
+ * reads both, the first winning any UTC day in both, and a forward runner
+ * finds the days after the bought history in the recorder's.
+ *
+ *   - the Databento decade (2014-09-02..2024-09-06, every contract, bought
+ *     2026-11-02; fks-spawner tools/import_databento.py): unseen by any orb
+ *     search, so it comes first;
+ *   - the futures repo's Massive cache (2024-09-09..2026-09-11). Already
+ *     searched by earlier orb work, and its 2026-04-01..09-11 is the futures
+ *     research program's SEALED holdout: don't train on it.
  */
 export const CME_FOLDERS: LakeFolder[] = [
+  {
+    path: 'raw/cme/databento+raw/cme/massive/cme',
+    history: true,
+    intervals: ['1m'],
+    from: '2014-09-02',
+    to: '2024-09-06',
+    futures: true,
+  },
   {
     path: 'raw/cme/massive-cache+raw/cme/massive/cme',
     history: true,

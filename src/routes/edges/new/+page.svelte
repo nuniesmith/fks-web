@@ -64,6 +64,10 @@
   // Futures (a raw/cme/... folder): per contract instead of bps.
   let commission = $state<string | number>('1.50');
   let ticks = $state<string | number>('1');
+  // The prop account the edge would trade (U13): TPT's $150k, $4,500 trail.
+  let contracts = $state<string | number>('1');
+  let account = $state<string | number>('150000');
+  let trail = $state<string | number>('4500');
 
   let submitting = $state(false);
   let serverErrors = $state<string[]>([]);
@@ -113,6 +117,12 @@
       const t = Number(ticks);
       if (blank(commission) || !(c >= 0 && c <= 1000)) out.push('The commission is 0 to 1000 dollars a contract');
       if (blank(ticks) || !(t >= 0 && t <= 100)) out.push('The slippage is 0 to 100 ticks a side');
+      const n = Number(contracts);
+      const a = Number(account);
+      const tr = Number(trail);
+      if (blank(contracts) || !(Number.isInteger(n) && n >= 1 && n <= 100)) out.push('Contracts per symbol are 1 to 100');
+      if (blank(account) || !(a >= 1000 && a <= 100_000_000)) out.push('The account is 1,000 to 100,000,000 dollars');
+      if (blank(trail) || !(tr >= 100 && tr < a)) out.push('The trailing drawdown is at least 100 dollars and under the account');
     } else {
       for (const [name, v] of [['maker', maker], ['taker', taker], ['slippage', slippage]] as const) {
         const n = Number(v);
@@ -150,6 +160,7 @@
     const f = folders.find((x) => x.path === folder);
     if (f?.intervals.length && !f.intervals.includes(interval)) interval = f.intervals.at(-1)!;
     if (f?.from) from = f.from;
+    if (f?.to) to = f.to;
     const choices = isFuturesFolder(folder === OTHER ? folderOther.trim() : folder) ? FUTURES_BASELINES : BASELINES;
     if (baseline !== 'other' && !choices.some((b) => b.value === baseline)) baseline = choices[0].value;
   }
@@ -193,6 +204,9 @@
               slippage_bps: 0,
               commission_usd_rt: Number(commission),
               slippage_ticks: Number(ticks),
+              contracts: Number(contracts),
+              account_usd: Number(account),
+              trail_usd: Number(trail),
             }
           : { maker_bps: Number(maker), taker_bps: Number(taker), slippage_bps: Number(slippage) },
         evidence,
@@ -352,10 +366,17 @@
             <label>Commission $ / contract, round turn <input type="number" min="0" step="0.01" bind:value={commission} /></label>
             <label>Slippage ticks / side <input type="number" min="0" step="0.5" bind:value={ticks} /></label>
           </div>
+          <div class="row" data-testid="futures-account">
+            <label>Contracts / symbol <input type="number" min="1" step="1" bind:value={contracts} /></label>
+            <label>Account $ <input type="number" min="1000" step="1000" bind:value={account} /></label>
+            <label>Trailing drawdown $ <input type="number" min="100" step="100" bind:value={trail} /></label>
+          </div>
           <p class="hint">
             Futures are judged by the search job's <code>orb</code> family: one trade per session, against holding
             each session from open to close, paying this commission and slippage on every trade. Symbols are
-            contracts: MES, MNQ, MGC (or ES, NQ, GC).
+            contracts: MES, MNQ, MGC (or ES, NQ, GC; MGC trades on GC's prices). It must also survive the prop
+            account above (U13): a fresh account at the holdout's start, its floor trailing the best end-of-day
+            balance until it reaches the starting balance.
           </p>
         {:else}
           <div class="row">
