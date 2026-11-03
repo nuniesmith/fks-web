@@ -236,6 +236,17 @@ export function isFuturesFolder(path: string): boolean {
   return path.startsWith('raw/cme/');
 }
 
+/**
+ * The search job's form for a hypothesis: its id, and the strategy family
+ * its dataset implies (CME futures are the `orb` family; the job's default,
+ * trend-band, is the crypto one).
+ */
+export function searchHref(h: { id: number; dataset: string }): string {
+  const folder = h.dataset.trim().split(/\s+/)[0] ?? '';
+  const family = isFuturesFolder(folder) ? '&family=orb' : '';
+  return `/tasks/new?kind=job&template=job.edge-search&hypothesis_id=${h.id}${family}`;
+}
+
 /** The lake folders the instances write, history recorders first. */
 export function lakeFolders(
   instances: { template: string | null; data_dir: string | null; params: Record<string, unknown> | null }[],

@@ -15,7 +15,7 @@
   import Badge from '$components/ui/Badge.svelte';
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import DeploymentCard from '$components/edges/DeploymentCard.svelte';
-  import { board, experimentNext, fmtScore, paramText } from '$lib/ladder';
+  import { board, experimentNext, fmtScore, paramText, searchHref } from '$lib/ladder';
   import type { Experiment, LadderResponse, TreasuryAccount } from '$lib/types/spawner';
 
   let {
@@ -118,7 +118,7 @@
         <div class="actions">
           <a
             class="btn primary"
-            href={`/tasks/new?kind=job&template=job.edge-search&hypothesis_id=${h.id}`}
+            href={searchHref(h)}
             aria-disabled={!canOperate}
             data-testid="search-it"
           >

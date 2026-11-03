@@ -396,6 +396,9 @@ test.describe("Edges: searching a hypothesis", () => {
     await expect(page.locator(".panel-title", { hasText: "Search and validate a hypothesis" })).toBeVisible();
     await expect(page.getByLabel("Hypothesis")).toHaveValue("3");
     await expect(page.getByLabel("Name")).toHaveValue("edge-search-h3");
+    // A futures hypothesis opens it on the orb family, not the crypto default.
+    await page.goto("/tasks/new?kind=job&template=job.edge-search&hypothesis_id=3&family=orb");
+    await expect(page.getByLabel("Strategy family")).toHaveValue("orb");
   });
 });
 

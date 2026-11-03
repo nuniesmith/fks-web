@@ -14,6 +14,7 @@ import {
   CME_FOLDERS,
   FOLDER_RE,
   isFuturesFolder,
+  searchHref,
 } from './ladder';
 import type { Deployment, Experiment, Hypothesis } from '$lib/types/spawner';
 
@@ -230,6 +231,17 @@ describe('the dataset, as the search job reads it', () => {
     );
     expect(datasetText('', '1d', '2017-08-17', '2026-10-25')).toBe('');
     expect(yesterday(Date.parse('2026-10-27T03:00:00Z'))).toBe('2026-10-26');
+  });
+});
+
+describe('searchHref', () => {
+  it('opens the search job with the family a dataset implies', () => {
+    expect(searchHref({ id: 1, dataset: 'raw/cme/databento+raw/cme/massive/cme 1m 2014-09-02..2024-09-06' })).toBe(
+      '/tasks/new?kind=job&template=job.edge-search&hypothesis_id=1&family=orb',
+    );
+    expect(searchHref({ id: 3, dataset: 'raw/binance/spot/spot-history 1d 2017-08-17..2026-10-31' })).toBe(
+      '/tasks/new?kind=job&template=job.edge-search&hypothesis_id=3',
+    );
   });
 });
 
