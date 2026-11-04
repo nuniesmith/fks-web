@@ -11,7 +11,8 @@ const LISTED = {
   name: "muse",
   roleCap: "viewer",
   createdAt: "2026-10-31T00:00:00Z",
-  expiresAt: "2027-01-29T00:00:00Z",
+  // 90 days out from whenever the test runs: the row shows the time left.
+  expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
   lastUsedAt: null,
   revokedAt: null,
   status: "active",
@@ -62,6 +63,8 @@ test("minting shows the token once and sends name, role and lifetime", async ({ 
   await expect.poll(() => posted).toEqual({ name: "muse", role: "viewer", ttlDays: 90 });
   await expect(page.getByTestId("minted-token")).toContainText(TOKEN);
   await expect(page.locator(".tok-row", { hasText: "muse" })).toContainText("never used");
+  // An expiry is in the future: the time left, never "just now".
+  await expect(page.locator(".tok-row", { hasText: "muse" })).toContainText(/expires in (89|90)d/);
 
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText(TOKEN)).toHaveCount(0);

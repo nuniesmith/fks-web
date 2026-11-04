@@ -12,7 +12,7 @@
   import ConfirmButton from '$components/ui/ConfirmButton.svelte';
   import { ApiError } from '$api/client';
   import { tokens as tokensApi } from '$api/tokens';
-  import { fmtDateTime, fmtRelative } from '$lib/utils/format';
+  import { fmtDateTime, fmtRelative, fmtUntil } from '$lib/utils/format';
   import {
     API_TOKEN_ROLES,
     API_TOKEN_TTL_DAYS,
@@ -158,7 +158,7 @@
             <Badge variant={t.roleCap === 'operator' ? 'amber' : 'default'}>{t.roleCap}</Badge>
             <span class="tok-meta" title={fmtDateTime(t.expiresAt)}>
               {t.status === 'active'
-                ? `expires ${fmtRelative(t.expiresAt)}`
+                ? `expires ${fmtUntil(t.expiresAt)}`
                 : t.status}
             </span>
             <span class="tok-meta" title={t.lastUsedAt ? fmtDateTime(t.lastUsedAt) : ''}>
