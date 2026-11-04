@@ -29,12 +29,14 @@ import {
   roleRank,
   spawnerWriteNeedsAdmin,
   isHypothesisRegistration,
+  isEdgeSearchStart,
   withRegisteredBy,
 } from "$lib/server/adapter";
 import { matchSpawnerRoute, openapi, spawnerPathExists } from "$lib/server/routes";
 import {
   apiTokenFailureLimiter,
   apiTokenRequestLimiter,
+  apiTokenSearchLimiter,
   AuthStoreUnavailable,
   getAuthService,
   resolveAuthState,
@@ -1301,6 +1303,24 @@ export async function proxyBackend(event: RequestEvent, auth?: AuthState): Promi
     if (isHypothesisRegistration(pathname, event.request.method)) {
       const stamped = withRegisteredBy(await event.request.clone().text(), operatorName(auth));
       if (stamped !== null) return forward(event, SPAWNER_URL, rest + search, stamped);
+    }
+    // A token's edge searches are capped per day (auth/index.ts
+    // `apiTokenSearchLimiter`); only a search the spawner accepted counts.
+    const tokenId = auth?.mode === "enabled" && auth.session?.via === "token" ? auth.session.tokenId : undefined;
+    if (
+      tokenId !== undefined &&
+      (await isEdgeSearchStart(pathname, event.request.method, () => event.request.clone().text()))
+    ) {
+      const key = `t${tokenId}`;
+      if (apiTokenSearchLimiter.blocked(key)) {
+        return jsonError(429, {
+          error: "token_search_limit",
+          detail: "This token has used its edge searches for the day (FKS_TOKEN_SEARCHES_PER_DAY).",
+        });
+      }
+      const res = await forward(event, SPAWNER_URL, rest + search);
+      if (res.ok) apiTokenSearchLimiter.hit(key);
+      return res;
     }
     return forward(event, SPAWNER_URL, rest + search);
   }

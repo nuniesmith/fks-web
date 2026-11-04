@@ -448,6 +448,34 @@ export function isHypothesisRegistration(pathname: string, method: string): bool
 }
 
 /**
+ * Whether a request starts an edge search: creating a `job.edge-search`
+ * instance, or starting an instance named `edge-search-…` again. Every
+ * search spends the trial budget (EDGE_PROCESS §4), so a token gets a daily
+ * cap on these (hooks.server.ts). `body` is read only for the create.
+ */
+export async function isEdgeSearchStart(
+  pathname: string,
+  method: string,
+  body: () => Promise<string>,
+): Promise<boolean> {
+  if (method.toUpperCase() !== "POST") return false;
+  const p = normalizedSpawnerPath(pathname);
+  const start = INSTANCE_START_PATH.exec(p);
+  if (start) return /^edge-search-/i.test(start[1]);
+  if (p.toLowerCase() !== INSTANCE_CREATE_PATH) return false;
+  try {
+    const parsed: unknown = JSON.parse(await body());
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { template?: unknown }).template === "job.edge-search"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The body of a hypothesis registration with `registered_by` set to the
  * signed-in user, whatever the browser sent: the registry records who wrote
  * the hypothesis down, and a browser could claim anyone. Null when the body

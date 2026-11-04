@@ -18,6 +18,7 @@ import {
   upstreamHeaders,
   promotionNeedsAdmin,
   isHypothesisRegistration,
+  isEdgeSearchStart,
   withRegisteredBy,
 } from "./adapter";
 
@@ -799,5 +800,17 @@ describe("personal access tokens at the seam (API v1)", () => {
     }
     // A browser session is unaffected.
     expect(routeRequest("/api/tokens", "", "GET", enabled(viewer))).toEqual({ kind: "backend" });
+  });
+});
+
+describe("isEdgeSearchStart", () => {
+  const body = (b: unknown) => () => Promise.resolve(JSON.stringify(b));
+  it("matches a job.edge-search create and an edge-search restart, nothing else", async () => {
+    expect(await isEdgeSearchStart("/api/spawner/instances", "POST", body({ template: "job.edge-search" }))).toBe(true);
+    expect(await isEdgeSearchStart("/api/spawner/instances", "POST", body({ template: "job.recorder" }))).toBe(false);
+    expect(await isEdgeSearchStart("/api/spawner/instances", "GET", body({ template: "job.edge-search" }))).toBe(false);
+    expect(await isEdgeSearchStart("/api/spawner/instances", "POST", () => Promise.resolve("{nope"))).toBe(false);
+    expect(await isEdgeSearchStart("/api/spawner/instances/edge-search-h2/start", "POST", body({}))).toBe(true);
+    expect(await isEdgeSearchStart("/api/spawner/instances/btc-recorder/start", "POST", body({}))).toBe(false);
   });
 });
