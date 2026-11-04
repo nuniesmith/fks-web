@@ -124,6 +124,22 @@ export const apiTokenRequestLimiter = new LoginRateLimiter({
   windowMs: 60 * 1000,
 });
 
+/**
+ * Per-token edge searches a day (FKS_TOKEN_SEARCHES_PER_DAY, default 5,
+ * at least 1). A search spends the trial budget, so an agent holding a token
+ * can't run the ladder's budget down overnight. Sessions aren't capped.
+ */
+export const apiTokenSearchLimiter = new LoginRateLimiter({
+  max: tokenSearchesPerDay(),
+  windowMs: 24 * 60 * 60 * 1000,
+});
+
+function tokenSearchesPerDay(): number {
+  const raw = (env.FKS_TOKEN_SEARCHES_PER_DAY ?? "").trim();
+  const n = Number(raw);
+  return raw && Number.isInteger(n) && n >= 1 ? n : 5;
+}
+
 export class AuthStoreUnavailable extends Error {}
 
 /**
