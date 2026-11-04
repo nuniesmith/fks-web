@@ -18,6 +18,7 @@ import {
   fmtTime,
   fmtDateTime,
   fmtRelative,
+  fmtUntil,
 } from "./format";
 
 describe("fmtPrice", () => {
@@ -271,5 +272,24 @@ describe("fmtRelative", () => {
 
   it("clamps a future timestamp to just now (never negative)", () => {
     expect(fmtRelative(Date.now() + 60_000)).toBe("just now");
+  });
+});
+
+describe("fmtUntil", () => {
+  it("returns — for null / invalid input", () => {
+    expect(fmtUntil(null)).toBe("—");
+    expect(fmtUntil("not-a-date")).toBe("—");
+  });
+
+  it("buckets the time left into s / m / h / d", () => {
+    const now = Date.now();
+    expect(fmtUntil(now + 30_500)).toBe("in 30s");
+    expect(fmtUntil(now + 5 * 60_000 + 500)).toBe("in 5m");
+    expect(fmtUntil(now + 2 * 3_600_000 + 500)).toBe("in 2h");
+    expect(fmtUntil(now + 365 * 86_400_000 - 60_000)).toBe("in 364d");
+  });
+
+  it("says now once the instant has passed", () => {
+    expect(fmtUntil(Date.now() - 60_000)).toBe("now");
   });
 });

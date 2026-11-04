@@ -282,6 +282,23 @@ export function fmtRelative(ts: string | number | undefined | null): string {
 }
 
 /**
+ * Format a FUTURE timestamp as the time left, e.g. "in 5m", "in 3h",
+ * "in 364d"; "now" once it has passed. `fmtRelative` is for the past only
+ * (it clamps a future instant to "just now"): use this for expiries.
+ */
+export function fmtUntil(ts: string | number | undefined | null): string {
+  if (ts == null) return "—";
+  const t = typeof ts === "number" ? ts : Date.parse(ts);
+  if (Number.isNaN(t)) return "—";
+  const s = Math.floor((t - Date.now()) / 1000);
+  if (s <= 0) return "now";
+  if (s < 60) return `in ${s}s`;
+  if (s < 3600) return `in ${Math.floor(s / 60)}m`;
+  if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
+  return `in ${Math.floor(s / 86400)}d`;
+}
+
+/**
  * Return the current wall-clock time as a "HH:MM:SS TZ" string,
  * suitable for the terminal strip clock.
  */
